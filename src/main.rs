@@ -1,23 +1,29 @@
-use bevy::{input::common_conditions::input_just_pressed, prelude::*, window::PrimaryWindow};
+use bevy::{
+    ecs::{relationship::RelationshipSourceCollection, system::entity_command},
+    input::common_conditions::input_just_pressed,
+    prelude::*,
+    window::PrimaryWindow,
+};
 use bevy_vector_shapes::{Shape2dPlugin, prelude::ShapePainter, shapes::DiscPainter};
+use solitaire_solver::Board;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(Shape2dPlugin::default())
-        .add_plugins(Board)
+        .add_plugins(PegSolitaire)
         .run();
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 struct BoardPosition {
     x: i64,
     y: i64,
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
 struct Position {
-    pos: Vec2,
+    pos: Vec3,
 }
 
 #[derive(Component)]
@@ -25,53 +31,73 @@ struct ColorComp {
     col: Color,
 }
 
+#[derive(Component, Default)]
+struct BoardComponent {
+    /// represents the currently active board
+    board: Board,
+}
+
 const BOARD_SIZE: i64 = 7;
 
 fn board_to_screen_space(pos: BoardPosition) -> Position {
     let offset = 2. * PEG_RADIUS as f32 + PEG_DIST as f32;
     let (x, y) = ((pos.x - 3) as f32, (pos.y - 3) as f32);
-    let pos = Vec2::new(x * offset, y * offset);
+    let pos = Vec3::new(x * offset, -y * offset, 0.);
     Position { pos }
 }
 
-fn spawn_pegs(mut commands: Commands) {
-    // board itself
+fn screen_to_board(pos: Position) -> BoardPosition {
+    let offset = 2. * PEG_RADIUS as f32 + PEG_DIST as f32;
+    let pos = pos.pos / offset;
+    let (y, x) = (-pos.y.round() as i64, pos.x.round() as i64);
+    let (y, x) = (y + 3, x + 3);
+    BoardPosition { x, y }
+}
+
+fn setup_board(mut commands: Commands) {
+    commands.spawn(BoardComponent::default());
+}
+
+fn spawn_pegs(mut commands: Commands, board: Query<&BoardComponent>) {
+    // the board itself
     let board_radius = (PEG_RADIUS * 2 + PEG_DIST) * 4;
     commands.spawn((
         Name::new("board"),
-        BoardPosition { y: 3, x: 3 },
+        Position { pos: Vec3::ZERO },
         ColorComp {
-            col: Color::WHITE.with_luminance(0.3),
+            col: Color::WHITE.with_luminance(0.10),
         },
         CircleComponent {
             radius: board_radius,
         },
     ));
 
+    let board = board.single().expect("board").board;
     for y in 0..BOARD_SIZE {
         for x in 0..BOARD_SIZE {
-            if inbounds((y, x)) {
+            let pos = (y, x);
+            if Board::inbounds(pos) {
                 // spawn holes
                 commands.spawn((
-                    Name::new("peg"),
                     board_to_screen_space(BoardPosition { y, x }),
                     ColorComp {
-                        col: Color::WHITE.with_luminance(0.2),
+                        col: Color::WHITE.with_luminance(0.07),
                     },
                     CircleComponent {
                         radius: (PEG_RADIUS as f32 * 0.9) as i32,
                     },
                 ));
+            }
 
-                // spawn pegs
-                if y == 3 && x == 3 {
-                    continue;
-                }
+            // spawn pegs
+            if board.occupied((y, x)) {
+                let board_pos = BoardPosition { y, x };
+                let position = board_to_screen_space(board_pos);
                 commands.spawn((
-                    Name::new("peg"),
-                    board_to_screen_space(BoardPosition { y, x }),
+                    board_pos,
+                    position,
                     ColorComp {
-                        col: Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.5),
+                        col: Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.7),
                     },
                     Selectable,
                     CircleComponent { radius: PEG_RADIUS },
@@ -100,6 +126,9 @@ struct FollowMouse;
 #[derive(Component)]
 struct Selectable;
 
+#[derive(Component)]
+struct SnapToBoardPosition;
+
 fn camera_setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
@@ -110,7 +139,7 @@ fn draw_circles(
 ) {
     for (circle, pos, color) in circles {
         let pos = pos.pos;
-        painter.set_translation(Vec3::new(pos.x, pos.y, 0.));
+        painter.set_translation(pos);
         painter.set_color(color.col);
         painter.circle(circle.radius as f32);
     }
@@ -120,19 +149,79 @@ fn peg_selection(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
     pegs: Query<Entity, With<Selectable>>,
-    positions: Query<(&Position, &CircleComponent)>,
+    mut positions: Query<(&mut BoardPosition, &mut Position)>,
+    follow_mouse: Query<&FollowMouse>,
+    mut board: Query<&mut BoardComponent>,
 ) {
     if let Some(cursor_pos) = window.cursor_position() {
         let cursor_pos = cursor_to_screen_space(cursor_pos, window.size());
+        let nearest_peg = screen_to_board(Position { pos: cursor_pos });
+        let mut board = board.single_mut().expect("board");
         println!("mouse pos: {cursor_pos}");
         for entity in pegs {
-            if let Ok((position, circle)) = positions.get(entity) {
-                let distance = cursor_pos.distance(position.pos);
-                if distance < circle.radius as f32 {
-                    commands.entity(entity).insert(FollowMouse);
+            if let Ok((mut board_pos, mut position)) = positions.get_mut(entity) {
+                let mut entity_commands = commands.entity(entity);
+                if follow_mouse.contains(entity) {
+                    entity_commands.remove::<FollowMouse>();
+                    entity_commands.insert(SnapToBoardPosition);
+                    position.pos.z = 0.;
+
+                    // allow swapping pegs
+                    let current = (board_pos.y, board_pos.x);
+                    let destination = (nearest_peg.y, nearest_peg.x);
+                    println!("{current:?} -> {destination:?}");
+                    if board.board.occupied(destination) {
+                        *board_pos = nearest_peg;
+                    } else if let Some(mov) = board.board.is_legal_move(current, destination) {
+                        println!("{mov}");
+                        // update board
+                        board.board = board.board.mov(mov);
+                        // update peg position
+                        board_pos.y = destination.0;
+                        board_pos.x = destination.1;
+                        // remove skipped peg
+                        for peg in pegs {
+                            if let Ok((b, _)) = positions.get(peg) {
+                                if b.y == mov.skip.0 && b.x == mov.skip.1 {
+                                    commands.entity(peg).despawn();
+                                }
+                            }
+                        }
+                    } else {
+                        println!("illegal move!");
+                    }
+                } else {
+                    if *board_pos == nearest_peg {
+                        entity_commands.insert(FollowMouse);
+                        entity_commands.remove::<SnapToBoardPosition>();
+                        position.pos.z = 1.;
+                    }
                 }
             }
         }
+    }
+}
+
+fn snap_to_board_grid(
+    mut commands: Commands,
+    pegs: Query<Entity, With<SnapToBoardPosition>>,
+    mut pos: Query<(&BoardPosition, &mut Position), With<SnapToBoardPosition>>,
+) {
+    for peg in pegs {
+        if let Ok((board_pos, mut screen_pos)) = pos.get_mut(peg) {
+            let target = board_to_screen_space(*board_pos);
+            let new_pos = lerp(*screen_pos, target, 0.2);
+            *screen_pos = new_pos;
+            if new_pos == target {
+                commands.entity(peg).remove::<SnapToBoardPosition>();
+            }
+        }
+    }
+}
+
+fn lerp(a: Position, b: Position, s: f32) -> Position {
+    Position {
+        pos: a.pos.lerp(b.pos, s),
     }
 }
 
@@ -142,44 +231,34 @@ fn follow_mouse(
 ) {
     if let Some(cursor_pos) = window.cursor_position() {
         for mut pos in positions {
-            pos.pos = cursor_to_screen_space(cursor_pos, window.size());
+            let z = pos.pos.z;
+            let mut destination = cursor_to_screen_space(cursor_pos, window.size());
+            destination.z = z;
+            let destination = Position { pos: destination };
+            *pos = destination;
         }
     }
 }
 
-fn cursor_to_screen_space(cursor_pos: Vec2, window_size: Vec2) -> Vec2 {
-    (cursor_pos - window_size / 2.) * (Vec2::X - Vec2::Y)
+fn cursor_to_screen_space(cursor_pos: Vec2, window_size: Vec2) -> Vec3 {
+    let pos = (cursor_pos - window_size / 2.) * (Vec2::X - Vec2::Y);
+    Vec3::new(pos.x, pos.y, 0.)
 }
 
-struct Board;
+struct PegSolitaire;
 
-impl Plugin for Board {
+impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_pegs);
+        app.add_systems(Startup, (setup_board, spawn_pegs).chain());
         app.add_systems(Startup, camera_setup);
         app.add_systems(Update, draw_circles);
+        app.add_systems(Update, snap_to_board_grid);
+        app.add_systems(Update, follow_mouse);
         app.add_systems(
             Update,
-            peg_selection.run_if(input_just_pressed(MouseButton::Left)),
+            peg_selection
+                .run_if(input_just_pressed(MouseButton::Left))
+                .chain(),
         );
-        app.add_systems(Update, follow_mouse);
     }
-}
-
-type Idx = i64;
-
-#[inline(always)]
-fn inbounds(pos: (Idx, Idx)) -> bool {
-    let (y, x) = pos;
-    in_mid_section(x) && in_whole_range(y) || in_mid_section(y) && in_whole_range(x)
-}
-
-#[inline(always)]
-fn in_mid_section(i: Idx) -> bool {
-    (2..5).contains(&i)
-}
-
-#[inline(always)]
-fn in_whole_range(i: Idx) -> bool {
-    (0..BOARD_SIZE).contains(&i)
 }
