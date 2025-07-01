@@ -210,7 +210,7 @@ fn draw_possible_moves(
                     painter.set_translation(Vec3::new(0., 0., 2.));
                     painter.thickness_type = ThicknessType::Pixels;
                     painter.thickness = 3.;
-                    painter.line(start.pos, start.pos + (target.pos - start.pos) * 0.25);
+                    painter.line(start.pos, start.pos + (target.pos - start.pos) * 0.2);
                     painter.set_translation(start.pos);
                     painter.circle(PEG_RADIUS as f32 * 0.2);
                 }
