@@ -8,7 +8,16 @@ use solitaire_solver::{BOARD_SIZE, Board, Dir, Solution, SolutionDag};
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Peg Solitaire".into(),
+                fit_canvas_to_parent: true,
+                prevent_default_event_handling: false,
+                desired_maximum_frame_latency: core::num::NonZero::new(1u32),
+                ..default()
+            }),
+            ..default()
+        }))
         .add_plugins(Shape2dPlugin::default())
         .add_plugins(PegSolitaire)
         .run();
