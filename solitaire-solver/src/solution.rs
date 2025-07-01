@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter, Result};
 use crate::Move;
 
 #[derive(Clone, Default)]
-pub(crate) struct Solution {
+pub struct Solution {
     steps: [Move; 31],
     count: usize,
 }
@@ -39,7 +39,7 @@ impl IntoIterator for Solution {
     }
 }
 
-pub(crate) struct SolutionIter {
+pub struct SolutionIter {
     sol: Solution,
     idx: usize,
 }

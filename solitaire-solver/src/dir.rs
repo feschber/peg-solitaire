@@ -3,7 +3,7 @@ use std::fmt::{Display, Error, Formatter};
 use crate::board::Idx;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Dir {
+pub enum Dir {
     North,
     East,
     South,

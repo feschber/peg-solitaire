@@ -4,12 +4,11 @@ mod dir;
 mod mov;
 mod solution;
 
-pub use board::Board;
-use dir::Dir;
+pub use board::{BOARD_SIZE, Board};
+pub use dag::SolutionDag;
+pub use dir::Dir;
 use mov::Move;
-use solution::Solution;
-
-use crate::{board::BOARD_SIZE, dag::SolutionDag};
+pub use solution::Solution;
 
 fn main() {
     let all = std::env::args().skip(1).any(|a| a == "-a");
@@ -66,7 +65,7 @@ fn solve(board: Board, solution: &mut Solution) -> bool {
     false
 }
 
-fn solve_all(board: Board, current: &mut Solution, solution_dag: &mut SolutionDag) -> bool {
+pub fn solve_all(board: Board, current: &mut Solution, solution_dag: &mut SolutionDag) -> bool {
     // found a known configuration
     match solution_dag.solutions(board) {
         Some(None) => return false,

@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter, Write};
 use crate::{Dir, Move};
 pub(crate) type Idx = i64;
 
-pub(crate) const BOARD_SIZE: Idx = 7;
+pub const BOARD_SIZE: Idx = 7;
 const BOARD_REPR: Idx = 8;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -61,7 +61,7 @@ impl Board {
     }
 
     #[inline(always)]
-    pub(crate) fn is_solved(&self) -> bool {
+    pub fn is_solved(&self) -> bool {
         // exactly one bit is set
         // self.0.is_power_of_two()
         const SOLUTION: u64 = 1 << (3 * BOARD_REPR + 3);
@@ -139,18 +139,9 @@ impl Board {
     }
 
     #[inline(always)]
-    pub(crate) fn get_legal_move(&self, pos: (Idx, Idx), dir: Dir) -> Option<Move> {
+    pub fn get_legal_move(&self, pos: (Idx, Idx), dir: Dir) -> Option<Move> {
         debug_assert!(Self::inbounds(pos));
         let (skip, target) = dir.mov(pos);
-        println!(
-            "{:?}, {:?}, {:?}, {}, {}, {}",
-            pos,
-            skip,
-            target,
-            Self::inbounds(target),
-            self.occupied(skip),
-            !self.occupied(target)
-        );
         if Self::inbounds(target) && self.occupied(skip) && !self.occupied(target) {
             Some(Move { pos, skip, target })
         } else {

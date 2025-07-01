@@ -8,23 +8,30 @@ use crate::board::Board;
 /// directed acyclic graph to represent a solution graph
 /// each node represents a board state, and each branch a possible move
 
-pub(crate) struct SolutionDag {
+pub struct SolutionDag {
     elements: HashMap<Board, Option<HashSet<Board>>>,
     root: Board,
 }
 
 impl SolutionDag {
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.elements.len()
     }
 
-    pub(crate) fn new(root: Board) -> Self {
+    pub fn new(root: Board) -> Self {
         let elements = Default::default();
         Self { elements, root }
     }
 
-    pub(crate) fn solutions(&mut self, board: Board) -> Option<Option<HashSet<Board>>> {
+    pub fn solutions(&self, board: Board) -> Option<Option<HashSet<Board>>> {
         self.elements.get(&board).cloned()
+    }
+
+    pub fn has_solution(&self, board: Board) -> bool {
+        board
+            .symmetries()
+            .into_iter()
+            .any(|board| self.solutions(board).flatten().is_some())
     }
 
     pub(crate) fn add_solution(&mut self, parent: Board, board: Board) {
