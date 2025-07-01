@@ -1,9 +1,16 @@
-use bevy::{input::common_conditions::input_just_pressed, prelude::*, window::PrimaryWindow};
+use bevy::{
+    ecs::world::CommandQueue,
+    input::common_conditions::input_just_pressed,
+    prelude::*,
+    tasks::{AsyncComputeTaskPool, Task},
+    window::PrimaryWindow,
+};
 use bevy_vector_shapes::{
     Shape2dPlugin,
     prelude::ShapePainter,
     shapes::{DiscPainter, LinePainter, ThicknessType},
 };
+use futures_lite::future::{self, block_on};
 use solitaire_solver::{BOARD_SIZE, Board, Dir, Solution, SolutionDag};
 
 fn main() {
@@ -50,6 +57,11 @@ struct SolutionComponent {
     solution: SolutionDag,
 }
 
+#[derive(Component)]
+struct SolutionComputation {
+    task: Task<CommandQueue>,
+}
+
 impl Default for BoardComponent {
     fn default() -> Self {
         let board = Board::default();
@@ -58,12 +70,32 @@ impl Default for BoardComponent {
 }
 
 fn calculate_solution_dag(mut commands: Commands) {
-    let mut solution_dag = SolutionDag::new(Board::default());
-    let mut current = Solution::default();
-    solitaire_solver::solve_all(Board::default(), &mut current, &mut solution_dag);
-    commands.spawn(SolutionComponent {
-        solution: solution_dag,
+    let thread_pool = AsyncComputeTaskPool::get();
+    let entity = commands.spawn_empty().id();
+    let task = thread_pool.spawn(async move {
+        let mut solution_dag = SolutionDag::new(Board::default());
+        let mut current = Solution::default();
+        solitaire_solver::solve_all(Board::default(), &mut current, &mut solution_dag);
+        let mut command_queue = CommandQueue::default();
+        command_queue.push(move |world: &mut World| {
+            world
+                .entity_mut(entity)
+                .remove::<SolutionComputation>()
+                .insert(SolutionComponent {
+                    solution: solution_dag,
+                });
+        });
+        command_queue
     });
+    commands.entity(entity).insert(SolutionComputation { task });
+}
+
+fn poll_task(mut commands: Commands, mut solution_task: Query<&mut SolutionComputation>) {
+    for mut task in &mut solution_task {
+        if let Some(mut commands_queue) = block_on(future::poll_once(&mut task.task)) {
+            commands.append(&mut commands_queue)
+        }
+    }
 }
 
 fn board_to_screen_space(pos: BoardPosition, z: f32) -> Position {
@@ -343,7 +375,8 @@ impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (setup_board, spawn_pegs).chain());
         app.add_systems(Startup, camera_setup);
-        app.add_systems(PostStartup, calculate_solution_dag);
+        app.add_systems(Startup, calculate_solution_dag);
+        app.add_systems(Update, poll_task);
         app.add_systems(Update, draw_circles);
         app.add_systems(Update, draw_possible_moves);
         app.add_systems(Update, snap_to_board_grid);
