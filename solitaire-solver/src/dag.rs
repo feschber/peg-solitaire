@@ -28,10 +28,11 @@ impl SolutionDag {
     }
 
     pub fn has_solution(&self, board: Board) -> bool {
-        board
-            .symmetries()
-            .into_iter()
-            .any(|board| self.solutions(board).flatten().is_some())
+        board.is_solved()
+            || board
+                .symmetries()
+                .into_iter()
+                .any(|board| self.solutions(board).flatten().is_some())
     }
 
     pub(crate) fn add_solution(&mut self, parent: Board, board: Board) {

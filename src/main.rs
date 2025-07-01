@@ -2,7 +2,7 @@ use bevy::{input::common_conditions::input_just_pressed, prelude::*, window::Pri
 use bevy_vector_shapes::{
     Shape2dPlugin,
     prelude::ShapePainter,
-    shapes::{DiscPainter, LinePainter},
+    shapes::{DiscPainter, LinePainter, ThicknessType},
 };
 use solitaire_solver::{BOARD_SIZE, Board, Dir, Solution, SolutionDag};
 
@@ -191,25 +191,27 @@ fn draw_possible_moves(
                             x: mov.pos.1,
                             y: mov.pos.0,
                         },
-                        1.,
+                        2.,
                     );
                     let target = board_to_screen_space(
                         BoardPosition {
                             x: mov.target.1,
                             y: mov.target.0,
                         },
-                        1.,
+                        2.,
                     );
                     let new_board = board.mov(mov);
                     let solvable = solution.has_solution(new_board);
                     painter.set_color(if solvable {
-                        Color::srgb(0., 1., 0.)
+                        Color::srgba(0., 1., 0., 1.)
                     } else {
-                        Color::srgb(1., 0., 0.)
+                        Color::srgba(1., 0., 0., 1.)
                     });
-                    painter.set_translation(Vec3::ZERO);
-                    painter.line(start.pos, target.pos);
-                    painter.set_translation(target.pos);
+                    painter.set_translation(Vec3::new(0., 0., 2.));
+                    painter.thickness_type = ThicknessType::Pixels;
+                    painter.thickness = 3.;
+                    painter.line(start.pos, start.pos + (target.pos - start.pos) * 0.25);
+                    painter.set_translation(start.pos);
                     painter.circle(PEG_RADIUS as f32 * 0.2);
                 }
             }
@@ -251,8 +253,7 @@ fn peg_selection(
                         // update board
                         board.board = board.board.mov(mov);
                         if let Ok(sol) = solution_graph.single() {
-                            let solvable =
-                                board.board.is_solved() || sol.solution.has_solution(board.board);
+                            let solvable = sol.solution.has_solution(board.board);
                             if !solvable {
                                 board_background.single_mut().unwrap().col =
                                     Color::srgb(1., 0., 0.);
