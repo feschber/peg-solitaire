@@ -1,44 +1,16 @@
 mod board;
-mod dag;
 mod dir;
 mod mov;
 mod solution;
 
+use std::collections::{HashMap, HashSet};
+
 pub use board::{BOARD_SIZE, Board};
-pub use dag::SolutionDag;
 pub use dir::Dir;
 use mov::Move;
 pub use solution::Solution;
 
-fn main() {
-    let all = std::env::args().skip(1).any(|a| a == "-a");
-
-    let mut board = Board::empty();
-
-    board.set((2, 2));
-    board.set((2, 3));
-    board.set((3, 2));
-    board.set((4, 2));
-
-    for s in board.symmetries() {
-        // println!("{s}");
-    }
-
-    if !all {
-        let mut solution = Solution::default();
-        let has_solution = solve(Default::default(), &mut solution);
-        assert!(has_solution);
-        // println!("{solution}");
-    } else {
-        let mut current = Solution::default();
-        let mut dag = SolutionDag::new(Board::default());
-        let has_solution = solve_all(Default::default(), &mut current, &mut dag);
-        assert!(has_solution);
-        // println!("checked {} constellations", dag.len());
-        println!("{dag}");
-    }
-}
-
+#[allow(unused)]
 fn solve(board: Board, solution: &mut Solution) -> bool {
     if board.is_solved() {
         return true;
@@ -65,18 +37,33 @@ fn solve(board: Board, solution: &mut Solution) -> bool {
     false
 }
 
-pub fn solve_all(board: Board, current: &mut Solution, solution_dag: &mut SolutionDag) -> bool {
-    // found a known configuration
-    match solution_dag.solutions(board) {
-        Some(None) => return false,
-        Some(_) => return true,
-        _ => {}
-    };
+pub fn calculate_all_solutions() -> HashSet<u64> {
+    let mut current = Solution::default();
+    let mut solvable = HashMap::new();
+    solve_all(Board::default(), &mut current, &mut solvable);
+    let total_constellations = solvable.len();
+    let solvable: HashSet<_> = solvable
+        .into_iter()
+        .filter_map(|(board, solvable)| if solvable { Some(board) } else { None })
+        .collect();
+    let solvable_configurations = solvable.len();
+    println!(
+        "checked {total_constellations} constellations, {solvable_configurations} have a solution ({:.2}%)",
+        (solvable_configurations as f64 / total_constellations as f64) * 100.
+    );
+    solvable
+}
 
+fn solve_all(board: Board, current: &mut Solution, solvable: &mut HashMap<u64, bool>) -> bool {
     // board is solved
     if board.is_solved() {
-        // println!("solved!!");
+        solvable.insert(board.0, true);
         return true;
+    }
+
+    // found a known configuration
+    if let Some(&solvable) = solvable.get(&board.0) {
+        return solvable;
     }
 
     let mut any_solution = false;
@@ -89,21 +76,13 @@ pub fn solve_all(board: Board, current: &mut Solution, solution_dag: &mut Soluti
                 if let Some(mov) = board.get_legal_move((y, x), dir) {
                     // println!("moving {:?} -> {dir:?}", (y, x));
                     current.push(mov);
-                    let modified = board.mov(mov).normalize();
-                    if solve_all(modified, current, solution_dag) {
-                        // println!("solution:\n{board}");
-                        any_solution = true;
-                        solution_dag.add_solution(board, modified);
-                    }
+                    any_solution |= solve_all(board.mov(mov).normalize(), current, solvable);
                     current.pop();
                 }
             }
         }
     }
-    if !any_solution {
-        solution_dag.no_solution(board);
-    }
-
+    solvable.insert(board.0, any_solution);
     any_solution
 }
 

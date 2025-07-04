@@ -56,16 +56,16 @@ impl Board {
         Self { 0: 0 }
     }
 
-    pub(crate) fn count_balls(&self) -> u64 {
+    pub fn count_balls(&self) -> u64 {
         self.0.count_ones() as u64
     }
 
     #[inline(always)]
     pub fn is_solved(&self) -> bool {
         // exactly one bit is set
-        // self.0.is_power_of_two()
-        const SOLUTION: u64 = 1 << (3 * BOARD_REPR + 3);
-        self.0 == SOLUTION
+        self.0.is_power_of_two()
+        // const SOLUTION: u64 = 1 << (3 * BOARD_REPR + 3);
+        // self.0 == SOLUTION
     }
 
     /// the game is not solvable, if none of the marked fields contain a ball:
@@ -166,100 +166,37 @@ impl Board {
         }
     }
 
-    pub(crate) fn rotate270(&self) -> Self {
-        let mut clone = Self::empty();
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
-                if self.occupied((i, j)) {
-                    clone.set((BOARD_SIZE - 1 - j, i))
-                }
-            }
-        }
-        clone
-    }
-
-    pub(crate) fn rotate90(&self) -> Self {
-        let mut clone = Self::empty();
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
-                if self.occupied((i, j)) {
-                    clone.set((j, BOARD_SIZE - 1 - i))
-                }
-            }
-        }
-        clone
-    }
-
-    pub(crate) fn rotate180(&self) -> Self {
-        let mut clone = Self::empty();
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
-                if self.occupied((i, j)) {
-                    clone.set((BOARD_SIZE - 1 - i, BOARD_SIZE - 1 - j))
-                }
-            }
-        }
-        clone
-    }
-
-    pub(crate) fn mirror_horizontal(&self) -> Self {
-        let mut clone = Self::empty();
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
-                if self.occupied((i, j)) {
-                    clone.set((i, BOARD_SIZE - 1 - j))
-                }
-            }
-        }
-        clone
-    }
-
-    pub(crate) fn mirror_vertical(&self) -> Self {
-        let mut clone = Self::empty();
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
-                if self.occupied((i, j)) {
-                    clone.set((BOARD_SIZE - 1 - i, j))
-                }
-            }
-        }
-        clone
-    }
-
-    pub(crate) fn mirror_bl_tr(&self) -> Self {
-        let mut clone = Self::empty();
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
-                if self.occupied((i, j)) {
-                    clone.set((BOARD_SIZE - 1 - j, BOARD_SIZE - 1 - i))
-                }
-            }
-        }
-        clone
-    }
-
-    pub(crate) fn mirror_tl_br(&self) -> Self {
-        let mut clone = Self::empty();
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
-                if self.occupied((i, j)) {
-                    clone.set((j, i))
-                }
-            }
-        }
-        clone
-    }
-
-    pub(crate) fn symmetries(&self) -> [Self; 8] {
+    pub fn symmetries(&self) -> [Self; 8] {
         let mut arr = [self.clone(); 8];
+        let mut rotate_90 = Self::empty();
+        let mut rotate_180 = Self::empty();
+        let mut rotate_270 = Self::empty();
+        let mut mirror_vertically = Self::empty();
+        let mut mirror_horizontally = Self::empty();
+        let mut mirror_bl_tr = Self::empty();
+        let mut mirror_tl_br = Self::empty();
+
+        for i in 0..BOARD_SIZE {
+            for j in 0..BOARD_SIZE {
+                if self.occupied((i, j)) {
+                    rotate_90.set((j, BOARD_SIZE - 1 - i));
+                    rotate_180.set((BOARD_SIZE - 1 - i, BOARD_SIZE - 1 - j));
+                    rotate_270.set((BOARD_SIZE - 1 - j, i));
+                    mirror_vertically.set((BOARD_SIZE - 1 - i, j));
+                    mirror_horizontally.set((i, BOARD_SIZE - 1 - j));
+                    mirror_bl_tr.set((BOARD_SIZE - 1 - j, BOARD_SIZE - 1 - i));
+                    mirror_tl_br.set((j, i));
+                }
+            }
+        }
         arr[0] = *self;
-        arr[1] = self.rotate90();
-        arr[2] = self.rotate180();
-        arr[3] = self.rotate270();
-        arr[4] = self.mirror_vertical();
-        arr[5] = self.mirror_horizontal();
-        arr[6] = self.mirror_bl_tr();
-        arr[7] = self.mirror_tl_br();
+        arr[1] = rotate_90;
+        arr[2] = rotate_180;
+        arr[3] = rotate_270;
+        arr[4] = mirror_vertically;
+        arr[5] = mirror_horizontally;
+        arr[6] = mirror_bl_tr;
+        arr[7] = mirror_tl_br;
         arr
     }
 }

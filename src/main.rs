@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use bevy::{
     ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
@@ -11,9 +13,14 @@ use bevy_vector_shapes::{
     shapes::{DiscPainter, LinePainter, ThicknessType},
 };
 use futures_lite::future::{self, block_on};
-use solitaire_solver::{BOARD_SIZE, Board, Dir, Solution, SolutionDag};
+use solitaire_solver::{BOARD_SIZE, Board, Dir};
 
 fn main() {
+    let solve_only = std::env::args().any(|a| &a == "-s");
+    if solve_only {
+        solitaire_solver::calculate_all_solutions();
+        return;
+    }
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -54,7 +61,7 @@ struct BoardComponent {
 
 #[derive(Component)]
 struct SolutionComponent {
-    solution: SolutionDag,
+    solutions: HashSet<u64>,
 }
 
 #[derive(Component)]
@@ -73,16 +80,14 @@ fn calculate_solution_dag(mut commands: Commands) {
     let thread_pool = AsyncComputeTaskPool::get();
     let entity = commands.spawn_empty().id();
     let task = thread_pool.spawn(async move {
-        let mut solution_dag = SolutionDag::new(Board::default());
-        let mut current = Solution::default();
-        solitaire_solver::solve_all(Board::default(), &mut current, &mut solution_dag);
+        let all_solutions = solitaire_solver::calculate_all_solutions();
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world
                 .entity_mut(entity)
                 .remove::<SolutionComputation>()
                 .insert(SolutionComponent {
-                    solution: solution_dag,
+                    solutions: all_solutions,
                 });
         });
         command_queue
@@ -218,7 +223,7 @@ fn draw_possible_moves(
     let Ok(solution) = solution_dag.single() else {
         return;
     };
-    let solution = &solution.solution;
+    let solution = &solution.solutions;
     let board = board.single().expect("board").board;
     for y in 0..BOARD_SIZE {
         for x in 0..BOARD_SIZE {
@@ -241,9 +246,7 @@ fn draw_possible_moves(
                         },
                         2.,
                     );
-                    let new_board = board.mov(mov);
-                    let solvable = solution.has_solution(new_board);
-                    painter.set_color(if solvable {
+                    painter.set_color(if solvable(board.mov(mov), solution) {
                         Color::srgba(0., 1., 0., 1.)
                     } else {
                         Color::srgba(1., 0., 0., 1.)
@@ -258,6 +261,10 @@ fn draw_possible_moves(
             }
         }
     }
+}
+
+fn solvable(board: Board, solutions: &HashSet<u64>) -> bool {
+    board.symmetries().iter().any(|b| solutions.contains(&b.0))
 }
 
 fn peg_selection(
@@ -294,8 +301,7 @@ fn peg_selection(
                         // update board
                         board.board = board.board.mov(mov);
                         if let Ok(sol) = solution_graph.single() {
-                            let solvable = sol.solution.has_solution(board.board);
-                            if !solvable {
+                            if !solvable(board.board, &sol.solutions) {
                                 board_background.single_mut().unwrap().col =
                                     Color::srgb(1., 0., 0.);
                             }
