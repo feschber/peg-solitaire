@@ -46,7 +46,42 @@ impl Default for Board {
     }
 }
 
+#[test]
+fn test_compression() {
+    let mut board = Board::default();
+    board.set((3, 3));
+    let compressed = board.to_compressed_repr();
+    assert_eq!(compressed, 0x1_ffff_ffff);
+    println!("{:b}", compressed);
+    println!("{:b}", board.0);
+    let decompressed = Board::from_compressed_repr(compressed);
+    println!("{:b}", decompressed.0);
+    assert_eq!(decompressed, board);
+}
+
 impl Board {
+    pub fn to_compressed_repr(&self) -> u64 {
+        let board = self.0;
+        (board & (0x7 << 2)) >> 2
+            | (board & (0x7 << 10)) >> (10 - 3)
+            | (board & (0x7f << 16)) >> (16 - 6)
+            | (board & (0x7f << 24)) >> (24 - (6 + 7))
+            | (board & (0x7f << 32)) >> (32 - (6 + 14))
+            | (board & (0x7 << 42)) >> (42 - (6 + 21))
+            | (board & (0x7 << 50)) >> (50 - (6 + 21 + 3))
+    }
+
+    pub fn from_compressed_repr(compressed: u64) -> Self {
+        let board = (compressed & 0x7) << 2
+            | (compressed & (0x7 << 3)) << (8 + 2 - 3)
+            | (compressed & (0x7f << 6)) << (16 - 6)
+            | (compressed & (0x7f << 6 + 7)) << (24 - (6 + 7))
+            | (compressed & (0x7f << 6 + 14)) << (32 - (6 + 14))
+            | (compressed & (0x7 << 6 + 21)) << (42 - (6 + 21))
+            | (compressed & (0x7 << 6 + 21 + 3)) << (50 - (6 + 21 + 3));
+        Board(board)
+    }
+
     pub(crate) fn normalize(&self) -> Self {
         let normalized = self.symmetries().map(|s| s.0).into_iter().min().unwrap();
         Board { 0: normalized }
@@ -69,7 +104,8 @@ impl Board {
     }
 
     /// the game is not solvable, if none of the marked fields contain a ball:
-    ///  ```
+    ///
+    ///  ```no_run
     ///        .  .  .
     ///        .  x  .
     ///  .  .  .  .  .  .  .

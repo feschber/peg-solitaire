@@ -10,10 +10,20 @@ edition = "2024"
 bevy = {version = "0.16.1", features = ["wayland"]}
 bevy_vector_shapes = "0.10.0"
 futures-lite = "2.6.0"
-solitaire-solver = { path = "./solitaire-solver", version = "0.0.1"}
+solitaire-solver = { path = "./solitaire-solver", version = "0.0.1", features = ["precalculate"]}
+
+[build-dependencies]
+solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
 
 [profile.release]
-lto = "thin"
 codegen-units = 1
 panic = "abort"
+opt-level = 3
+strip = true
+
+[profile.dev.build-override]
+opt-level = 3
+debug = false
+
+[profile.release.build-override]
 opt-level = 3

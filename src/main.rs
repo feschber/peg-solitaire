@@ -61,7 +61,7 @@ struct BoardComponent {
 
 #[derive(Component)]
 struct SolutionComponent {
-    solutions: HashSet<u64>,
+    solutions: HashSet<Board>,
 }
 
 #[derive(Component)]
@@ -80,7 +80,7 @@ fn calculate_solution_dag(mut commands: Commands) {
     let thread_pool = AsyncComputeTaskPool::get();
     let entity = commands.spawn_empty().id();
     let task = thread_pool.spawn(async move {
-        let all_solutions = solitaire_solver::calculate_all_solutions();
+        let all_solutions = solitaire_solver::load_solutions();
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world
@@ -263,8 +263,8 @@ fn draw_possible_moves(
     }
 }
 
-fn solvable(board: Board, solutions: &HashSet<u64>) -> bool {
-    board.symmetries().iter().any(|b| solutions.contains(&b.0))
+fn solvable(board: Board, solutions: &HashSet<Board>) -> bool {
+    board.symmetries().iter().any(|b| solutions.contains(b))
 }
 
 fn peg_selection(

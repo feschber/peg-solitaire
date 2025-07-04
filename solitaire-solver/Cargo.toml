@@ -3,3 +3,10 @@ name = "solitaire-solver"
 description = "A solver for Peg Solitaire"
 version = "0.0.1"
 edition = "2024"
+
+[dependencies]
+brotli = "8.0.1"
+
+[features]
+default = []
+precalculate = []
