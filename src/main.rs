@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, u64};
 
 use bevy::{
     ecs::world::CommandQueue,
@@ -267,7 +267,68 @@ fn solvable(board: Board, solutions: &HashSet<Board>) -> bool {
     board.symmetries().iter().any(|b| solutions.contains(b))
 }
 
-fn peg_selection(
+fn handle_click(
+    commands: &mut Commands,
+    pegs: Query<Entity, With<Selectable>>,
+    positions: &mut Query<(&mut BoardPosition, &mut Position)>,
+    follow_mouse: Query<&FollowMouse>,
+    board: &mut Query<&mut BoardComponent>,
+    solution_graph: Query<&SolutionComponent>,
+    board_background: &mut Query<&mut ColorComp, With<BoardMarker>>,
+    cursor_pos: Vec3,
+) {
+    let nearest_peg = screen_to_board(Position { pos: cursor_pos });
+    let mut board = board.single_mut().expect("board");
+    println!("mouse pos: {cursor_pos}");
+    for entity in pegs {
+        if let Ok((mut board_pos, mut position)) = positions.get_mut(entity) {
+            let mut entity_commands = commands.entity(entity);
+            if follow_mouse.contains(entity) {
+                entity_commands.remove::<FollowMouse>();
+                entity_commands.insert(SnapToBoardPosition);
+                position.pos.z = 1.;
+
+                // allow swapping pegs
+                let current = (board_pos.y, board_pos.x);
+                let destination = (nearest_peg.y, nearest_peg.x);
+                println!("{current:?} -> {destination:?}");
+                if board.board.occupied(destination) {
+                    // *board_pos = nearest_peg;
+                } else if let Some(mov) = board.board.is_legal_move(current, destination) {
+                    println!("{mov}");
+                    // update board
+                    board.board = board.board.mov(mov);
+                    if let Ok(sol) = solution_graph.single() {
+                        if !solvable(board.board, &sol.solutions) {
+                            board_background.single_mut().unwrap().col = Color::srgb(1., 0., 0.);
+                        }
+                    }
+                    // update peg position
+                    board_pos.y = destination.0;
+                    board_pos.x = destination.1;
+                    // remove skipped peg
+                    for peg in pegs {
+                        if let Ok((b, _)) = positions.get(peg) {
+                            if b.y == mov.skip.0 && b.x == mov.skip.1 {
+                                commands.entity(peg).despawn();
+                            }
+                        }
+                    }
+                } else {
+                    println!("illegal move!");
+                }
+            } else {
+                if *board_pos == nearest_peg {
+                    entity_commands.insert(FollowMouse);
+                    entity_commands.remove::<SnapToBoardPosition>();
+                    position.pos.z = 3.;
+                }
+            }
+        }
+    }
+}
+
+fn peg_selection_cursor(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
     pegs: Query<Entity, With<Selectable>>,
@@ -279,58 +340,57 @@ fn peg_selection(
 ) {
     if let Some(cursor_pos) = window.cursor_position() {
         let cursor_pos = cursor_to_screen_space(cursor_pos, window.size());
-        let nearest_peg = screen_to_board(Position { pos: cursor_pos });
-        let mut board = board.single_mut().expect("board");
-        println!("mouse pos: {cursor_pos}");
-        for entity in pegs {
-            if let Ok((mut board_pos, mut position)) = positions.get_mut(entity) {
-                let mut entity_commands = commands.entity(entity);
-                if follow_mouse.contains(entity) {
-                    entity_commands.remove::<FollowMouse>();
-                    entity_commands.insert(SnapToBoardPosition);
-                    position.pos.z = 1.;
+        handle_click(
+            &mut commands,
+            pegs,
+            &mut positions,
+            follow_mouse,
+            &mut board,
+            solution_graph,
+            &mut board_background,
+            cursor_pos,
+        )
+    }
+}
 
-                    // allow swapping pegs
-                    let current = (board_pos.y, board_pos.x);
-                    let destination = (nearest_peg.y, nearest_peg.x);
-                    println!("{current:?} -> {destination:?}");
-                    if board.board.occupied(destination) {
-                        // *board_pos = nearest_peg;
-                    } else if let Some(mov) = board.board.is_legal_move(current, destination) {
-                        println!("{mov}");
-                        // update board
-                        board.board = board.board.mov(mov);
-                        if let Ok(sol) = solution_graph.single() {
-                            if !solvable(board.board, &sol.solutions) {
-                                board_background.single_mut().unwrap().col =
-                                    Color::srgb(1., 0., 0.);
-                            }
-                        }
-                        // update peg position
-                        board_pos.y = destination.0;
-                        board_pos.x = destination.1;
-                        // remove skipped peg
-                        for peg in pegs {
-                            if let Ok((b, _)) = positions.get(peg) {
-                                if b.y == mov.skip.0 && b.x == mov.skip.1 {
-                                    commands.entity(peg).despawn();
-                                }
-                            }
-                        }
-                    } else {
-                        println!("illegal move!");
-                    }
-                } else {
-                    if *board_pos == nearest_peg {
-                        entity_commands.insert(FollowMouse);
-                        entity_commands.remove::<SnapToBoardPosition>();
-                        position.pos.z = 1.;
-                    }
-                }
-            }
+fn peg_selection_touch(
+    mut commands: Commands,
+    window: Single<&Window, With<PrimaryWindow>>,
+    pegs: Query<Entity, With<Selectable>>,
+    mut positions: Query<(&mut BoardPosition, &mut Position)>,
+    follow_mouse: Query<&FollowMouse>,
+    mut board: Query<&mut BoardComponent>,
+    solution_graph: Query<&SolutionComponent>,
+    mut board_background: Query<&mut ColorComp, With<BoardMarker>>,
+    touches: Res<Touches>,
+    mut current_touch_id: Query<&mut CurrentTouchId>,
+) {
+    let mut current_touch_id = current_touch_id.single_mut().unwrap();
+    for touch in touches.iter() {
+        if touch.id() != current_touch_id.0 || touches.just_pressed(touch.id()) {
+            current_touch_id.0 = touch.id();
+            let cursor_pos = cursor_to_screen_space(touch.position(), window.size());
+            info!("touch position: {:?}", cursor_pos);
+            handle_click(
+                &mut commands,
+                pegs,
+                &mut positions,
+                follow_mouse,
+                &mut board,
+                solution_graph,
+                &mut board_background,
+                cursor_pos,
+            )
         }
     }
 }
+
+fn touch_hack(mut commands: Commands) {
+    commands.spawn(CurrentTouchId(u64::MAX));
+}
+
+#[derive(Component)]
+struct CurrentTouchId(u64);
 
 fn snap_to_board_grid(
     mut commands: Commands,
@@ -389,9 +449,9 @@ impl Plugin for PegSolitaire {
         app.add_systems(Update, follow_mouse);
         app.add_systems(
             Update,
-            peg_selection
-                .run_if(input_just_pressed(MouseButton::Left))
-                .chain(),
+            peg_selection_cursor.run_if(input_just_pressed(MouseButton::Left)),
         );
+        app.add_systems(Startup, touch_hack);
+        app.add_systems(Update, peg_selection_touch);
     }
 }
