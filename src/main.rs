@@ -1,4 +1,4 @@
-use std::{collections::HashSet, u64};
+use std::{collections::HashSet, f32::consts::PI, u64};
 
 use bevy::{
     ecs::world::CommandQueue,
@@ -103,7 +103,7 @@ fn poll_task(mut commands: Commands, mut solution_task: Query<&mut SolutionCompu
     }
 }
 
-fn board_to_screen_space(pos: BoardPosition, z: f32) -> Position {
+fn board_to_world_space(pos: BoardPosition, z: f32) -> Position {
     let offset = 2. * PEG_RADIUS as f32 + PEG_DIST as f32;
     let (x, y) = ((pos.x - 3) as f32, (pos.y - 3) as f32);
     let pos = Vec3::new(x * offset, -y * offset, z);
@@ -149,7 +149,7 @@ fn spawn_pegs(mut commands: Commands, board: Query<&BoardComponent>) {
             if Board::inbounds(pos) {
                 // spawn holes
                 commands.spawn((
-                    board_to_screen_space(BoardPosition { y, x }, -1.),
+                    board_to_world_space(BoardPosition { y, x }, -1.),
                     ColorComp {
                         col: Color::WHITE.with_luminance(0.07),
                     },
@@ -162,7 +162,7 @@ fn spawn_pegs(mut commands: Commands, board: Query<&BoardComponent>) {
             // spawn pegs
             if board.occupied((y, x)) {
                 let board_pos = BoardPosition { y, x };
-                let position = board_to_screen_space(board_pos, 0.);
+                let position = board_to_world_space(board_pos, 0.);
                 commands.spawn((
                     board_pos,
                     position,
@@ -176,9 +176,6 @@ fn spawn_pegs(mut commands: Commands, board: Query<&BoardComponent>) {
         }
     }
 }
-
-#[derive(Component)]
-struct Camera;
 
 const GOLDEN_RATIO: f32 = 1.618033988749;
 
@@ -232,14 +229,14 @@ fn draw_possible_moves(
                     continue;
                 }
                 if let Some(mov) = board.get_legal_move((y, x), dir) {
-                    let start = board_to_screen_space(
+                    let start = board_to_world_space(
                         BoardPosition {
                             x: mov.pos.1,
                             y: mov.pos.0,
                         },
                         2.,
                     );
-                    let target = board_to_screen_space(
+                    let target = board_to_world_space(
                         BoardPosition {
                             x: mov.target.1,
                             y: mov.target.0,
@@ -339,7 +336,7 @@ fn peg_selection_cursor(
     mut board_background: Query<&mut ColorComp, With<BoardMarker>>,
 ) {
     if let Some(cursor_pos) = window.cursor_position() {
-        let cursor_pos = cursor_to_screen_space(cursor_pos, window.size());
+        let cursor_pos = cursor_to_world_space(cursor_pos, window.size());
         handle_click(
             &mut commands,
             pegs,
@@ -369,7 +366,7 @@ fn peg_selection_touch(
     for touch in touches.iter() {
         if touch.id() != current_touch_id.0 || touches.just_pressed(touch.id()) {
             current_touch_id.0 = touch.id();
-            let cursor_pos = cursor_to_screen_space(touch.position(), window.size());
+            let cursor_pos = cursor_to_world_space(touch.position(), window.size());
             info!("touch position: {:?}", cursor_pos);
             handle_click(
                 &mut commands,
@@ -395,11 +392,11 @@ struct CurrentTouchId(u64);
 fn snap_to_board_grid(
     mut commands: Commands,
     pegs: Query<Entity, With<SnapToBoardPosition>>,
-    mut pos: Query<(&BoardPosition, &mut Position), With<SnapToBoardPosition>>,
+    mut pos: Query<(&BoardPosition, &mut Position, &mut Transform), With<SnapToBoardPosition>>,
 ) {
     for peg in pegs {
         if let Ok((board_pos, mut screen_pos)) = pos.get_mut(peg) {
-            let target = board_to_screen_space(*board_pos, 1.);
+            let target = board_to_world_space(*board_pos, 1.);
             let new_pos = lerp(*screen_pos, target, 0.2);
             *screen_pos = new_pos;
             if new_pos == target {
@@ -422,7 +419,7 @@ fn follow_mouse(
     if let Some(cursor_pos) = window.cursor_position() {
         for mut pos in positions {
             let z = pos.pos.z;
-            let mut destination = cursor_to_screen_space(cursor_pos, window.size());
+            let mut destination = cursor_to_world_space(cursor_pos, window.size());
             destination.z = z;
             let destination = Position { pos: destination };
             *pos = destination;
@@ -430,20 +427,90 @@ fn follow_mouse(
     }
 }
 
-fn cursor_to_screen_space(cursor_pos: Vec2, window_size: Vec2) -> Vec3 {
+fn cursor_to_world_space(cursor_pos: Vec2, window_size: Vec2) -> Vec3 {
     let pos = (cursor_pos - window_size / 2.) * (Vec2::X - Vec2::Y);
     Vec3::new(pos.x, pos.y, 0.)
+}
+
+fn camera_setup_3d(mut commands: Commands /*  asset_server: &AssetServer */) {
+    commands.spawn((
+        Camera3d::default(),
+        Camera {
+            hdr: true,
+            ..default()
+        },
+        Transform::from_xyz(10., 16., 16.).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
+        DistanceFog {
+            color: Color::srgb_u8(43, 44, 47),
+            falloff: FogFalloff::Linear {
+                start: 10.,
+                end: 50.,
+            },
+            ..default()
+        },
+        // EnvironmentMapLight {
+        //     diffuse_map: asset_server.load("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"),
+        //     specular_map: asset_server.load("environment_maps/pisa_specular_rgb9e5_zstd.ktx2"),
+        //     intensity: 2000.0,
+        //     ..default()
+        // },
+    ));
+}
+
+fn setup_3d_meshes(
+    mut commands: Commands,
+    pegs: Query<(&Position, &ColorComp), With<BoardPosition>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    // commands.spawn((
+    //     PointLight {
+    //         intensity: 15_000_000.0,
+    //         shadows_enabled: true,
+    //         ..default()
+    //     },
+    //     Transform::from_xyz(5.0, 9.0, -2.),
+    // ));
+    commands.spawn((
+        DirectionalLight {
+            illuminance: light_consts::lux::OVERCAST_DAY,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform {
+            translation: Vec3::new(0.0, 0.0, 0.0),
+            rotation: Quat::from_rotation_x(-2.5 * PI / 4.),
+            ..default()
+        },
+    ));
+    for peg in pegs {
+        let mut pos = Vec3::new(peg.0.pos.x, 0., peg.0.pos.y);
+        pos *= 0.03;
+        pos.y = 0.3;
+        let sphere = Mesh3d(meshes.add(Sphere::new(1.)));
+        let transform = Transform::from_translation(pos);
+        let mesh = MeshMaterial3d(materials.add(peg.1.col));
+        commands.spawn((sphere, transform, mesh));
+    }
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(30.0, 30.0))),
+        MeshMaterial3d(materials.add(Color::srgb(0.8, 0.8, 0.8))),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+    ));
 }
 
 struct PegSolitaire;
 
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (setup_board, spawn_pegs).chain());
-        app.add_systems(Startup, camera_setup);
+        app.add_systems(
+            Startup,
+            (setup_board, spawn_pegs, setup_3d_meshes, camera_setup_3d).chain(),
+        );
+        // app.add_systems(Startup, camera_setup);
         app.add_systems(Startup, calculate_solution_dag);
         app.add_systems(Update, poll_task);
-        app.add_systems(Update, draw_circles);
+        // app.add_systems(Update, draw_circles);
         app.add_systems(Update, draw_possible_moves);
         app.add_systems(Update, snap_to_board_grid);
         app.add_systems(Update, follow_mouse);
