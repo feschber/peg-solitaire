@@ -76,11 +76,11 @@ impl Default for BoardComponent {
     }
 }
 
-fn calculate_solution_dag(mut commands: Commands) {
+fn create_solution_dag(mut commands: Commands) {
     let thread_pool = AsyncComputeTaskPool::get();
     let entity = commands.spawn_empty().id();
     let task = thread_pool.spawn(async move {
-        let all_solutions = solitaire_solver::load_solutions();
+        let all_solutions = solution_cache::load_solutions();
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world
@@ -395,7 +395,7 @@ fn snap_to_board_grid(
     mut pos: Query<(&BoardPosition, &mut Position, &mut Transform), With<SnapToBoardPosition>>,
 ) {
     for peg in pegs {
-        if let Ok((board_pos, mut screen_pos)) = pos.get_mut(peg) {
+        if let Ok((board_pos, mut screen_pos, _)) = pos.get_mut(peg) {
             let target = board_to_world_space(*board_pos, 1.);
             let new_pos = lerp(*screen_pos, target, 0.2);
             *screen_pos = new_pos;
@@ -508,7 +508,7 @@ impl Plugin for PegSolitaire {
             (setup_board, spawn_pegs, setup_3d_meshes, camera_setup_3d).chain(),
         );
         // app.add_systems(Startup, camera_setup);
-        app.add_systems(Startup, calculate_solution_dag);
+        app.add_systems(Startup, create_solution_dag);
         app.add_systems(Update, poll_task);
         // app.add_systems(Update, draw_circles);
         app.add_systems(Update, draw_possible_moves);

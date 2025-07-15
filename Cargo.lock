@@ -3368,6 +3368,7 @@ dependencies = [
  "bevy_vector_shapes",
  "futures-lite",
  "solitaire-solver",
+ "solution-cache",
 ]
 
 [[package]]
@@ -3975,8 +3976,13 @@ dependencies = [
 [[package]]
 name = "solitaire-solver"
 version = "0.0.1"
+
+[[package]]
+name = "solution-cache"
+version = "0.0.1"
 dependencies = [
  "brotli",
+ "solitaire-solver",
 ]
 
 [[package]]
