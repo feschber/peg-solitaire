@@ -4,6 +4,7 @@ use bevy::{
     ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
     prelude::*,
+    render::mesh::{SphereKind, SphereMeshBuilder},
     tasks::{AsyncComputeTaskPool, Task},
     window::PrimaryWindow,
 };
@@ -483,14 +484,17 @@ fn setup_3d_meshes(
             ..default()
         },
     ));
+    let sphere = Mesh3d(
+        meshes.add(SphereMeshBuilder::new(1.0, SphereKind::Ico { subdivisions: 10 }).build()),
+    );
     for peg in pegs {
         let mut pos = Vec3::new(peg.0.pos.x, 0., peg.0.pos.y);
         pos *= 0.03;
         pos.y = 0.3;
-        let sphere = Mesh3d(meshes.add(Sphere::new(1.)));
+        // let sphere = Mesh3d(meshes.add(Sphere::new(1.)));
         let transform = Transform::from_translation(pos);
         let mesh = MeshMaterial3d(materials.add(peg.1.col));
-        commands.spawn((sphere, transform, mesh));
+        commands.spawn((sphere.clone(), transform, mesh));
     }
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(30.0, 30.0))),
@@ -521,4 +525,29 @@ impl Plugin for PegSolitaire {
         app.add_systems(Startup, touch_hack);
         app.add_systems(Update, peg_selection_touch);
     }
+}
+
+#[inline]
+fn board_to_world_matrix() -> Mat4 {
+    Mat4::from_translation(Vec3::new(-3., -3., 0.))
+}
+
+#[inline]
+fn world_to_board() -> Mat4 {
+    board_to_world_matrix().inverse()
+}
+
+fn world_to_screen_2d(screen_size: Vec2) -> Mat4 {
+    let scale = screen_size.x.min(screen_size.y);
+    let scale = Vec3::from((scale, scale, 1.0));
+    Mat4::from_scale(scale)
+}
+
+fn board_to_world(row: usize, column: usize) -> Vec4 {
+    let board_pos = Vec2::new(row as f32, column as f32);
+    board_to_world_matrix() * Vec4::from((board_pos, 0.0, 1.0))
+}
+
+fn world_to_screen(board_pos: Vec4) -> Vec4 {
+    let
 }

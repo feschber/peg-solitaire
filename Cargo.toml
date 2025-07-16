@@ -14,6 +14,7 @@ solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
 solution-cache =  { path = "./solution-cache", version = "0.0.1" }
 
 [profile.release]
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 opt-level = 3
