@@ -8,7 +8,6 @@ pub use dir::Dir;
 use mov::Move;
 pub use solution::Solution;
 
-#[allow(unused)]
 fn solve(board: Board, solution: &mut Solution) -> bool {
     if board.is_solved() {
         return true;
@@ -95,6 +94,12 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     solvable_configurations
 }
 
+pub fn calculate_first_solution() -> Solution {
+    let mut solution = Default::default();
+    solve(Board::default(), &mut solution);
+    solution
+}
+
 /// forward enumeration
 fn solve_all(
     board: Board,
@@ -143,8 +148,7 @@ fn solve_all(
     any_solution
 }
 
-#[allow(unused)]
-fn print_solution(solution: Solution) {
+pub fn print_solution(solution: Solution) {
     let mut board = Board::default();
     println!("{board}");
     for mov in solution {
