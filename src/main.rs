@@ -1,14 +1,10 @@
 fn main() {
-    let solve_all = std::env::args().any(|a| &a == "-a");
-    let solve_first = std::env::args().any(|a| &a == "-s");
-    if solve_all {
+    if std::env::args().any(|a| &a == "-a") {
         solitaire_solver::calculate_all_solutions();
-        return;
-    }
-    if solve_first {
+    } else if std::env::args().any(|a| &a == "-s") {
         let solution = solitaire_solver::calculate_first_solution();
         solitaire_solver::print_solution(solution);
-        return;
+    } else {
+        solitaire_game::run();
     }
-    solitaire_game::run();
 }

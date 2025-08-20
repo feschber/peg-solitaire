@@ -66,15 +66,9 @@ impl BitSet {
 }
 
 pub fn calculate_all_solutions() -> Vec<Board> {
-    let mut current = Solution::default();
     let mut solvable = BitSet::new();
     let mut already_checked = BitSet::new();
-    solve_all(
-        Board::default(),
-        &mut current,
-        &mut already_checked,
-        &mut solvable,
-    );
+    solve_all(Board::default(), &mut already_checked, &mut solvable);
     let total = already_checked.count();
     let mut solvable_configurations = Vec::new();
     for i in 0..8_589_934_592 {
@@ -101,12 +95,7 @@ pub fn calculate_first_solution() -> Solution {
 }
 
 /// forward enumeration
-fn solve_all(
-    board: Board,
-    current: &mut Solution,
-    already_checked: &mut BitSet,
-    solvable: &mut BitSet,
-) -> bool {
+fn solve_all(board: Board, already_checked: &mut BitSet, solvable: &mut BitSet) -> bool {
     let compressed = board.to_compressed_repr();
     // board is solved
     if board.is_solved() {
@@ -129,14 +118,8 @@ fn solve_all(
             for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
                 if let Some(mov) = board.get_legal_move((y, x), dir) {
                     // println!("moving {:?} -> {dir:?}", (y, x));
-                    current.push(mov);
-                    any_solution |= solve_all(
-                        board.mov(mov).normalize(),
-                        current,
-                        already_checked,
-                        solvable,
-                    );
-                    current.pop();
+                    any_solution |=
+                        solve_all(board.mov(mov).normalize(), already_checked, solvable);
                 }
             }
         }
