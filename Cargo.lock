@@ -3389,9 +3389,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 name = "peg-solitaire"
 version = "0.1.0"
 dependencies = [
- "bevy",
- "bevy_vector_shapes",
- "futures-lite",
+ "solitaire-game",
  "solitaire-solver",
  "solution-cache",
 ]
@@ -3996,6 +3994,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "solitaire-game"
+version = "0.0.1"
+dependencies = [
+ "bevy",
+ "bevy_vector_shapes",
+ "futures-lite",
+ "solitaire-solver",
+ "solution-cache",
 ]
 
 [[package]]
