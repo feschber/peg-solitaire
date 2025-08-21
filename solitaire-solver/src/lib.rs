@@ -20,7 +20,7 @@ fn solve(board: Board, solution: &mut Solution) -> bool {
             if !board.occupied((y, x)) {
                 continue;
             }
-            for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
+            for dir in Dir::enumerate() {
                 if let Some(mov) = board.get_legal_move((y, x), dir) {
                     solution.push(mov);
                     if solve(board.mov(mov), solution) {

@@ -91,6 +91,12 @@ impl Board {
         Self { 0: 0 }
     }
 
+    pub fn solved() -> Self {
+        let mut board = Self::empty();
+        board.set((3, 3));
+        board
+    }
+
     pub fn count_balls(&self) -> u64 {
         self.0.count_ones() as u64
     }
@@ -145,6 +151,20 @@ impl Board {
         board
     }
 
+    pub fn reverse_mov(&self, mov: Move) -> Board {
+        let mut board = *self;
+        debug_assert!(Self::inbounds(mov.pos));
+        debug_assert!(Self::inbounds(mov.skip));
+        debug_assert!(Self::inbounds(mov.target));
+        debug_assert!(!self.occupied(mov.pos));
+        debug_assert!(!self.occupied(mov.skip));
+        debug_assert!(self.occupied(mov.target));
+        board.set(mov.pos);
+        board.set(mov.skip);
+        board.unset(mov.target);
+        board
+    }
+
     #[inline(always)]
     pub fn occupied(&self, pos: (Idx, Idx)) -> bool {
         let (y, x) = pos;
@@ -179,6 +199,16 @@ impl Board {
         debug_assert!(Self::inbounds(pos));
         let (skip, target) = dir.mov(pos);
         if Self::inbounds(target) && self.occupied(skip) && !self.occupied(target) {
+            Some(Move { pos, skip, target })
+        } else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub fn get_legal_inverse_move(&self, pos: (Idx, Idx), dir: Dir) -> Option<Move> {
+        let (skip, target) = dir.mov(pos);
+        if Self::inbounds(target) && !self.occupied(skip) && self.occupied(target) {
             Some(Move { pos, skip, target })
         } else {
             None
