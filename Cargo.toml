@@ -7,13 +7,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-solitaire-game = { path = "./solitaire-game", version = "0.0.1" }
+rayon = "1.11.0"
+solitaire-game = { path = "./solitaire-game", version = "0.0.1", optional = true }
 solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
-solution-cache =  { path = "./solution-cache", version = "0.0.1" }
 
 [profile.release]
 lto = "thin"
-codegen-units = 1
+# codegen-units = 1
 panic = "abort"
 opt-level = 3
 strip = true
@@ -25,3 +25,8 @@ debug = false
 
 [profile.release.build-override]
 opt-level = 3
+
+[features]
+default = []
+game = ["dep:solitaire-game"]
+solution_cache = ["solitaire-game/solution_cache"]

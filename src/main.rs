@@ -5,6 +5,13 @@ fn main() {
         let solution = solitaire_solver::calculate_first_solution();
         solitaire_solver::print_solution(solution);
     } else {
+        #[cfg(feature = "game")]
         solitaire_game::run();
+
+        #[cfg(not(feature = "game"))]
+        {
+            eprintln!("\"game\" feature not enabled!");
+            std::process::exit(1)
+        }
     }
 }

@@ -31,4 +31,8 @@ impl Dir {
             Dir::East => ((y, x + 1), (y, x + 2)),
         }
     }
+
+    pub(crate) fn enumerate() -> [Self; 4] {
+        [Dir::North, Dir::East, Dir::South, Dir::West]
+    }
 }
