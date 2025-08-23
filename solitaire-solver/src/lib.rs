@@ -3,6 +3,8 @@ mod dir;
 mod mov;
 mod solution;
 
+use std::collections::HashSet;
+
 pub use board::{BOARD_SIZE, Board};
 pub use dir::Dir;
 use mov::Move;
@@ -34,58 +36,22 @@ fn solve(board: Board, solution: &mut Solution) -> bool {
     false
 }
 
-// 2^33
-const BIT_SET_SIZE_BITS: u64 = 8_589_934_592;
-const BIT_SET_CHUNKS: usize = (BIT_SET_SIZE_BITS / 64) as usize;
-struct BitSet {
-    bits: Box<[u64; BIT_SET_CHUNKS as usize]>,
-}
-
-impl BitSet {
-    fn new() -> Self {
-        let bits = Box::new([0u64; BIT_SET_CHUNKS as usize]);
-        Self { bits }
-    }
-    fn test(&self, idx: u64) -> bool {
-        let chunk = (idx / 64) as usize;
-        let offset = (idx % 64) as usize;
-        (self.bits[chunk] & (1 << offset)) != 0
-    }
-    fn set(&mut self, idx: u64) {
-        let chunk = (idx / 64) as usize;
-        let offset = (idx % 64) as usize;
-        self.bits[chunk] |= 1 << offset;
-    }
-    fn count(&self) -> u64 {
-        self.bits
-            .iter()
-            .copied()
-            .map(|c| c.count_ones() as u64)
-            .sum()
-    }
-}
-
 pub fn calculate_all_solutions() -> Vec<Board> {
-    let mut solvable = BitSet::new();
-    let mut already_checked = BitSet::new();
+    let mut solvable = HashSet::new();
+    let mut already_checked = HashSet::new();
     solve_all(Board::default(), &mut already_checked, &mut solvable);
-    let total = already_checked.count();
-    let mut solvable_configurations = Vec::new();
-    for i in 0..8_589_934_592 {
-        if solvable.test(i) {
-            solvable_configurations.push(Board::from_compressed_repr(i as u64));
-        }
-    }
+    let total = already_checked.len();
     // let solvable: HashSet<_> = solvable
     //     .into_iter()
     //     .filter_map(|(board, solvable)| if solvable { Some(board) } else { None })
     //     .collect();
-    let solvable = solvable_configurations.len();
+    let solvable_count = solvable.len();
+    assert_eq!(solvable_count, 1679073);
     println!(
-        "checked {total} constellations, {solvable} have a solution ({:.2}%)",
-        (solvable as f64 / total as f64) * 100.
+        "checked {total} constellations, {solvable_count} have a solution ({:.2}%)",
+        (solvable_count as f64 / total as f64) * 100.
     );
-    solvable_configurations
+    solvable.into_iter().collect()
 }
 
 pub fn calculate_first_solution() -> Solution {
@@ -95,18 +61,21 @@ pub fn calculate_first_solution() -> Solution {
 }
 
 /// forward enumeration
-fn solve_all(board: Board, already_checked: &mut BitSet, solvable: &mut BitSet) -> bool {
-    let compressed = board.to_compressed_repr();
+fn solve_all(
+    board: Board,
+    already_checked: &mut HashSet<Board>,
+    solvable: &mut HashSet<Board>,
+) -> bool {
     // board is solved
     if board.is_solved() {
-        solvable.set(compressed);
-        already_checked.set(compressed);
+        solvable.insert(board);
+        already_checked.insert(board);
         return true;
     }
 
     // found a known configuration
-    if already_checked.test(compressed) {
-        return solvable.test(compressed);
+    if already_checked.contains(&board) {
+        return solvable.contains(&board);
     }
 
     let mut any_solution = false;
@@ -124,9 +93,9 @@ fn solve_all(board: Board, already_checked: &mut BitSet, solvable: &mut BitSet) 
             }
         }
     }
-    already_checked.set(compressed);
+    already_checked.insert(board);
     if any_solution {
-        solvable.set(compressed);
+        solvable.insert(board);
     }
     any_solution
 }
