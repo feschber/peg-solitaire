@@ -3,9 +3,9 @@ mod dir;
 mod mov;
 mod solution;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, hash::Hash, iter::repeat};
 
-pub use board::{BOARD_SIZE, Board};
+pub use board::Board;
 pub use dir::Dir;
 use mov::Move;
 pub use solution::Solution;
@@ -17,8 +17,8 @@ fn solve(board: Board, solution: &mut Solution) -> bool {
     if !board.is_solvable() {
         return false;
     }
-    for y in 0..BOARD_SIZE {
-        for x in 0..BOARD_SIZE {
+    for y in 0..Board::SIZE {
+        for x in 0..Board::SIZE {
             if !board.occupied((y, x)) {
                 continue;
             }
@@ -37,67 +37,59 @@ fn solve(board: Board, solution: &mut Solution) -> bool {
 }
 
 pub fn calculate_all_solutions() -> Vec<Board> {
-    let mut solvable = HashSet::new();
-    let mut already_checked = HashSet::new();
-    solve_all(Board::default(), &mut already_checked, &mut solvable);
-    let total = already_checked.len();
-    // let solvable: HashSet<_> = solvable
-    //     .into_iter()
-    //     .filter_map(|(board, solvable)| if solvable { Some(board) } else { None })
-    //     .collect();
-    let solvable_count = solvable.len();
-    assert_eq!(solvable_count, 1679073);
-    println!(
-        "checked {total} constellations, {solvable_count} have a solution ({:.2}%)",
-        (solvable_count as f64 / total as f64) * 100.
-    );
-    solvable.into_iter().collect()
+    let board = Board::default();
+    let balls = board.count_balls();
+
+    // let mut solvable = Vec::from_iter(repeat(HashSet::new()).take(balls as usize + 1));
+    let mut visited = Vec::from_iter(repeat(HashSet::new()).take(balls as usize + 1));
+
+    visited[board.count_balls() as usize] = HashSet::from_iter([board]);
+    visited[Board::SLOTS - board.count_balls() as usize] = HashSet::from_iter([board.inverse()]);
+
+    for remaining in ((Board::SLOTS - 1) / 2 + 2..=Board::SLOTS - 1).rev() {
+        let [current, next, inverse] = visited
+            .get_disjoint_mut([remaining, remaining - 1, Board::SLOTS - (remaining - 1)])
+            .unwrap();
+        for board in current.iter() {
+            for mov in board.get_legal_moves() {
+                let new = board.mov(mov).normalize();
+                next.insert(new);
+                inverse.insert(new.inverse());
+            }
+        }
+    }
+
+    for remaining in (1..=(Board::SLOTS - 1) / 2 + 1).rev() {
+        let [current, next] = visited
+            .get_disjoint_mut([remaining, remaining - 1])
+            .unwrap();
+        // retain reachable moves
+        println!("current: {remaining}, next: {}", remaining - 1);
+        let legal_moves = current
+            .iter()
+            .flat_map(|s| {
+                s.get_legal_moves()
+                    .into_iter()
+                    .map(|m| s.mov(m).normalize())
+            })
+            .collect::<HashSet<_>>();
+        next.retain(|b| legal_moves.contains(b));
+    }
+
+    for (i, v) in visited.iter().enumerate() {
+        for b in v {
+            assert_eq!(b.count_balls() as usize, i);
+        }
+        println!("reachable at {i}: {}", v.len());
+    }
+
+    vec![]
 }
 
 pub fn calculate_first_solution() -> Solution {
     let mut solution = Default::default();
     solve(Board::default(), &mut solution);
     solution
-}
-
-/// forward enumeration
-fn solve_all(
-    board: Board,
-    already_checked: &mut HashSet<Board>,
-    solvable: &mut HashSet<Board>,
-) -> bool {
-    // board is solved
-    if board.is_solved() {
-        solvable.insert(board);
-        already_checked.insert(board);
-        return true;
-    }
-
-    // found a known configuration
-    if already_checked.contains(&board) {
-        return solvable.contains(&board);
-    }
-
-    let mut any_solution = false;
-    for y in 0..BOARD_SIZE {
-        for x in 0..BOARD_SIZE {
-            if !board.occupied((y, x)) {
-                continue;
-            }
-            for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
-                if let Some(mov) = board.get_legal_move((y, x), dir) {
-                    // println!("moving {:?} -> {dir:?}", (y, x));
-                    any_solution |=
-                        solve_all(board.mov(mov).normalize(), already_checked, solvable);
-                }
-            }
-        }
-    }
-    already_checked.insert(board);
-    if any_solution {
-        solvable.insert(board);
-    }
-    any_solution
 }
 
 pub fn print_solution(solution: Solution) {

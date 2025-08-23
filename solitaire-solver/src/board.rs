@@ -3,16 +3,13 @@ use std::fmt::{Display, Formatter, Write};
 use crate::{Dir, Move};
 pub(crate) type Idx = i64;
 
-pub const BOARD_SIZE: Idx = 7;
-const BOARD_REPR: Idx = 8;
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct Board(pub u64);
 
 impl Display for Board {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        for y in 0..BOARD_SIZE {
-            for x in 0..BOARD_SIZE {
+        for y in 0..Board::SIZE {
+            for x in 0..Board::SIZE {
                 let occupied = self.occupied((y, x));
                 let inbounds = Self::inbounds((y, x));
                 let c = match (occupied, inbounds) {
@@ -32,16 +29,8 @@ impl Display for Board {
 
 impl Default for Board {
     fn default() -> Self {
-        let mut board = Self(0);
-        for y in 0..BOARD_SIZE {
-            for x in 0..BOARD_SIZE {
-                let pos = (y, x);
-                if Self::inbounds(pos) {
-                    board.set(pos);
-                }
-            }
-        }
-        board.unset((BOARD_SIZE / 2, BOARD_SIZE / 2));
+        let mut board = Self::full();
+        board.unset((Board::SIZE / 2, Board::SIZE / 2));
         board
     }
 }
@@ -60,6 +49,23 @@ fn test_compression() {
 }
 
 impl Board {
+    pub const SLOTS: usize = 33;
+    pub const SIZE: Idx = 7;
+    const REPR: Idx = 8;
+
+    pub fn full() -> Self {
+        let mut board = Self(0);
+        for y in 0..Board::SIZE {
+            for x in 0..Board::SIZE {
+                let pos = (y, x);
+                if Self::inbounds(pos) {
+                    board.set(pos);
+                }
+            }
+        }
+        board
+    }
+
     pub fn to_compressed_repr(&self) -> u64 {
         let board = self.0;
         (board & (0x7 << 2)) >> 2
@@ -80,6 +86,11 @@ impl Board {
             | (compressed & (0x7 << 6 + 21)) << (42 - (6 + 21))
             | (compressed & (0x7 << 6 + 21 + 3)) << (50 - (6 + 21 + 3));
         Board(board)
+    }
+
+    pub fn inverse(&self) -> Board {
+        let full = Board::full();
+        Self(!self.0 & full.0)
     }
 
     pub(crate) fn normalize(&self) -> Self {
@@ -105,7 +116,7 @@ impl Board {
     pub fn is_solved(&self) -> bool {
         // exactly one bit is set
         self.0.is_power_of_two()
-        // const SOLUTION: u64 = 1 << (3 * BOARD_REPR + 3);
+        // const SOLUTION: u64 = 1 << (3 * Board::REPR + 3);
         // self.0 == SOLUTION
     }
 
@@ -127,7 +138,7 @@ impl Board {
             let mut i = 0;
             while i < POSITIONS.len() {
                 let (y, x) = POSITIONS[i];
-                let idx = y * BOARD_REPR + x;
+                let idx = y * Board::REPR + x;
                 vec |= 1 << idx;
                 i += 1;
             }
@@ -168,7 +179,7 @@ impl Board {
     #[inline(always)]
     pub fn occupied(&self, pos: (Idx, Idx)) -> bool {
         let (y, x) = pos;
-        let idx = y * BOARD_REPR + x;
+        let idx = y * Board::REPR + x;
         (self.0 & (1 << idx)) != 0
     }
 
@@ -176,7 +187,7 @@ impl Board {
     pub fn set(&mut self, pos: (Idx, Idx)) {
         debug_assert!(!self.occupied(pos));
         let (y, x) = pos;
-        let idx = y * BOARD_REPR + x;
+        let idx = y * Board::REPR + x;
         self.0 |= 1 << idx;
     }
 
@@ -184,7 +195,7 @@ impl Board {
     fn unset(&mut self, pos: (Idx, Idx)) {
         debug_assert!(self.occupied(pos));
         let (y, x) = pos;
-        let idx = y * BOARD_REPR + x;
+        let idx = y * Board::REPR + x;
         self.0 &= !(1 << idx);
     }
 
@@ -215,6 +226,22 @@ impl Board {
         }
     }
 
+    pub fn get_legal_moves(&self) -> Vec<Move> {
+        let mut legal_moves = Vec::new();
+        for y in 0..Board::SIZE {
+            for x in 0..Board::SIZE {
+                if self.occupied((y, x)) {
+                    for dir in Dir::enumerate() {
+                        if let Some(mov) = self.get_legal_move((y, x), dir) {
+                            legal_moves.push(mov);
+                        }
+                    }
+                }
+            }
+        }
+        legal_moves
+    }
+
     pub fn is_legal_move(&self, pos: (Idx, Idx), dst: (Idx, Idx)) -> Option<Move> {
         let dist_y = (pos.0 - dst.0).abs();
         let dist_x = (pos.1 - dst.1).abs();
@@ -242,15 +269,15 @@ impl Board {
         let mut mirror_bl_tr = Self::empty();
         let mut mirror_tl_br = Self::empty();
 
-        for i in 0..BOARD_SIZE {
-            for j in 0..BOARD_SIZE {
+        for i in 0..Board::SIZE {
+            for j in 0..Board::SIZE {
                 if self.occupied((i, j)) {
-                    rotate_90.set((j, BOARD_SIZE - 1 - i));
-                    rotate_180.set((BOARD_SIZE - 1 - i, BOARD_SIZE - 1 - j));
-                    rotate_270.set((BOARD_SIZE - 1 - j, i));
-                    mirror_vertically.set((BOARD_SIZE - 1 - i, j));
-                    mirror_horizontally.set((i, BOARD_SIZE - 1 - j));
-                    mirror_bl_tr.set((BOARD_SIZE - 1 - j, BOARD_SIZE - 1 - i));
+                    rotate_90.set((j, Board::SIZE - 1 - i));
+                    rotate_180.set((Board::SIZE - 1 - i, Board::SIZE - 1 - j));
+                    rotate_270.set((Board::SIZE - 1 - j, i));
+                    mirror_vertically.set((Board::SIZE - 1 - i, j));
+                    mirror_horizontally.set((i, Board::SIZE - 1 - j));
+                    mirror_bl_tr.set((Board::SIZE - 1 - j, Board::SIZE - 1 - i));
                     mirror_tl_br.set((j, i));
                 }
             }
@@ -274,5 +301,5 @@ fn in_mid_section(i: Idx) -> bool {
 
 #[inline(always)]
 fn in_whole_range(i: Idx) -> bool {
-    (0..BOARD_SIZE).contains(&i)
+    (0..Board::SIZE).contains(&i)
 }
