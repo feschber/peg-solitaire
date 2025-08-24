@@ -275,6 +275,7 @@ impl Board {
         }
     }
 
+    #[inline]
     fn reverse_rows(&self) -> Self {
         Self({
             let mut bytes = self.0.to_ne_bytes();
@@ -285,13 +286,12 @@ impl Board {
         })
     }
 
+    #[inline]
     fn reverse_cols(&self) -> Self {
-        #[cfg(target_endian = "little")]
-        return Self(self.0.to_be() >> 8);
-        #[cfg(target_endian = "big")]
-        return Self(self.0.to_le() >> 8);
+        Self(self.0.swap_bytes() >> 8)
     }
 
+    #[inline]
     fn rotate_180(&self) -> Self {
         let x = self.0.reverse_bits();
         let mut bytes = (x >> 8).to_ne_bytes();
@@ -301,6 +301,7 @@ impl Board {
         Self(u64::from_ne_bytes(bytes))
     }
 
+    #[inline]
     fn transpose(&self) -> Self {
         // I have 0 clue, why this works
         let mut x = self.0;
