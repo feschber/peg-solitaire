@@ -3,7 +3,7 @@ mod dir;
 mod mov;
 mod solution;
 
-use std::{collections::HashSet, hash::Hash, iter::repeat};
+use std::{collections::HashSet, iter::repeat};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -54,7 +54,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
             for mov in board.get_legal_moves() {
                 let new = board.mov(mov).normalize();
                 next.insert(new);
-                inverse.insert(new.inverse());
+                inverse.insert(new.inverse().normalize());
             }
         }
     }
