@@ -80,15 +80,8 @@ fn reverse_moves<'a>(states: impl IntoIterator<Item = &'a Board>) -> HashSet<Boa
 pub fn calculate_all_solutions() -> Vec<Board> {
     let mut visited = vec![vec![], vec![Board::solved()]];
 
-    println!("possible constellations with {:>2} pegs: {:>7}", 1, 1);
-
-    for i in 1..=(Board::SLOTS - 1) / 2 - 1 {
+    for i in 1..(Board::SLOTS - 1) / 2 {
         let mut constellations: Vec<Board> = reverse_moves(&visited[i]).into_iter().collect();
-        println!(
-            "possible constellations with {:>2} pegs: {:>7}",
-            i + 1,
-            constellations.len()
-        );
         constellations.sort_by_key(|b| b.0);
         visited.push(constellations);
     }
@@ -99,20 +92,10 @@ pub fn calculate_all_solutions() -> Vec<Board> {
             .map(|b| b.inverse().normalize())
             .collect(),
     );
-    println!(
-        "possible constellations with {:>2} pegs: {:>7}",
-        visited.len() - 1,
-        visited[visited.len() - 1].len()
-    );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let legal_moves = possible_moves(&visited[remaining]);
         visited[remaining - 1].retain(|b| legal_moves.contains(b));
-        println!(
-            "solvable constellations with {:>2} pegs: {:>7}",
-            remaining - 1,
-            visited[remaining - 1].len()
-        );
     }
 
     let solvable: Vec<Board> = visited

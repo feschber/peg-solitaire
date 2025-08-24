@@ -7,24 +7,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rayon = "1.11.0"
 solitaire-game = { path = "./solitaire-game", version = "0.0.1", optional = true }
 solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
 
-[profile.release]
-# lto = "thin"
-# codegen-units = 1
-panic = "abort"
-opt-level = 3
-# strip = true
-
 # run build.rs in release mode, otherwise it takes 100 years
 [profile.dev.build-override]
-opt-level = 3
+opt-level = 2
 debug = false
 
 [profile.release.build-override]
-opt-level = 3
+opt-level = 2
 
 [features]
 default = []
