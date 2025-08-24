@@ -41,37 +41,56 @@ pub fn calculate_first_solution() -> Solution {
     solution
 }
 
-pub fn calculate_all_solutions() -> Vec<Board> {
-    let mut visited = vec![
-        // constellations with zero pegs
-        HashSet::new(),
-        // constellations with one pegs
-        HashSet::from_iter([Board::default().inverse()]),
-    ];
-
-    println!("possible constellations with {:>2} pegs: {:>7}", 1, 1);
-
-    for i in 1..=(Board::SLOTS - 1) / 2 - 1 {
-        let mut possible_moves = HashSet::new();
-        for board in visited[i].iter() {
-            for y in 0..Board::SIZE {
-                for x in 0..Board::SIZE {
-                    if board.occupied((y, x)) {
-                        for dir in Dir::enumerate() {
-                            if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
-                                possible_moves.insert(board.reverse_mov(mov).normalize());
-                            }
+fn possible_moves<'a>(states: impl IntoIterator<Item = &'a Board>) -> HashSet<Board> {
+    let mut legal_moves = HashSet::new();
+    for board in states {
+        for y in 0..Board::SIZE {
+            for x in 0..Board::SIZE {
+                if board.occupied((y, x)) {
+                    for dir in Dir::enumerate() {
+                        if let Some(mov) = board.get_legal_move((y, x), dir) {
+                            legal_moves.insert(board.mov(mov).normalize());
                         }
                     }
                 }
             }
         }
+    }
+    legal_moves
+}
+
+fn reverse_moves<'a>(states: impl IntoIterator<Item = &'a Board>) -> HashSet<Board> {
+    let mut constellations = HashSet::new();
+    for board in states {
+        for y in 0..Board::SIZE {
+            for x in 0..Board::SIZE {
+                if board.occupied((y, x)) {
+                    for dir in Dir::enumerate() {
+                        if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
+                            constellations.insert(board.reverse_mov(mov).normalize());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    constellations
+}
+
+pub fn calculate_all_solutions() -> Vec<Board> {
+    let mut visited = vec![vec![], vec![Board::solved()]];
+
+    println!("possible constellations with {:>2} pegs: {:>7}", 1, 1);
+
+    for i in 1..=(Board::SLOTS - 1) / 2 - 1 {
+        let mut constellations: Vec<Board> = reverse_moves(&visited[i]).into_iter().collect();
         println!(
             "possible constellations with {:>2} pegs: {:>7}",
             i + 1,
-            possible_moves.len()
+            constellations.len()
         );
-        visited.push(possible_moves);
+        constellations.sort_by_key(|b| b.0);
+        visited.push(constellations);
     }
 
     visited.push(
@@ -87,29 +106,12 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let [current, next] = visited
-            .get_disjoint_mut([remaining, remaining - 1])
-            .unwrap();
-        // retain reachable moves
-        let mut legal_moves = HashSet::new();
-        for board in current.iter() {
-            for y in 0..Board::SIZE {
-                for x in 0..Board::SIZE {
-                    if board.occupied((y, x)) {
-                        for dir in Dir::enumerate() {
-                            if let Some(mov) = board.get_legal_move((y, x), dir) {
-                                legal_moves.insert(board.mov(mov).normalize());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        next.retain(|b| legal_moves.contains(b));
+        let legal_moves = possible_moves(&visited[remaining]);
+        visited[remaining - 1].retain(|b| legal_moves.contains(b));
         println!(
             "solvable constellations with {:>2} pegs: {:>7}",
             remaining - 1,
-            next.len()
+            visited[remaining - 1].len()
         );
     }
 
