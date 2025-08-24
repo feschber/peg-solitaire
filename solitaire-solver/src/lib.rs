@@ -42,15 +42,13 @@ pub fn calculate_first_solution() -> Solution {
 }
 
 pub fn calculate_all_solutions() -> Vec<Board> {
-    let board = Board::default();
+    let mut visited = vec![
+        // constellations with zero pegs
+        HashSet::new(),
+        // constellations with one pegs
+        HashSet::from_iter([Board::default().inverse()]),
+    ];
 
-    // let mut solvable = Vec::from_iter(repeat(HashSet::new()).take(balls as usize + 1));
-    let mut visited = vec![];
-
-    // constellations with zero pegs
-    visited.push(HashSet::new());
-    // constellations with one peg
-    visited.push(HashSet::from_iter([board.inverse()]));
     println!("possible constellations with {:>2} pegs: {:>7}", 1, 1);
 
     for i in 1..=(Board::SLOTS - 1) / 2 - 1 {
@@ -88,7 +86,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
         visited[visited.len() - 1].len()
     );
 
-    for remaining in (1..=(Board::SLOTS - 1) / 2 + 1).rev() {
+    for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let [current, next] = visited
             .get_disjoint_mut([remaining, remaining - 1])
             .unwrap();
@@ -109,7 +107,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
         }
         next.retain(|b| legal_moves.contains(b));
         println!(
-            "solvable constellations with {:>2} pegs: {}",
+            "solvable constellations with {:>2} pegs: {:>7}",
             remaining - 1,
             next.len()
         );
