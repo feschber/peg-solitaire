@@ -76,14 +76,12 @@ pub fn calculate_all_solutions() -> Vec<Board> {
         next.retain(|b| legal_moves.contains(b));
     }
 
-    for (i, v) in visited.iter().enumerate() {
-        for b in v {
-            assert_eq!(b.count_balls() as usize, i);
-        }
-        println!("reachable at {i}: {}", v.len());
-    }
-
-    vec![]
+    let solvable = visited
+        .into_iter()
+        .take((Board::SLOTS - 1) / 2)
+        .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
+        .collect();
+    solvable
 }
 
 pub fn calculate_first_solution() -> Solution {
