@@ -46,37 +46,48 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     visited.push(HashSet::new());
     // constellations with one peg
     visited.push(HashSet::from_iter([board.inverse()]));
+    println!("possible constellations with 1 pegs: 1",);
 
     for i in 1..=(Board::SLOTS - 1) / 2 - 1 {
-        println!("exploring {i}");
         let mut possible_moves = HashSet::new();
         for board in visited[i].iter() {
-            for mov in board.get_legal_inverse_moves() {
-                possible_moves.insert(board.reverse_mov(mov).normalize());
+            for y in 0..Board::SIZE {
+                for x in 0..Board::SIZE {
+                    if board.occupied((y, x)) {
+                        for dir in Dir::enumerate() {
+                            if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
+                                possible_moves.insert(board.reverse_mov(mov).normalize());
+                            }
+                        }
+                    }
+                }
             }
         }
         println!(
-            "possible constellations for {} pegs: {}",
+            "possible constellations with {} pegs: {}",
             i + 1,
             possible_moves.len()
         );
         visited.push(possible_moves);
-        assert_eq!(visited.len(), i + 2);
     }
 
-    let inverse: HashSet<Board> = visited[(Board::SLOTS - 1) / 2]
-        .iter()
-        .map(|b| b.inverse().normalize())
-        .collect();
-
-    visited.push(inverse);
+    visited.push(
+        visited[(Board::SLOTS - 1) / 2]
+            .iter()
+            .map(|b| b.inverse().normalize())
+            .collect(),
+    );
+    println!(
+        "possible constellations with {} pegs: {}",
+        visited.len() - 1,
+        visited[visited.len() - 1].len()
+    );
 
     for remaining in (1..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let [current, next] = visited
             .get_disjoint_mut([remaining, remaining - 1])
             .unwrap();
         // retain reachable moves
-        println!("current: {remaining}, next: {}", remaining - 1);
         let mut legal_moves = HashSet::new();
         for board in current.iter() {
             for y in 0..Board::SIZE {
@@ -92,6 +103,11 @@ pub fn calculate_all_solutions() -> Vec<Board> {
             }
         }
         next.retain(|b| legal_moves.contains(b));
+        println!(
+            "solvable constellations with {} pegs: {}",
+            remaining - 1,
+            next.len()
+        );
     }
 
     let solvable: Vec<Board> = visited
