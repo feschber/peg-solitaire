@@ -38,26 +38,38 @@ fn solve(board: Board, solution: &mut Solution) -> bool {
 
 pub fn calculate_all_solutions() -> Vec<Board> {
     let board = Board::default();
-    let balls = board.count_balls();
 
     // let mut solvable = Vec::from_iter(repeat(HashSet::new()).take(balls as usize + 1));
-    let mut visited = Vec::from_iter(repeat(HashSet::new()).take(balls as usize + 1));
+    let mut visited = vec![];
 
-    visited[board.count_balls() as usize] = HashSet::from_iter([board]);
-    visited[Board::SLOTS - board.count_balls() as usize] = HashSet::from_iter([board.inverse()]);
+    // constellations with zero pegs
+    visited.push(HashSet::new());
+    // constellations with one peg
+    visited.push(HashSet::from_iter([board.inverse()]));
 
-    for remaining in ((Board::SLOTS - 1) / 2 + 2..=Board::SLOTS - 1).rev() {
-        let [current, next, inverse] = visited
-            .get_disjoint_mut([remaining, remaining - 1, Board::SLOTS - (remaining - 1)])
-            .unwrap();
-        for board in current.iter() {
-            for mov in board.get_legal_moves() {
-                let new = board.mov(mov).normalize();
-                next.insert(new);
-                inverse.insert(new.inverse().normalize());
+    for i in 1..=(Board::SLOTS - 1) / 2 - 1 {
+        println!("exploring {i}");
+        let mut possible_moves = HashSet::new();
+        for board in visited[i].iter() {
+            for mov in board.get_legal_inverse_moves() {
+                possible_moves.insert(board.reverse_mov(mov).normalize());
             }
         }
+        println!(
+            "possible constellations for {} pegs: {}",
+            i + 1,
+            possible_moves.len()
+        );
+        visited.push(possible_moves);
+        assert_eq!(visited.len(), i + 2);
     }
+
+    let inverse: HashSet<Board> = visited[(Board::SLOTS - 1) / 2]
+        .iter()
+        .map(|b| b.inverse().normalize())
+        .collect();
+
+    visited.push(inverse);
 
     for remaining in (1..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let [current, next] = visited
@@ -65,22 +77,29 @@ pub fn calculate_all_solutions() -> Vec<Board> {
             .unwrap();
         // retain reachable moves
         println!("current: {remaining}, next: {}", remaining - 1);
-        let legal_moves = current
-            .iter()
-            .flat_map(|s| {
-                s.get_legal_moves()
-                    .into_iter()
-                    .map(|m| s.mov(m).normalize())
-            })
-            .collect::<HashSet<_>>();
+        let mut legal_moves = HashSet::new();
+        for board in current.iter() {
+            for y in 0..Board::SIZE {
+                for x in 0..Board::SIZE {
+                    if board.occupied((y, x)) {
+                        for dir in Dir::enumerate() {
+                            if let Some(mov) = board.get_legal_move((y, x), dir) {
+                                legal_moves.insert(board.mov(mov).normalize());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         next.retain(|b| legal_moves.contains(b));
     }
 
-    let solvable = visited
+    let solvable: Vec<Board> = visited
         .into_iter()
-        .take((Board::SLOTS - 1) / 2)
+        .take((Board::SLOTS - 1) / 2 + 1)
         .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
         .collect();
+    assert_eq!(solvable.len(), 1679072);
     solvable
 }
 

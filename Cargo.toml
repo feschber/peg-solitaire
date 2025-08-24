@@ -12,11 +12,11 @@ solitaire-game = { path = "./solitaire-game", version = "0.0.1", optional = true
 solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
 
 [profile.release]
-lto = "thin"
+# lto = "thin"
 # codegen-units = 1
 panic = "abort"
 opt-level = 3
-strip = true
+# strip = true
 
 # run build.rs in release mode, otherwise it takes 100 years
 [profile.dev.build-override]

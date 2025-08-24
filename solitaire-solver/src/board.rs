@@ -217,9 +217,9 @@ impl Board {
     }
 
     #[inline(always)]
-    pub fn get_legal_inverse_move(&self, pos: (Idx, Idx), dir: Dir) -> Option<Move> {
-        let (skip, target) = dir.mov(pos);
-        if Self::inbounds(target) && !self.occupied(skip) && self.occupied(target) {
+    pub fn get_legal_inverse_move(&self, target: (Idx, Idx), dir: Dir) -> Option<Move> {
+        let (skip, pos) = dir.mov(target);
+        if Self::inbounds(pos) && !self.occupied(skip) && !self.occupied(pos) {
             Some(Move { pos, skip, target })
         } else {
             None
@@ -233,6 +233,22 @@ impl Board {
                 if self.occupied((y, x)) {
                     for dir in Dir::enumerate() {
                         if let Some(mov) = self.get_legal_move((y, x), dir) {
+                            legal_moves.push(mov);
+                        }
+                    }
+                }
+            }
+        }
+        legal_moves
+    }
+
+    pub fn get_legal_inverse_moves(&self) -> Vec<Move> {
+        let mut legal_moves = Vec::new();
+        for y in 0..Board::SIZE {
+            for x in 0..Board::SIZE {
+                if self.occupied((y, x)) {
+                    for dir in Dir::enumerate() {
+                        if let Some(mov) = self.get_legal_inverse_move((y, x), dir) {
                             legal_moves.push(mov);
                         }
                     }
