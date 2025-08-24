@@ -3,37 +3,42 @@ mod dir;
 mod mov;
 mod solution;
 
-use std::{collections::HashSet, iter::repeat};
+use std::collections::HashSet;
 
 pub use board::Board;
 pub use dir::Dir;
 use mov::Move;
 pub use solution::Solution;
 
-fn solve(board: Board, solution: &mut Solution) -> bool {
-    if board.is_solved() {
-        return true;
-    }
-    if !board.is_solvable() {
-        return false;
-    }
-    for y in 0..Board::SIZE {
-        for x in 0..Board::SIZE {
-            if !board.occupied((y, x)) {
-                continue;
-            }
-            for dir in Dir::enumerate() {
-                if let Some(mov) = board.get_legal_move((y, x), dir) {
-                    solution.push(mov);
-                    if solve(board.mov(mov), solution) {
-                        return true;
+pub fn calculate_first_solution() -> Solution {
+    fn solve(board: Board, solution: &mut Solution) -> bool {
+        if board.is_solved() {
+            return true;
+        }
+        if !board.is_solvable() {
+            return false;
+        }
+        for y in 0..Board::SIZE {
+            for x in 0..Board::SIZE {
+                if !board.occupied((y, x)) {
+                    continue;
+                }
+                for dir in Dir::enumerate() {
+                    if let Some(mov) = board.get_legal_move((y, x), dir) {
+                        solution.push(mov);
+                        if solve(board.mov(mov), solution) {
+                            return true;
+                        }
+                        solution.pop();
                     }
-                    solution.pop();
                 }
             }
         }
+        false
     }
-    false
+    let mut solution = Default::default();
+    solve(Board::default(), &mut solution);
+    solution
 }
 
 pub fn calculate_all_solutions() -> Vec<Board> {
@@ -46,7 +51,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     visited.push(HashSet::new());
     // constellations with one peg
     visited.push(HashSet::from_iter([board.inverse()]));
-    println!("possible constellations with 1 pegs: 1",);
+    println!("possible constellations with {:>2} pegs: {:>7}", 1, 1);
 
     for i in 1..=(Board::SLOTS - 1) / 2 - 1 {
         let mut possible_moves = HashSet::new();
@@ -64,7 +69,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
             }
         }
         println!(
-            "possible constellations with {} pegs: {}",
+            "possible constellations with {:>2} pegs: {:>7}",
             i + 1,
             possible_moves.len()
         );
@@ -78,7 +83,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
             .collect(),
     );
     println!(
-        "possible constellations with {} pegs: {}",
+        "possible constellations with {:>2} pegs: {:>7}",
         visited.len() - 1,
         visited[visited.len() - 1].len()
     );
@@ -104,7 +109,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
         }
         next.retain(|b| legal_moves.contains(b));
         println!(
-            "solvable constellations with {} pegs: {}",
+            "solvable constellations with {:>2} pegs: {}",
             remaining - 1,
             next.len()
         );
@@ -117,12 +122,6 @@ pub fn calculate_all_solutions() -> Vec<Board> {
         .collect();
     assert_eq!(solvable.len(), 1679072);
     solvable
-}
-
-pub fn calculate_first_solution() -> Solution {
-    let mut solution = Default::default();
-    solve(Board::default(), &mut solution);
-    solution
 }
 
 pub fn print_solution(solution: Solution) {
