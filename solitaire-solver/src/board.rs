@@ -275,38 +275,66 @@ impl Board {
         }
     }
 
-    pub fn symmetries(&self) -> [Self; 8] {
-        let mut arr = [self.clone(); 8];
-        let mut rotate_90 = Self::empty();
-        let mut rotate_180 = Self::empty();
-        let mut rotate_270 = Self::empty();
-        let mut mirror_vertically = Self::empty();
-        let mut mirror_horizontally = Self::empty();
-        let mut mirror_bl_tr = Self::empty();
-        let mut mirror_tl_br = Self::empty();
-
-        for i in 0..Board::SIZE {
-            for j in 0..Board::SIZE {
-                if self.occupied((i, j)) {
-                    rotate_90.set((j, Board::SIZE - 1 - i));
-                    rotate_180.set((Board::SIZE - 1 - i, Board::SIZE - 1 - j));
-                    rotate_270.set((Board::SIZE - 1 - j, i));
-                    mirror_vertically.set((Board::SIZE - 1 - i, j));
-                    mirror_horizontally.set((i, Board::SIZE - 1 - j));
-                    mirror_bl_tr.set((Board::SIZE - 1 - j, Board::SIZE - 1 - i));
-                    mirror_tl_br.set((j, i));
-                }
+    fn reverse_rows(&self) -> Self {
+        Self({
+            let mut bytes = self.0.to_ne_bytes();
+            for b in &mut bytes {
+                *b = b.reverse_bits() >> 1;
             }
+            u64::from_ne_bytes(bytes)
+        })
+    }
+
+    fn reverse_cols(&self) -> Self {
+        #[cfg(target_endian = "little")]
+        return Self(self.0.to_be() >> 8);
+        #[cfg(target_endian = "big")]
+        return Self(self.0.to_le() >> 8);
+    }
+
+    fn rotate_180(&self) -> Self {
+        let x = self.0.reverse_bits();
+        let mut bytes = (x >> 8).to_ne_bytes();
+        for b in &mut bytes {
+            *b >>= 1;
         }
-        arr[0] = *self;
-        arr[1] = rotate_90;
-        arr[2] = rotate_180;
-        arr[3] = rotate_270;
-        arr[4] = mirror_vertically;
-        arr[5] = mirror_horizontally;
-        arr[6] = mirror_bl_tr;
-        arr[7] = mirror_tl_br;
-        arr
+        Self(u64::from_ne_bytes(bytes))
+    }
+
+    fn transpose(&self) -> Self {
+        // I have 0 clue, why this works
+        let mut x = self.0;
+        let mut t;
+
+        t = (x ^ (x >> 7)) & 0x00AA00AA00AA00AA;
+        x = x ^ t ^ (t << 7);
+        t = (x ^ (x >> 14)) & 0x0000CCCC0000CCCC;
+        x = x ^ t ^ (t << 14);
+        t = (x ^ (x >> 28)) & 0x00000000F0F0F0F0;
+        x = x ^ t ^ (t << 28);
+
+        Self(x)
+    }
+
+    pub fn symmetries(&self) -> [Self; 8] {
+        let transposed = self.transpose();
+        let reverse_cols = self.reverse_cols();
+        let reverse_rows = self.reverse_rows();
+        let rotate_180 = self.rotate_180();
+        let rotate_90 = transposed.reverse_rows();
+        let rotate_270 = transposed.reverse_cols();
+        let anti_transpose = rotate_180.transpose();
+
+        [
+            *self,
+            rotate_90,
+            rotate_180,
+            rotate_270,
+            reverse_cols,
+            reverse_rows,
+            anti_transpose,
+            transposed,
+        ]
     }
 }
 
