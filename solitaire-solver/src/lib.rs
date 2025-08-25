@@ -3,7 +3,7 @@ mod dir;
 mod mov;
 mod solution;
 
-use std::collections::HashSet;
+use std::{collections::HashSet, thread};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -41,7 +41,30 @@ pub fn calculate_first_solution() -> Solution {
     solution
 }
 
-fn possible_moves<'a>(states: impl IntoIterator<Item = &'a Board>) -> HashSet<Board> {
+const NUM_THREADS: usize = 16;
+
+fn possible_moves_par(states: &[Board]) -> HashSet<Board> {
+    let chunks = states.chunks(states.len().div_ceil(NUM_THREADS));
+    let result = thread::scope(|s| {
+        let mut threads = Vec::with_capacity(NUM_THREADS);
+        for chunk in chunks {
+            threads.push(s.spawn(|| possible_moves(chunk)));
+        }
+        println!("threads: {}", threads.len());
+        let mut result = HashSet::new();
+        for thread in threads {
+            if result.is_empty() {
+                result = thread.join().unwrap();
+            } else {
+                result.extend(thread.join().unwrap());
+            }
+        }
+        result
+    });
+    result
+}
+
+fn possible_moves(states: &[Board]) -> HashSet<Board> {
     let mut legal_moves = HashSet::new();
     for board in states {
         for y in 0..Board::SIZE {
@@ -59,7 +82,24 @@ fn possible_moves<'a>(states: impl IntoIterator<Item = &'a Board>) -> HashSet<Bo
     legal_moves
 }
 
-fn reverse_moves<'a>(states: impl IntoIterator<Item = &'a Board>) -> HashSet<Board> {
+fn reverse_moves_par(states: &[Board]) -> HashSet<Board> {
+    let chunks = states.chunks(states.len().div_ceil(NUM_THREADS));
+    let result = thread::scope(|s| {
+        let mut threads = Vec::with_capacity(NUM_THREADS);
+        for chunk in chunks {
+            threads.push(s.spawn(|| reverse_moves(chunk)));
+        }
+        println!("threads: {}", threads.len());
+        let mut result = HashSet::new();
+        for thread in threads {
+            result.extend(thread.join().unwrap());
+        }
+        result
+    });
+    result
+}
+
+fn reverse_moves(states: &[Board]) -> HashSet<Board> {
     let mut constellations = HashSet::new();
     for board in states {
         for y in 0..Board::SIZE {
@@ -81,7 +121,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     let mut visited = vec![vec![], vec![Board::solved()]];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
-        let mut constellations: Vec<Board> = reverse_moves(&visited[i]).into_iter().collect();
+        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i]).into_iter().collect();
         constellations.sort_by_key(|b| b.0);
         visited.push(constellations);
     }
@@ -94,7 +134,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let legal_moves = possible_moves(&visited[remaining]);
+        let legal_moves = possible_moves_par(&visited[remaining]);
         visited[remaining - 1].retain(|b| legal_moves.contains(b));
     }
 
