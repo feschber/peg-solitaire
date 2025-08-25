@@ -278,14 +278,7 @@ impl Board {
     #[inline]
     fn reverse_rows(&self) -> Self {
         // we swap twice so we dont have to shift
-        let x = self.0.swap_bytes().reverse_bits();
-        Self({
-            let mut bytes = x.to_ne_bytes();
-            for b in &mut bytes {
-                *b >>= 1;
-            }
-            u64::from_ne_bytes(bytes)
-        })
+        Self(self.0.swap_bytes().reverse_bits() >> 1)
     }
 
     #[inline]
@@ -295,12 +288,7 @@ impl Board {
 
     #[inline]
     fn rotate_180(&self) -> Self {
-        let x = self.0.reverse_bits();
-        let mut bytes = (x >> 8).to_ne_bytes();
-        for b in &mut bytes {
-            *b >>= 1;
-        }
-        Self(u64::from_ne_bytes(bytes))
+        Self(self.0.reverse_bits() >> 9)
     }
 
     #[inline]
