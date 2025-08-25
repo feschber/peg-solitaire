@@ -6,7 +6,7 @@ mod solution;
 // use ahash::AHashSet as HashSet; // 1.194s
 // use fnv::FnvHashSet as HashSet; // 1.024s
 use rustc_hash::FxHashSet as HashSet; // 0.866s
-use std::{num::NonZero, thread};
+use std::{hash::Hash, num::NonZero, thread};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -50,25 +50,35 @@ fn num_threads() -> usize {
         .into()
 }
 
-fn possible_moves_par(states: &[Board]) -> HashSet<Board> {
-    let num_threads = num_threads();
-    let chunks = states.chunks(states.len().div_ceil(num_threads));
+fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> HashSet<R>
+where
+    T: Send + Sync,
+    F: Fn(&[T]) -> HashSet<R> + Send + Sync,
+    R: Send + Eq + Hash,
+{
+    let mut chunks = states.chunks(states.len().div_ceil(num_threads));
     let result = thread::scope(|s| {
-        let mut threads = Vec::with_capacity(num_threads);
+        let mut threads = Vec::with_capacity(num_threads - 1);
+        let first_chunk = chunks.next().unwrap();
         for chunk in chunks {
-            threads.push(s.spawn(|| possible_moves(chunk)));
+            threads.push(s.spawn(|| f(chunk)));
         }
-        let mut result = HashSet::default();
+        // execute on current thread
+        let mut result = f(first_chunk);
         for thread in threads {
-            if result.is_empty() {
-                result = thread.join().unwrap();
-            } else {
-                result.extend(thread.join().unwrap());
-            }
+            result.extend(thread.join().unwrap());
         }
         result
     });
     result
+}
+
+fn possible_moves_par(states: &[Board], num_threads: usize) -> HashSet<Board> {
+    parallel(states, num_threads, possible_moves)
+}
+
+fn reverse_moves_par(states: &[Board], num_threads: usize) -> HashSet<Board> {
+    parallel(states, num_threads, reverse_moves)
 }
 
 fn possible_moves(states: &[Board]) -> HashSet<Board> {
@@ -87,23 +97,6 @@ fn possible_moves(states: &[Board]) -> HashSet<Board> {
         }
     }
     legal_moves
-}
-
-fn reverse_moves_par(states: &[Board]) -> HashSet<Board> {
-    let num_threads = num_threads();
-    let chunks = states.chunks(states.len().div_ceil(num_threads));
-    let result = thread::scope(|s| {
-        let mut threads = Vec::with_capacity(num_threads);
-        for chunk in chunks {
-            threads.push(s.spawn(|| reverse_moves(chunk)));
-        }
-        let mut result = HashSet::default();
-        for thread in threads {
-            result.extend(thread.join().unwrap());
-        }
-        result
-    });
-    result
 }
 
 fn reverse_moves(states: &[Board]) -> HashSet<Board> {
@@ -125,10 +118,13 @@ fn reverse_moves(states: &[Board]) -> HashSet<Board> {
 }
 
 pub fn calculate_all_solutions() -> Vec<Board> {
+    let num_threads = num_threads();
     let mut visited = vec![vec![], vec![Board::solved()]];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
-        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i]).into_iter().collect();
+        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], num_threads)
+            .into_iter()
+            .collect();
         constellations.sort_by_key(|b| b.0);
         visited.push(constellations);
     }
@@ -141,7 +137,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let legal_moves = possible_moves_par(&visited[remaining]);
+        let legal_moves = possible_moves_par(&visited[remaining], num_threads);
         visited[remaining - 1].retain(|b| legal_moves.contains(b));
     }
 
