@@ -13,7 +13,7 @@ use bevy::{
 use bevy_vector_shapes::{
     Shape2dPlugin,
     prelude::ShapePainter,
-    shapes::{LinePainter, ThicknessType},
+    shapes::{DiscPainter, LinePainter, ThicknessType},
 };
 use futures_lite::future::{self, block_on};
 use solitaire_solver::{Board, Dir};
@@ -140,7 +140,8 @@ struct BoardMarker;
 struct Peg;
 
 const BOARD_POS: f32 = 0.0;
-const PEG_POS: f32 = 0.0;
+const MARKER_POS: f32 = 0.1;
+const PEG_POS: f32 = 0.2;
 const PEG_POS_RAISED: f32 = 1.0;
 
 fn spawn_pegs(
@@ -249,23 +250,23 @@ fn draw_possible_moves(
                         x: mov.pos.1,
                         y: mov.pos.0,
                     });
-                    let start = Vec3::from((start, 0.5));
+                    let start = Vec3::from((start, MARKER_POS));
                     let target = board_to_world(BoardPosition {
                         x: mov.target.1,
                         y: mov.target.0,
                     });
-                    let target = Vec3::from((target, 0.5));
+                    let target = Vec3::from((target, MARKER_POS));
                     painter.set_color(if solvable(board.mov(mov), solution) {
                         Color::srgba(0., 1., 0., 1.)
                     } else {
                         Color::srgba(1., 0., 0., 1.)
                     });
-                    painter.set_translation(Vec3::new(0., 0., PEG_POS_RAISED));
+                    painter.set_translation(Vec3::new(0., 0., 0.));
                     painter.thickness_type = ThicknessType::Pixels;
-                    painter.thickness = 3.;
+                    painter.thickness = 8.;
                     painter.line(start, start + (target - start) * 0.2);
                     painter.set_translation(start.xyz());
-                    // painter.circle(PEG_RADIUS as f32 * 0.2);
+                    painter.circle(0.1);
                 }
             }
         }
@@ -504,12 +505,12 @@ impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, (setup_board, spawn_pegs).chain());
         app.add_systems(Startup, setup_3d_meshes);
-        app.add_systems(Startup, camera_setup_3d);
-        // app.add_systems(Startup, (camera_setup, scale_viewport).chain());
+        // app.add_systems(Startup, camera_setup_3d);
+        app.add_systems(Startup, (camera_setup, scale_viewport).chain());
         app.add_systems(Startup, create_solution_dag);
         app.add_systems(Update, poll_task);
         // app.add_systems(Update, draw_circles);
-        // app.add_systems(Update, draw_possible_moves);
+        app.add_systems(Update, draw_possible_moves);
         app.add_systems(Update, snap_to_board_grid);
         app.add_systems(Update, follow_mouse);
         app.add_systems(
