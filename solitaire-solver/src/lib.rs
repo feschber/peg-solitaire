@@ -3,7 +3,9 @@ mod dir;
 mod mov;
 mod solution;
 
-use rustc_hash::FxHashSet as HashSet;
+// use ahash::AHashSet as HashSet; // 1.194s
+// use fnv::FnvHashSet as HashSet; // 1.024s
+use rustc_hash::FxHashSet as HashSet; // 0.866s
 use std::{num::NonZero, thread};
 
 pub use board::Board;
