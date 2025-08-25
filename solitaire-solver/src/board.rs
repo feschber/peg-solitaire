@@ -277,10 +277,12 @@ impl Board {
 
     #[inline]
     fn reverse_rows(&self) -> Self {
+        // we swap twice so we dont have to shift
+        let x = self.0.swap_bytes().reverse_bits();
         Self({
-            let mut bytes = self.0.to_ne_bytes();
+            let mut bytes = x.to_ne_bytes();
             for b in &mut bytes {
-                *b = b.reverse_bits() >> 1;
+                *b >>= 1;
             }
             u64::from_ne_bytes(bytes)
         })
