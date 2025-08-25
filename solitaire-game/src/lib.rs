@@ -225,7 +225,10 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
         return;
     };
     if let Projection::Orthographic(projection2d) = &mut *projection {
-        projection2d.scale /= 100.;
+        projection2d.scaling_mode = bevy::render::camera::ScalingMode::AutoMin {
+            min_width: 10.,
+            min_height: 10.,
+        }
     }
 }
 
