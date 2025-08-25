@@ -3,7 +3,8 @@ mod dir;
 mod mov;
 mod solution;
 
-use std::{collections::HashSet, num::NonZero, thread};
+use rustc_hash::FxHashSet as HashSet;
+use std::{num::NonZero, thread};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -55,7 +56,7 @@ fn possible_moves_par(states: &[Board]) -> HashSet<Board> {
         for chunk in chunks {
             threads.push(s.spawn(|| possible_moves(chunk)));
         }
-        let mut result = HashSet::new();
+        let mut result = HashSet::default();
         for thread in threads {
             if result.is_empty() {
                 result = thread.join().unwrap();
@@ -69,7 +70,7 @@ fn possible_moves_par(states: &[Board]) -> HashSet<Board> {
 }
 
 fn possible_moves(states: &[Board]) -> HashSet<Board> {
-    let mut legal_moves = HashSet::new();
+    let mut legal_moves = HashSet::default();
     for board in states {
         for y in 0..Board::SIZE {
             for x in 0..Board::SIZE {
@@ -94,7 +95,7 @@ fn reverse_moves_par(states: &[Board]) -> HashSet<Board> {
         for chunk in chunks {
             threads.push(s.spawn(|| reverse_moves(chunk)));
         }
-        let mut result = HashSet::new();
+        let mut result = HashSet::default();
         for thread in threads {
             result.extend(thread.join().unwrap());
         }
@@ -104,7 +105,7 @@ fn reverse_moves_par(states: &[Board]) -> HashSet<Board> {
 }
 
 fn reverse_moves(states: &[Board]) -> HashSet<Board> {
-    let mut constellations = HashSet::new();
+    let mut constellations = HashSet::default();
     for board in states {
         for y in 0..Board::SIZE {
             for x in 0..Board::SIZE {
@@ -188,8 +189,8 @@ pub fn calculate_all_solutions_naive() -> Vec<Board> {
         }
         any_solution
     }
-    let mut solvable = HashSet::new();
-    let mut already_checked = HashSet::new();
+    let mut solvable = HashSet::default();
+    let mut already_checked = HashSet::default();
     solve_all(Board::default(), &mut already_checked, &mut solvable);
     let total = already_checked.len();
     let solvable_count = solvable.len();
