@@ -68,21 +68,29 @@ where
     F: Fn(&[T]) -> HashSet<R> + Send + Sync,
     R: Send + Eq + Hash,
 {
-    let mut chunks = states.chunks(states.len().div_ceil(num_threads));
-    let result = thread::scope(|s| {
-        let mut threads = Vec::with_capacity(num_threads - 1);
-        let first_chunk = chunks.next().unwrap();
-        for chunk in chunks {
-            threads.push(s.spawn(|| f(chunk)));
-        }
-        // execute on current thread
-        let mut result = f(first_chunk);
-        for thread in threads {
-            result.extend(thread.join().unwrap());
-        }
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = num_threads;
+        return f(states);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let mut chunks = states.chunks(states.len().div_ceil(num_threads));
+        let result = thread::scope(|s| {
+            let mut threads = Vec::with_capacity(num_threads - 1);
+            let first_chunk = chunks.next().unwrap();
+            for chunk in chunks {
+                threads.push(s.spawn(|| f(chunk)));
+            }
+            // execute on current thread
+            let mut result = f(first_chunk);
+            for thread in threads {
+                result.extend(thread.join().unwrap());
+            }
+            result
+        });
         result
-    });
-    result
+    }
 }
 
 fn possible_moves_par(states: &[Board], num_threads: usize) -> HashSet<Board> {

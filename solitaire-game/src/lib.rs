@@ -16,7 +16,7 @@ use bevy_vector_shapes::{
     shapes::{LinePainter, ThicknessType},
 };
 use futures_lite::future::{self, block_on};
-use solitaire_solver::{BOARD_SIZE, Board, Dir};
+use solitaire_solver::{Board, Dir};
 
 pub fn run() {
     App::new()
@@ -176,8 +176,8 @@ fn spawn_pegs(
     let hole_color = Color::WHITE.with_luminance(0.07);
     let hole_material = materials.add(hole_color);
     let hole_color_material = color_materials.add(hole_color);
-    for y in 0..BOARD_SIZE {
-        for x in 0..BOARD_SIZE {
+    for y in 0..Board::SIZE {
+        for x in 0..Board::SIZE {
             let board_pos = BoardPosition { y, x };
             let world_pos = board_to_world(board_pos);
             if Board::inbounds((y, x)) {
@@ -238,8 +238,8 @@ fn draw_possible_moves(
     };
     let solution = &solution.solutions;
     let board = board.single().expect("board").board;
-    for y in 0..BOARD_SIZE {
-        for x in 0..BOARD_SIZE {
+    for y in 0..Board::SIZE {
+        for x in 0..Board::SIZE {
             for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
                 if !board.occupied((y, x)) {
                     continue;
