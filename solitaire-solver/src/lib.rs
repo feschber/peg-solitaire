@@ -3,7 +3,7 @@ mod dir;
 mod mov;
 mod solution;
 
-use std::{collections::HashSet, thread};
+use std::{collections::HashSet, num::NonZero, thread};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -41,16 +41,20 @@ pub fn calculate_first_solution() -> Solution {
     solution
 }
 
-const NUM_THREADS: usize = 16;
+fn num_threads() -> usize {
+    std::thread::available_parallelism()
+        .unwrap_or(NonZero::new(4).unwrap())
+        .into()
+}
 
 fn possible_moves_par(states: &[Board]) -> HashSet<Board> {
-    let chunks = states.chunks(states.len().div_ceil(NUM_THREADS));
+    let num_threads = num_threads();
+    let chunks = states.chunks(states.len().div_ceil(num_threads));
     let result = thread::scope(|s| {
-        let mut threads = Vec::with_capacity(NUM_THREADS);
+        let mut threads = Vec::with_capacity(num_threads);
         for chunk in chunks {
             threads.push(s.spawn(|| possible_moves(chunk)));
         }
-        println!("threads: {}", threads.len());
         let mut result = HashSet::new();
         for thread in threads {
             if result.is_empty() {
@@ -83,13 +87,13 @@ fn possible_moves(states: &[Board]) -> HashSet<Board> {
 }
 
 fn reverse_moves_par(states: &[Board]) -> HashSet<Board> {
-    let chunks = states.chunks(states.len().div_ceil(NUM_THREADS));
+    let num_threads = num_threads();
+    let chunks = states.chunks(states.len().div_ceil(num_threads));
     let result = thread::scope(|s| {
-        let mut threads = Vec::with_capacity(NUM_THREADS);
+        let mut threads = Vec::with_capacity(num_threads);
         for chunk in chunks {
             threads.push(s.spawn(|| reverse_moves(chunk)));
         }
-        println!("threads: {}", threads.len());
         let mut result = HashSet::new();
         for thread in threads {
             result.extend(thread.join().unwrap());
