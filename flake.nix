@@ -56,7 +56,7 @@
     ];
 
     crossFlags = lib.concatStringsSep " " [
-      "-Zlinker-features=-lld"
+      # "-Zlinker-features=-lld"
       # "--remap-path-prefix=\${HOME}=/build"
       # "-Zlocation-detail=none"
     ];
