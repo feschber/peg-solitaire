@@ -193,7 +193,7 @@ pub fn calculate_all_solutions_naive() -> Vec<Board> {
     solve_all(Board::default(), &mut already_checked, &mut solvable);
     let total = already_checked.len();
     let solvable_count = solvable.len();
-    assert_eq!(solvable_count, 1679073);
+    assert_eq!(solvable_count, 1679072);
     println!(
         "checked {total} constellations, {solvable_count} have a solution ({:.2}%)",
         (solvable_count as f64 / total as f64) * 100.

@@ -115,9 +115,9 @@ impl Board {
     #[inline(always)]
     pub fn is_solved(&self) -> bool {
         // exactly one bit is set
-        self.0.is_power_of_two()
-        // const SOLUTION: u64 = 1 << (3 * Board::REPR + 3);
-        // self.0 == SOLUTION
+        // self.0.is_power_of_two()
+        const SOLUTION: u64 = 1 << (3 * Board::REPR + 3);
+        self.0 == SOLUTION
     }
 
     /// the game is not solvable, if none of the marked fields contain a ball:

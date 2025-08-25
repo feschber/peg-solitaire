@@ -1,8 +1,23 @@
+use std::collections::HashSet;
+
+use solitaire_solver::Board;
+
 fn main() {
     if std::env::args().any(|a| &a == "-a") {
         solitaire_solver::calculate_all_solutions();
     } else if std::env::args().any(|a| &a == "-n") {
         solitaire_solver::calculate_all_solutions_naive();
+    } else if std::env::args().any(|a| &a == "-c") {
+        let solutions: HashSet<Board> = solitaire_solver::calculate_all_solutions()
+            .into_iter()
+            .collect();
+        let solutions_naive: HashSet<Board> = solitaire_solver::calculate_all_solutions_naive()
+            .into_iter()
+            .collect();
+        let diff = solutions_naive.difference(&solutions);
+        for board in diff {
+            println!("{board}");
+        }
     } else if std::env::args().any(|a| &a == "-s") {
         let solution = solitaire_solver::calculate_first_solution();
         solitaire_solver::print_solution(solution);
