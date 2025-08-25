@@ -326,7 +326,7 @@ impl Board {
         let rotate_180 = self.rotate_180();
         let rotate_90 = transposed.reverse_rows();
         let rotate_270 = transposed.reverse_cols();
-        let anti_transpose = rotate_180.transpose();
+        let anti_transpose = transposed.rotate_180();
 
         [
             *self,

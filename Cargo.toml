@@ -10,9 +10,6 @@ edition = "2024"
 solitaire-game = { path = "./solitaire-game", version = "0.0.1", optional = true }
 solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
 
-[target.wasm32-unknown-unknown]
-runner = "wasm-server-runner"
-
 # run build.rs in release mode, otherwise it takes 100 years
 [profile.dev.build-override]
 opt-level = 2
