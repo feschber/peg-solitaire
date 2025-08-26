@@ -106,7 +106,7 @@ fn create_solution_dag(mut commands: Commands) {
         let all_solutions = solution_cache::load_solutions();
         #[cfg(not(feature = "solution_cache"))]
         let all_solutions =
-            HashSet::from_iter(solitaire_solver::calculate_all_solutions().into_iter());
+            HashSet::from_iter(solitaire_solver::calculate_all_solutions(None).into_iter());
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world

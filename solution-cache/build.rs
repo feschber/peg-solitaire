@@ -11,7 +11,7 @@ use solitaire_solver::{Board, calculate_all_solutions};
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-changed=../solitaire-solver");
-    let solutions = calculate_all_solutions();
+    let solutions = calculate_all_solutions(None);
     let out_dir = env::var("OUT_DIR")?;
     let out_dir = PathBuf::from_str(&out_dir)?;
     let solution_file = out_dir.join("solutions.dat.br");

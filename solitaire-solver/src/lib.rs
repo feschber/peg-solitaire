@@ -56,10 +56,8 @@ pub fn calculate_first_solution() -> Solution {
     solution
 }
 
-fn num_threads() -> usize {
-    std::thread::available_parallelism()
-        .unwrap_or(NonZero::new(4).unwrap())
-        .into()
+fn num_threads() -> NonZero<usize> {
+    std::thread::available_parallelism().unwrap_or(NonZero::new(4).unwrap())
 }
 
 fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> HashSet<R>
@@ -137,12 +135,12 @@ fn reverse_moves(states: &[Board]) -> HashSet<Board> {
     constellations
 }
 
-pub fn calculate_all_solutions() -> Vec<Board> {
-    let num_threads = num_threads();
+pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
+    let threads = threads.unwrap_or(num_threads()).into();
     let mut visited = vec![vec![], vec![Board::solved()]];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
-        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], num_threads)
+        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads)
             .into_iter()
             .collect();
         constellations.sort_by_key(|b| b.0);
@@ -157,7 +155,7 @@ pub fn calculate_all_solutions() -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let legal_moves = possible_moves_par(&visited[remaining], num_threads);
+        let legal_moves = possible_moves_par(&visited[remaining], threads);
         visited[remaining - 1].retain(|b| legal_moves.contains(b));
     }
 
