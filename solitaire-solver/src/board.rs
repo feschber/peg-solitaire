@@ -6,7 +6,7 @@ use std::{
 use crate::{Dir, Move};
 pub(crate) type Idx = i64;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Board(pub u64);
 
 impl nohash_hasher::IsEnabled for Board {}

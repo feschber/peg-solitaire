@@ -8,7 +8,7 @@ mod solution;
 // use fnv::FnvHashSet as HashSet; // 1.024s
 use hash::CustomHashSet as HashSet;
 // use rustc_hash::FxHashSet as HashSet; // 0.866s
-use std::{hash::Hash, num::NonZero, thread};
+use std::{cmp::Ordering, hash::Hash, num::NonZero, thread};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -62,10 +62,10 @@ fn num_threads() -> NonZero<usize> {
     std::thread::available_parallelism().unwrap_or(NonZero::new(4).unwrap())
 }
 
-fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> HashSet<R>
+fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> Vec<R>
 where
     T: Send + Sync,
-    F: Fn(&[T]) -> HashSet<R> + Send + Sync,
+    F: Fn(&[T]) -> Vec<R> + Send + Sync,
     R: Send + Eq + Hash + nohash_hasher::IsEnabled,
 {
     #[cfg(target_family = "wasm")]
@@ -93,23 +93,23 @@ where
     }
 }
 
-fn possible_moves_par(states: &[Board], num_threads: usize) -> HashSet<Board> {
+fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     parallel(states, num_threads, possible_moves)
 }
 
-fn reverse_moves_par(states: &[Board], num_threads: usize) -> HashSet<Board> {
+fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     parallel(states, num_threads, reverse_moves)
 }
 
-fn possible_moves(states: &[Board]) -> HashSet<Board> {
-    let mut legal_moves = HashSet::default();
+fn possible_moves(states: &[Board]) -> Vec<Board> {
+    let mut legal_moves = Vec::default();
     for board in states {
         for y in 0..Board::SIZE {
             for x in 0..Board::SIZE {
                 if board.occupied((y, x)) {
                     for dir in Dir::enumerate() {
                         if let Some(mov) = board.get_legal_move((y, x), dir) {
-                            legal_moves.insert(board.mov(mov).normalize());
+                            legal_moves.push(board.mov(mov).normalize());
                         }
                     }
                 }
@@ -119,15 +119,15 @@ fn possible_moves(states: &[Board]) -> HashSet<Board> {
     legal_moves
 }
 
-fn reverse_moves(states: &[Board]) -> HashSet<Board> {
-    let mut constellations = HashSet::default();
+fn reverse_moves(states: &[Board]) -> Vec<Board> {
+    let mut constellations = Vec::default();
     for board in states {
         for y in 0..Board::SIZE {
             for x in 0..Board::SIZE {
                 if board.occupied((y, x)) {
                     for dir in Dir::enumerate() {
                         if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
-                            constellations.insert(board.reverse_mov(mov).normalize());
+                            constellations.push(board.reverse_mov(mov).normalize());
                         }
                     }
                 }
@@ -142,10 +142,9 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let mut visited = vec![vec![], vec![Board::solved()]];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
-        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads)
-            .into_iter()
-            .collect();
-        constellations.sort_by_key(|b| b.0);
+        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+        constellations.sort_unstable();
+        constellations.dedup();
         visited.push(constellations);
     }
 
@@ -157,8 +156,11 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let legal_moves = possible_moves_par(&visited[remaining], threads);
-        visited[remaining - 1].retain(|b| legal_moves.contains(b));
+        let mut legal_moves = possible_moves_par(&visited[remaining], threads);
+        println!("{}", legal_moves.len());
+        legal_moves.sort_unstable();
+        legal_moves.dedup();
+        visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
 
     let solvable: Vec<Board> = visited
@@ -168,6 +170,27 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         .collect();
     assert_eq!(solvable.len(), 1679072);
     solvable
+}
+
+fn intersect_sorted_vecs<R>(a: &[R], b: &[R]) -> Vec<R>
+where
+    R: Copy + Eq + Ord,
+{
+    let mut ia = 0;
+    let mut ib = 0;
+    let mut res = vec![];
+    while ia < a.len() && ib < b.len() {
+        match a[ia].cmp(&b[ib]) {
+            Ordering::Equal => {
+                res.push(a[ia]);
+                ia += 1;
+                ib += 1;
+            }
+            Ordering::Less => ia += 1,
+            Ordering::Greater => ib += 1,
+        }
+    }
+    res
 }
 
 pub fn calculate_all_solutions_naive() -> Vec<Board> {
