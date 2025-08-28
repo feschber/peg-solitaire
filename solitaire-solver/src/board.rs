@@ -1,10 +1,35 @@
-use std::fmt::{Display, Formatter, Write};
+use std::{
+    fmt::{Display, Formatter, Write},
+    hash::Hash,
+};
 
 use crate::{Dir, Move};
 pub(crate) type Idx = i64;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Board(pub u64);
+
+impl nohash_hasher::IsEnabled for Board {}
+
+impl Hash for Board {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        const SEED1: u64 = 0x243f6a8885a308d3;
+        const SEED2: u64 = 0x13198a2e03707344;
+        let x = self.0;
+        let a = (x as u32) as u64 ^ SEED1;
+        let b = (x >> 32 as u32) as u64 ^ SEED2;
+        let x: u128 = a as u128 * b as u128;
+        let lo = x as u64;
+        let hi = (x >> 64) as u64;
+        let x = lo ^ hi;
+        // x ^= x >> 30;
+        // x *= SEED1;
+        // x ^= x >> 27;
+        // x = x * SEED2;
+        // x ^= x >> 31;
+        x.hash(state)
+    }
+}
 
 impl Display for Board {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {

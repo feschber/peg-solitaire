@@ -1,11 +1,13 @@
 mod board;
 mod dir;
+mod hash;
 mod mov;
 mod solution;
 
 // use ahash::AHashSet as HashSet; // 1.194s
 // use fnv::FnvHashSet as HashSet; // 1.024s
-use rustc_hash::FxHashSet as HashSet; // 0.866s
+use hash::CustomHashSet as HashSet;
+// use rustc_hash::FxHashSet as HashSet; // 0.866s
 use std::{hash::Hash, num::NonZero, thread};
 
 pub use board::Board;
@@ -64,7 +66,7 @@ fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> HashSet<R>
 where
     T: Send + Sync,
     F: Fn(&[T]) -> HashSet<R> + Send + Sync,
-    R: Send + Eq + Hash,
+    R: Send + Eq + Hash + nohash_hasher::IsEnabled,
 {
     #[cfg(target_family = "wasm")]
     {
