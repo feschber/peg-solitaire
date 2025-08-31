@@ -101,6 +101,39 @@ fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     parallel(states, num_threads, reverse_moves)
 }
 
+const PAGODA: [[f32; 7]; 7] = [
+    [0.0, 0.0, -0.3, 0.4, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+    [0.5, 0.0, 0.5, 0.4, 0.1, 0.3, -0.1],
+    [0.0, 0.9, 0.7, 0.3, 0.9, 1.1, 0.4],
+    [0.5, 0.6, 0.1, 0.5, 0.2, 0.6, 0.2],
+    [0.0, 0.0, 0.8, 0.0, 0.8, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 0.5, -0.2, 0.0, 0.0],
+];
+
+fn pagoda(board: Board) -> f32 {
+    let mut result = 0.;
+    for y in 0..=7 {
+        for x in 0..=7 {
+            if board.occupied((y, x)) {
+                result += PAGODA[y as usize][x as usize];
+            }
+        }
+    }
+    result
+}
+
+fn prune_pagoda(constellations: &mut Vec<Board>) {
+    let len = constellations.len();
+    constellations.retain(|b| {
+        let pb = pagoda(*b);
+        let pe = pagoda(Board::solved());
+        pb >= pe
+    });
+    let new_len = constellations.len();
+    println!("pruned {} configurations", len - new_len);
+}
+
 fn possible_moves(states: &[Board]) -> Vec<Board> {
     let mut legal_moves = Vec::default();
     for board in states {
@@ -116,6 +149,7 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
             }
         }
     }
+    prune_pagoda(&mut legal_moves);
     legal_moves
 }
 
@@ -143,6 +177,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
     for i in 1..(Board::SLOTS - 1) / 2 {
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+        println!("constellations: {}", constellations.len());
         constellations.sort_unstable();
         constellations.dedup();
         visited.push(constellations);

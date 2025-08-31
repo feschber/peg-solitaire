@@ -318,14 +318,31 @@ impl Board {
 
     #[inline]
     fn transpose(&self) -> Self {
-        // I have 0 clue, why this works
         let mut x = self.0;
         let mut t;
 
+        //    0x00AA00AA00AA00AA          0x0000CCCC0000CCCC          0x00000000F0F0F0F0
+        //    -----------------------    ------------------------    ------------------------
+        //    .  1  .  1  .  1  .  1      .  .  1  1  .  .  1  1      .  .  .  .  1  1  1  1
+        //    .  .  .  .  .  .  .  .      .  .  1  1  .  .  1  1      .  .  .  .  1  1  1  1
+        //    .  1  .  1  .  1  .  1      .  .  .  .  .  .  .  .      .  .  .  .  1  1  1  1
+        //    .  .  .  .  .  .  .  .      .  .  .  .  .  .  .  .      .  .  .  .  1  1  1  1
+        //    .  1  .  1  .  1  .  1      .  .  1  1  .  .  1  1      .  .  .  .  .  .  .  .
+        //    .  .  .  .  .  .  .  .      .  .  1  1  .  .  1  1      .  .  .  .  .  .  .  .
+        //    .  1  .  1  .  1  .  1      .  .  .  .  .  .  .  .      .  .  .  .  .  .  .  .
+        //    .  .  .  .  .  .  .  .      .  .  .  .  .  .  .  .      .  .  .  .  .  .  .  .
+
+        // transpose 2x2 submatrices
+        // calculate difference between b c in [a b, c d]
         t = (x ^ (x >> 7)) & 0x00AA00AA00AA00AA;
+        // xor difference to b and c
         x = x ^ t ^ (t << 7);
+
+        // transpose 2x2 in 4x4 submatrices
         t = (x ^ (x >> 14)) & 0x0000CCCC0000CCCC;
         x = x ^ t ^ (t << 14);
+
+        // transpose 4x4 in 8x8 matrix
         t = (x ^ (x >> 28)) & 0x00000000F0F0F0F0;
         x = x ^ t ^ (t << 28);
 
