@@ -1,1 +1,8 @@
+/build
 /target
+local.properties
+app/src/main/jniLibs
+app/build
+app/.cxx
+.gradle
+.idea

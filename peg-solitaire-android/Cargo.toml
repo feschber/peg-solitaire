@@ -1,0 +1,17 @@
+[package]
+name = "peg-solitaire-android"
+description = "android library wrapper for game"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+name = "peg_solitaire_android"
+path = "src/lib.rs"
+crate-type = [
+    "staticlib",
+    "cdylib",
+]
+
+[dependencies]
+bevy = {version = "0.16.1", features = ["wayland", "bevy_dev_tools"]}
+solitaire-game = { path = "../solitaire-game", version = "0.0.1" }
