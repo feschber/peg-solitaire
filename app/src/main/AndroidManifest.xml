@@ -19,7 +19,7 @@
         >
             <meta-data
                 android:name="android.app.lib_name"
-                android:value="peg_solitaire_android"
+                android:value="peg_solitaire"
             />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

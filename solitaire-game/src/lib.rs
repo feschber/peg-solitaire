@@ -18,6 +18,11 @@ use bevy_vector_shapes::{
 use futures_lite::future::{self, block_on};
 use solitaire_solver::{Board, Dir};
 
+#[bevy_main]
+fn main() {
+    run()
+}
+
 pub fn run() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {

@@ -6,7 +6,7 @@ import android.app.NativeActivity;
 
 public class MainActivity extends NativeActivity {
         static {
-            System.loadLibrary("peg_solitaire_android");
+            System.loadLibrary("peg_solitaire");
         }
 
         @Override

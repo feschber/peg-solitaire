@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Peg Solitaire"
+rootProject.name = "peg_solitaire"
 include ':app'

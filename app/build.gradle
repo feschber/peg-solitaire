@@ -44,7 +44,9 @@ android {
     }
     // The final part to insert libc++_shared.so only
     packagingOptions {
-        exclude 'lib/*/libdummy.so'
+        jniLibs {
+            excludes += ['lib/*/libdummy.so']
+        }
     }
 
     sourceSets {

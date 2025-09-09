@@ -4,8 +4,24 @@ description = "interactive peg-solitaire game and solver"
 version = "0.0.1"
 edition = "2024"
 
+[lib]
+name = "peg_solitaire"
+path = "src/lib.rs"
+crate-type = [
+    "staticlib",
+    "cdylib",
+    "rlib",
+]
+
 [dependencies]
-bevy = {version = "0.16.1", features = ["wayland", "bevy_dev_tools"]}
+bevy = { version = "0.16.1", default-features = false, features = [
+    "android-native-activity",
+    "android_shared_stdcxx",
+    "bevy_dev_tools",
+    "bevy_log",
+    "bevy_text",
+    "wayland",
+] }
 bevy_vector_shapes = "0.10.0"
 futures-lite = "2.6.0"
 solitaire-solver = { path = "../solitaire-solver", version = "0.0.1" }
