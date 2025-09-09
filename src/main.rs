@@ -57,7 +57,7 @@ fn main() {
         },
         None => {
             #[cfg(feature = "game")]
-            solitaire_game::run();
+            peg_solitaire::run();
 
             #[cfg(not(feature = "game"))]
             {

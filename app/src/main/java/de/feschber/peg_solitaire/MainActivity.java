@@ -14,7 +14,7 @@ public class MainActivity extends NativeActivity {
             super.onWindowFocusChanged(hasFocus);
 
             if (hasFocus) {
-                hideSystemUi();
+                // hideSystemUi();
             }
         }
 

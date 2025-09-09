@@ -4,11 +4,12 @@ use bevy::{
     dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
     ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
+    log::{Level, LogPlugin},
     prelude::*,
     render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
     tasks::{AsyncComputeTaskPool, Task},
     text::FontSmoothing,
-    window::PrimaryWindow,
+    window::{PrimaryWindow, WindowMode},
 };
 use bevy_vector_shapes::{
     Shape2dPlugin,
@@ -25,17 +26,35 @@ fn main() {
 
 pub fn run() {
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Peg Solitaire".into(),
-                fit_canvas_to_parent: true,
-                prevent_default_event_handling: false,
-                desired_maximum_frame_latency: core::num::NonZero::new(1u32),
-                present_mode: bevy::window::PresentMode::AutoVsync,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(LogPlugin {
+                    // This will show some log events from Bevy to the native logger.
+                    level: Level::DEBUG,
+                    filter: "wgpu=error,bevy_render=info,bevy_ecs=trace".to_string(),
+                    ..Default::default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        // title: "Peg Solitaire".into(),
+                        fit_canvas_to_parent: true,
+                        prevent_default_event_handling: false,
+                        desired_maximum_frame_latency: core::num::NonZero::new(1u32),
+                        present_mode: bevy::window::PresentMode::AutoVsync,
+                        resizable: false,
+                        mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
+                        // on iOS, gestures must be enabled.
+                        // This doesn't work on Android
+                        recognize_rotation_gesture: true,
+                        // Only has an effect on iOS
+                        prefers_home_indicator_hidden: true,
+                        // Only has an effect on iOS
+                        prefers_status_bar_hidden: true,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
         .add_plugins(Shape2dPlugin::default())
         .add_plugins(PegSolitaire)
         .add_plugins(FpsOverlayPlugin {
