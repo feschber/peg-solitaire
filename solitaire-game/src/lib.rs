@@ -1,4 +1,4 @@
-use std::{collections::HashSet, f32::consts::PI, u64};
+use std::{collections::HashSet, u64};
 
 use bevy::{
     dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
@@ -30,7 +30,7 @@ pub fn run() {
             DefaultPlugins
                 .set(LogPlugin {
                     // This will show some log events from Bevy to the native logger.
-                    level: Level::DEBUG,
+                    level: Level::INFO,
                     filter: "wgpu=error,bevy_render=info,bevy_ecs=trace".to_string(),
                     ..Default::default()
                 })
@@ -468,6 +468,7 @@ fn follow_mouse(
     }
 }
 
+#[allow(unused)]
 fn camera_setup_3d(mut commands: Commands /*  asset_server: &AssetServer */) {
     commands.spawn((
         Camera3d::default(),
@@ -576,6 +577,7 @@ fn cursor_to_world(pos: Vec2, camera: &Camera, camera_transform: &GlobalTransfor
     Some(point)
 }
 
+#[allow(unused)]
 fn cursor_to_world_2d(
     pos: Vec2,
     camera: &Camera,
