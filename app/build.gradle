@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace 'de.feschber.peg_solitaire'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId "de.feschber.peg_solitaire"
@@ -20,7 +20,7 @@ android {
         }
         // set up targets
         ndk {
-            abiFilters 'arm64-v8a'
+            abiFilters 'arm64-v8a', 'x86_64', 'armeabi-v7a'
         }
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -62,7 +62,7 @@ dependencies {
 
     implementation libs.appcompat
     implementation libs.material
-    implementation libs.constraintlayout
+    implementation libs.games.activity
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core

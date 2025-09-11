@@ -16,10 +16,9 @@ crate-type = [
 [dependencies]
 bevy = { version = "0.16.1", default-features = false, features = [
     "android-native-activity",
-    "android_shared_stdcxx",
     "bevy_dev_tools",
-    "bevy_log",
     "bevy_text",
+    "bevy_log",
     "wayland",
 ] }
 bevy_vector_shapes = "0.10.0"
