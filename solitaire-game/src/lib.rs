@@ -41,7 +41,6 @@ pub fn run() {
                         prevent_default_event_handling: false,
                         desired_maximum_frame_latency: core::num::NonZero::new(1u32),
                         present_mode: bevy::window::PresentMode::AutoVsync,
-                        resizable: false,
                         mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
                         // on iOS, gestures must be enabled.
                         // This doesn't work on Android
