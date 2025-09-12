@@ -65,10 +65,3 @@ solution-cache = { path = "../solution-cache", version = "0.0.1", optional = tru
 [features]
 default = []
 solution_cache = ["dep:solution-cache"]
-
-
-[profile.release]
-lto = "fat"
-strip = "symbols"
-panic = "abort"
-codegen-units = 1

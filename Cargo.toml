@@ -23,3 +23,9 @@ opt-level = 2
 default = []
 game = ["dep:solitaire-game"]
 solution_cache = ["solitaire-game/solution_cache"]
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+panic = "abort"
+codegen-units = 1
