@@ -15,11 +15,47 @@ crate-type = [
 
 [dependencies]
 bevy = { version = "0.16.1", default-features = false, features = [
-    "android-native-activity",
-    "bevy_dev_tools",
-    "bevy_text",
-    "bevy_log",
-    "wayland",
+  "std",
+  "async_executor",
+  # "android-game-activity",
+  "android-native-activity", # game activity seems to be broken :(
+  "android_shared_stdcxx",
+  "animation",
+  "bevy_asset",
+  "bevy_audio",
+  "bevy_color",
+  "bevy_core_pipeline",
+  "bevy_dev_tools", # required for fps_overlay
+  "bevy_gilrs",
+  "bevy_gizmos",
+  "bevy_gltf",
+  "bevy_input_focus",
+  "bevy_log",
+  "bevy_mesh_picking_backend",
+  "bevy_pbr",
+  "bevy_picking",
+  "bevy_render",
+  "bevy_scene",
+  "bevy_sprite",
+  "bevy_sprite_picking_backend",
+  "bevy_state",
+  "bevy_text",
+  "bevy_ui",
+  "bevy_ui_picking_backend",
+  "bevy_window",
+  "bevy_winit",
+  "custom_cursor",
+  "default_font",
+  "hdr",
+  "multi_threaded",
+  "png",
+  "smaa_luts",
+  "sysinfo_plugin",
+  "tonemapping_luts",
+  "vorbis",
+  "webgl2",
+  "x11",
+  "wayland", # enable wayland support
 ] }
 bevy_vector_shapes = "0.10.0"
 futures-lite = "2.6.0"
@@ -29,3 +65,10 @@ solution-cache = { path = "../solution-cache", version = "0.0.1", optional = tru
 [features]
 default = []
 solution_cache = ["dep:solution-cache"]
+
+
+[profile.release]
+lto = "fat"
+strip = "symbols"
+panic = "abort"
+codegen-units = 1
