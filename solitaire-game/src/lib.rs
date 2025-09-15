@@ -592,6 +592,24 @@ impl Plugin for PegSolitaire {
         app.add_systems(Update, peg_selection_touch);
         app.add_systems(Startup, setup_next_move_chance_text);
         app.add_systems(Update, update_next_move_chance);
+        app.add_systems(Update, fullscreen_toggle);
+        app.add_systems(Update, handle_exit);
+    }
+}
+
+fn fullscreen_toggle(mut window: Single<&mut Window>, input: Res<ButtonInput<KeyCode>>) {
+    if input.just_pressed(KeyCode::KeyF) {
+        window.mode = match window.mode {
+            WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+            _ => WindowMode::Windowed,
+        }
+    }
+}
+
+fn handle_exit(input: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
+    if input.just_pressed(KeyCode::KeyQ) || input.all_just_pressed([KeyCode::AltLeft, KeyCode::F4])
+    {
+        exit.write(AppExit::Success);
     }
 }
 
