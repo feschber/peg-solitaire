@@ -118,7 +118,7 @@ impl Board {
         Self(!self.0 & full.0)
     }
 
-    pub(crate) fn normalize(&self) -> Self {
+    pub fn normalize(&self) -> Self {
         let normalized = self.symmetries().map(|s| s.0).into_iter().min().unwrap();
         Board { 0: normalized }
     }

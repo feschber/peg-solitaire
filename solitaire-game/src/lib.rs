@@ -255,6 +255,54 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
     }
 }
 
+#[derive(Component)]
+struct NextMoveChanceText;
+
+fn setup_next_move_chance_text(mut commands: Commands) {
+    commands.spawn((
+        NextMoveChanceText,
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(5.0),
+            right: Val::Px(5.0),
+            ..Default::default()
+        },
+        Text::new("calculating solutions ..."),
+        TextFont {
+            font_size: 33.0,
+            // If no font is specified, the default font (a minimal subset of FiraMono) will be used.
+            ..default()
+        },
+    ));
+}
+
+fn update_next_move_chance(
+    next_move_text: Query<&mut Text, With<NextMoveChanceText>>,
+    board: Query<&BoardComponent>,
+    solution_dag: Query<&SolutionComponent>,
+) {
+    let Ok(solution) = solution_dag.single() else {
+        return;
+    };
+    let solution = &solution.solutions;
+    let board = board.single().expect("board").board;
+    let possible_moves = board.get_legal_moves();
+    let correct_moves = possible_moves
+        .iter()
+        .copied()
+        .filter(|m| solution.contains(&board.mov(*m).normalize()))
+        .collect::<Vec<_>>();
+    let possible_moves = possible_moves.len();
+    let correct_moves = correct_moves.len();
+    let percentage = correct_moves as f64 / possible_moves as f64 * 100.;
+    for mut text in next_move_text {
+        **text = format!(
+            "You have a {percentage:.0}% chance of doing a correct move!
+{correct_moves} / {possible_moves} moves lead to a feasible constellation"
+        );
+    }
+}
+
 fn draw_possible_moves(
     mut painter: ShapePainter,
     board: Query<&BoardComponent>,
@@ -282,7 +330,7 @@ fn draw_possible_moves(
                         y: mov.target.0,
                     });
                     let target = Vec3::from((target, MARKER_POS));
-                    painter.set_color(if solvable(board.mov(mov), solution) {
+                    painter.set_color(if solution.contains(&board.mov(mov).normalize()) {
                         Color::srgba(0., 1., 0., 1.)
                     } else {
                         Color::srgba(1., 0., 0., 1.)
@@ -297,10 +345,6 @@ fn draw_possible_moves(
             }
         }
     }
-}
-
-fn solvable(board: Board, solutions: &HashSet<Board>) -> bool {
-    board.symmetries().iter().any(|b| solutions.contains(b))
 }
 
 fn handle_click(
@@ -340,7 +384,7 @@ fn handle_click(
                     // update board
                     board.board = board.board.mov(mov);
                     if let Ok(sol) = solution_graph.single() {
-                        if !solvable(board.board, &sol.solutions) {
+                        if !&sol.solutions.contains(&board.board.normalize()) {
                             // let (m2d, m3d) = board_plane.into_inner();
                             // TODO
                         }
@@ -546,6 +590,8 @@ impl Plugin for PegSolitaire {
         );
         app.add_systems(Startup, touch_hack);
         app.add_systems(Update, peg_selection_touch);
+        app.add_systems(Startup, setup_next_move_chance_text);
+        app.add_systems(Update, update_next_move_chance);
     }
 }
 
