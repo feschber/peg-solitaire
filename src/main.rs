@@ -26,6 +26,8 @@ enum Command {
     CalculateSingle,
     /// compare naive and advanced solution (sanity check)
     CompareSolutions,
+    /// calculate success ratio when chosing moves at random
+    CalculateRandomChanceSuccessRatio,
 }
 
 fn main() {
@@ -37,6 +39,18 @@ fn main() {
             }
             Command::CalculateAllNaive => {
                 solitaire_solver::calculate_all_solutions_naive();
+            }
+            Command::CalculateRandomChanceSuccessRatio => {
+                let feasible = solitaire_solver::calculate_all_solutions(None);
+                let start = std::time::Instant::now();
+                let feasible = feasible.into_iter().collect();
+                let success_probabilities =
+                    solitaire_solver::calculate_p_random_chance_success(feasible);
+                let p = *success_probabilities.get(&Board::default()).unwrap();
+                let percentage = p * 100.;
+
+                println!("took {:?}", start.elapsed());
+                println!("success probability when chosing moves at random: {percentage}%");
             }
             Command::CalculateSingle => {
                 let solution = solitaire_solver::calculate_first_solution();

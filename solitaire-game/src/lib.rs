@@ -1,16 +1,19 @@
-use std::{collections::HashSet, u64};
+use std::{
+    collections::{HashMap, HashSet},
+    f32, u64,
+};
 
 use bevy::{
     dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
     ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
     log::{Level, LogPlugin},
-    prelude::*,
     render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
     tasks::{AsyncComputeTaskPool, Task},
     text::FontSmoothing,
-    window::{PrimaryWindow, WindowMode},
+    window::{PrimaryWindow, WindowMode, WindowTheme},
 };
+use bevy::{prelude::*, window::WindowThemeChanged};
 use bevy_vector_shapes::{
     Shape2dPlugin,
     prelude::ShapePainter,
@@ -24,8 +27,20 @@ fn main() {
     run()
 }
 
+fn update_window_theme(
+    theme_changed: Trigger<WindowThemeChanged>,
+    mut clear_color: ResMut<ClearColor>,
+) {
+    info!("Theme Changed!");
+    match theme_changed.event().theme {
+        WindowTheme::Light => *clear_color = ClearColor(Color::WHITE),
+        WindowTheme::Dark => *clear_color = ClearColor(Color::BLACK),
+    }
+}
+
 pub fn run() {
     App::new()
+        .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(
             DefaultPlugins
                 .set(LogPlugin {
@@ -107,6 +122,7 @@ struct BoardComponent {
 #[derive(Component)]
 struct SolutionComponent {
     solutions: HashSet<Board>,
+    p_success: HashMap<Board, f64>,
 }
 
 #[derive(Component)]
@@ -126,17 +142,20 @@ fn create_solution_dag(mut commands: Commands) {
     let entity = commands.spawn_empty().id();
     let task = thread_pool.spawn(async move {
         #[cfg(feature = "solution_cache")]
-        let all_solutions = solution_cache::load_solutions();
+        let feasible = solution_cache::load_solutions();
         #[cfg(not(feature = "solution_cache"))]
-        let all_solutions =
-            HashSet::from_iter(solitaire_solver::calculate_all_solutions(None).into_iter());
+        let feasible = solitaire_solver::calculate_all_solutions(None);
+
+        let feasible_hashset = HashSet::from_iter(feasible.iter().copied());
+        let p_success = solitaire_solver::calculate_p_random_chance_success(feasible);
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world
                 .entity_mut(entity)
                 .remove::<SolutionComputation>()
                 .insert(SolutionComponent {
-                    solutions: all_solutions,
+                    solutions: feasible_hashset,
+                    p_success,
                 });
         });
         command_queue
@@ -193,10 +212,8 @@ fn spawn_pegs(
             .build(),
         ),
     );
-    let hole_circle =
-        Mesh2d(meshes.add(CircleMeshBuilder::new(0.9 * 1. / (2. * GOLDEN_RATIO), 1000).build()));
-    let peg_circle =
-        Mesh2d(meshes.add(CircleMeshBuilder::new(1. / (2. * GOLDEN_RATIO), 1000).build()));
+    let hole_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(HOLE_RADIUS, 1000).build()));
+    let peg_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(PEG_RADIUS, 1000).build()));
     let hole_color = Color::WHITE.with_luminance(0.07);
     let hole_material = materials.add(hole_color);
     let hole_color_material = color_materials.add(hole_color);
@@ -232,6 +249,8 @@ fn spawn_pegs(
 }
 
 const GOLDEN_RATIO: f32 = 1.618033988749;
+const PEG_RADIUS: f32 = 1. / (2. * GOLDEN_RATIO);
+const HOLE_RADIUS: f32 = 0.9 * PEG_RADIUS;
 
 #[derive(Component)]
 struct FollowMouse;
@@ -258,6 +277,9 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
 #[derive(Component)]
 struct NextMoveChanceText;
 
+#[derive(Component)]
+struct OverallSuccessRatio;
+
 fn setup_next_move_chance_text(mut commands: Commands) {
     commands.spawn((
         NextMoveChanceText,
@@ -269,11 +291,45 @@ fn setup_next_move_chance_text(mut commands: Commands) {
         },
         Text::new("calculating solutions ..."),
         TextFont {
-            font_size: 33.0,
+            font_size: 22.0,
             // If no font is specified, the default font (a minimal subset of FiraMono) will be used.
             ..default()
         },
     ));
+    commands.spawn((
+        OverallSuccessRatio,
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(5.0),
+            left: Val::Px(5.0),
+            ..Default::default()
+        },
+        Text::new("calculating solutions ..."),
+        TextFont {
+            font_size: 22.0,
+            // If no font is specified, the default font (a minimal subset of FiraMono) will be used.
+            ..default()
+        },
+    ));
+}
+
+fn update_overall_success(
+    overall_success_text: Query<&mut Text, With<OverallSuccessRatio>>,
+    board: Query<&BoardComponent>,
+    solution_dag: Query<&SolutionComponent>,
+) {
+    let Ok(solution) = solution_dag.single() else {
+        return;
+    };
+    let p_success = &solution.p_success;
+    let board = board.single().expect("board").board;
+    let board = board.normalize();
+
+    let p_success = *p_success.get(&board).unwrap_or(&0.0);
+    let percentage = p_success * 100.;
+    for mut text in overall_success_text {
+        **text = format!("P(dice) = {percentage:.6}%");
+    }
 }
 
 fn update_next_move_chance(
@@ -294,11 +350,15 @@ fn update_next_move_chance(
         .collect::<Vec<_>>();
     let possible_moves = possible_moves.len();
     let correct_moves = correct_moves.len();
-    let percentage = correct_moves as f64 / possible_moves as f64 * 100.;
+    let percentage = if possible_moves == 0 {
+        0.0
+    } else {
+        correct_moves as f64 / possible_moves as f64 * 100.
+    };
     for mut text in next_move_text {
         **text = format!(
-            "You have a {percentage:.0}% chance of doing a correct move!
-{correct_moves} / {possible_moves} moves lead to a feasible constellation"
+            "P(feasible) = {percentage:.0}%
+{correct_moves} / {possible_moves} moves"
         );
     }
 }
@@ -336,8 +396,8 @@ fn draw_possible_moves(
                         Color::srgba(1., 0., 0., 1.)
                     });
                     painter.set_translation(Vec3::new(0., 0., 0.));
-                    painter.thickness_type = ThicknessType::Pixels;
-                    painter.thickness = 8.;
+                    painter.thickness_type = ThicknessType::World;
+                    painter.thickness = 0.075;
                     painter.line(start, start + (target - start) * 0.2);
                     painter.set_translation(start.xyz());
                     painter.circle(0.1);
@@ -591,9 +651,19 @@ impl Plugin for PegSolitaire {
         app.add_systems(Startup, touch_hack);
         app.add_systems(Update, peg_selection_touch);
         app.add_systems(Startup, setup_next_move_chance_text);
-        app.add_systems(Update, update_next_move_chance);
+        app.add_systems(Update, (update_next_move_chance, update_overall_success));
         app.add_systems(Update, fullscreen_toggle);
         app.add_systems(Update, handle_exit);
+        app.add_observer(update_window_theme);
+        app.add_systems(Update, highlight_selected);
+    }
+}
+
+fn highlight_selected(mut painter: ShapePainter, selected: Query<&Transform, With<FollowMouse>>) {
+    for selected in selected {
+        painter.set_translation(selected.translation - Vec3::Z * 0.1);
+        painter.set_color(Color::WHITE);
+        painter.circle(PEG_RADIUS * 1.1);
     }
 }
 
