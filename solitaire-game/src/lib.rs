@@ -73,24 +73,24 @@ pub fn run() {
         )
         .add_plugins(Shape2dPlugin::default())
         .add_plugins(PegSolitaire)
-        .add_plugins(FpsOverlayPlugin {
-            config: FpsOverlayConfig {
-                text_config: TextFont {
-                    // Here we define size of our overlay
-                    font_size: 12.0,
-                    // If we want, we can use a custom font
-                    font: default(),
-                    // We could also disable font smoothing,
-                    font_smoothing: FontSmoothing::default(),
-                    ..default()
-                },
-                // We can also change color of the overlay
-                text_color: Color::WHITE,
-                // We can also set the refresh interval for the FPS counter
-                refresh_interval: core::time::Duration::from_millis(100),
-                enabled: true,
-            },
-        })
+        // .add_plugins(FpsOverlayPlugin {
+        //     config: FpsOverlayConfig {
+        //         text_config: TextFont {
+        //             // Here we define size of our overlay
+        //             font_size: 12.0,
+        //             // If we want, we can use a custom font
+        //             font: default(),
+        //             // We could also disable font smoothing,
+        //             font_smoothing: FontSmoothing::default(),
+        //             ..default()
+        //         },
+        //         // We can also change color of the overlay
+        //         text_color: Color::WHITE,
+        //         // We can also set the refresh interval for the FPS counter
+        //         refresh_interval: core::time::Duration::from_millis(100),
+        //         enabled: true,
+        //     },
+        // })
         .run();
 }
 
@@ -303,7 +303,11 @@ fn update_overall_success(
     for text in overall_success_text {
         if p_success > 0. {
             let inverse = 1. / p_success;
-            *writer.text(text, 1) = format!("1/{inverse:.0}");
+            let mut str = format!("1/{inverse:.0}");
+            if str.len() > 4 {
+                str = format!("\n{str}");
+            }
+            *writer.text(text, 1) = str;
         } else {
             *writer.text(text, 1) = format!("0");
         }
@@ -690,6 +694,11 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         font_size: 100.0,
         ..default()
     };
+    let medium_font = TextFont {
+        font: latin_modern.clone(),
+        font_size: 80.0,
+        ..default()
+    };
     let small_font = TextFont {
         font: latin_modern.clone(),
         font_size: 50.0,
@@ -699,20 +708,20 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         Vec3::from((board_to_world(BoardPosition { x: 4, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let title_pos_1 =
         Vec3::from((board_to_world(BoardPosition { x: 1, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
-    let text_pos = title_pos - Vec3::Y;
+    let text_pos = title_pos - 1.0 * Vec3::Y;
     commands
         .spawn((
             Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos),
-            large_font.clone(),
+            medium_font.clone(),
             TextLayout::new_with_justify(JustifyText::Left),
             Anchor::TopLeft,
             OverallSuccessRatio,
         ))
-        .with_child((TextSpan(" ... ?".into()), large_font.clone()));
+        .with_child((TextSpan(" ... ?".into()), medium_font.clone()));
     commands.spawn((
         Text2d::new("“chance of winning by chosing moves at random”"),
-        Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(text_pos),
+        Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(text_pos),
         small_font.clone(),
         TextLayout::new(JustifyText::Center, LineBreak::WordBoundary),
         TextBounds::from(Vec2::new(600.0, 300.0)),
