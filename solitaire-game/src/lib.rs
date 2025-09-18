@@ -4,13 +4,15 @@ use std::{
 };
 
 use bevy::{
+    color::palettes::css::GRAY,
     dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
     ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
     log::{Level, LogPlugin},
     render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
+    sprite::Anchor,
     tasks::{AsyncComputeTaskPool, Task},
-    text::FontSmoothing,
+    text::{FontSmoothing, TextBounds},
     window::{PrimaryWindow, WindowMode, WindowTheme},
 };
 use bevy::{prelude::*, window::WindowThemeChanged};
@@ -157,6 +159,7 @@ fn create_solution_dag(mut commands: Commands) {
                     solutions: feasible_hashset,
                     p_success,
                 });
+            world.trigger(UpdateStats);
         });
         command_queue
     });
@@ -199,7 +202,7 @@ fn spawn_pegs(
         Name::new("board"),
         Transform::from_translation(Vec3::new(0., 0., BOARD_POS)),
         Mesh2d(meshes.add(CircleMeshBuilder::new(4., 1000).build())),
-        MeshMaterial2d(color_materials.add(Color::WHITE.with_luminance(0.10))),
+        MeshMaterial2d(color_materials.add(Color::WHITE.with_luminance(0.02))),
     ));
 
     let board = board.single().expect("board").board;
@@ -214,7 +217,7 @@ fn spawn_pegs(
     );
     let hole_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(HOLE_RADIUS, 1000).build()));
     let peg_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(PEG_RADIUS, 1000).build()));
-    let hole_color = Color::WHITE.with_luminance(0.07);
+    let hole_color = Color::WHITE.with_luminance(0.01);
     let hole_material = materials.add(hole_color);
     let hole_color_material = color_materials.add(hole_color);
     for y in 0..Board::SIZE {
@@ -268,8 +271,8 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
     };
     if let Projection::Orthographic(projection2d) = &mut *projection {
         projection2d.scaling_mode = bevy::render::camera::ScalingMode::AutoMin {
-            min_width: 10.,
-            min_height: 10.,
+            min_width: 8.,
+            min_height: 8.,
         }
     }
 }
@@ -280,43 +283,12 @@ struct NextMoveChanceText;
 #[derive(Component)]
 struct OverallSuccessRatio;
 
-fn setup_next_move_chance_text(mut commands: Commands) {
-    commands.spawn((
-        NextMoveChanceText,
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(5.0),
-            right: Val::Px(5.0),
-            ..Default::default()
-        },
-        Text::new("calculating solutions ..."),
-        TextFont {
-            font_size: 22.0,
-            // If no font is specified, the default font (a minimal subset of FiraMono) will be used.
-            ..default()
-        },
-    ));
-    commands.spawn((
-        OverallSuccessRatio,
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(5.0),
-            left: Val::Px(5.0),
-            ..Default::default()
-        },
-        Text::new("calculating solutions ..."),
-        TextFont {
-            font_size: 22.0,
-            // If no font is specified, the default font (a minimal subset of FiraMono) will be used.
-            ..default()
-        },
-    ));
-}
-
 fn update_overall_success(
-    overall_success_text: Query<&mut Text, With<OverallSuccessRatio>>,
+    _trigger: Trigger<UpdateStats>,
+    overall_success_text: Query<Entity, With<OverallSuccessRatio>>,
     board: Query<&BoardComponent>,
     solution_dag: Query<&SolutionComponent>,
+    mut writer: TextUiWriter,
 ) {
     let Ok(solution) = solution_dag.single() else {
         return;
@@ -325,17 +297,32 @@ fn update_overall_success(
     let board = board.single().expect("board").board;
     let board = board.normalize();
 
-    let p_success = *p_success.get(&board).unwrap_or(&0.0);
-    let percentage = p_success * 100.;
-    for mut text in overall_success_text {
-        **text = format!("P(dice) = {percentage:.6}%");
+    let p_success = *p_success.get(&board).unwrap_or(&1.0);
+    // let p = num_rational::BigRational::from_float(p_success).unwrap();
+    // let odds = p.clone() / (num_rational::BigRational::from_float(1.0).unwrap() - p.clone());
+    for text in overall_success_text {
+        if p_success > 0. {
+            let inverse = 1. / p_success;
+            *writer.text(text, 1) = format!("1/{inverse:.0}");
+        } else {
+            *writer.text(text, 1) = format!("0");
+        }
     }
 }
 
+fn update_probabilities(_trigger: Trigger<PegMoved>, mut commands: Commands) {
+    commands.trigger(UpdateStats);
+}
+
+#[derive(Event)]
+struct UpdateStats;
+
 fn update_next_move_chance(
-    next_move_text: Query<&mut Text, With<NextMoveChanceText>>,
+    _: Trigger<UpdateStats>,
+    next_move_text: Query<Entity, With<NextMoveChanceText>>,
     board: Query<&BoardComponent>,
     solution_dag: Query<&SolutionComponent>,
+    mut writer: TextUiWriter,
 ) {
     let Ok(solution) = solution_dag.single() else {
         return;
@@ -355,11 +342,26 @@ fn update_next_move_chance(
     } else {
         correct_moves as f64 / possible_moves as f64 * 100.
     };
-    for mut text in next_move_text {
-        **text = format!(
-            "P(feasible) = {percentage:.0}%
-{correct_moves} / {possible_moves} moves"
-        );
+    for text in next_move_text {
+        *writer.text(text, 1) = format!("{correct_moves} / {possible_moves}\n")
+    }
+}
+
+#[derive(Event)]
+struct ToggleHints;
+
+#[derive(Resource)]
+struct ShowHints;
+
+fn toggle_hints(
+    _: Trigger<ToggleHints>,
+    mut commands: Commands,
+    show_hints: Option<Res<ShowHints>>,
+) {
+    if show_hints.is_none() {
+        commands.insert_resource(ShowHints);
+    } else {
+        commands.remove_resource::<ShowHints>();
     }
 }
 
@@ -407,6 +409,13 @@ fn draw_possible_moves(
     }
 }
 
+#[allow(unused)]
+#[derive(Event)]
+struct PegMoved {
+    prev_pos: BoardPosition,
+    new_pos: BoardPosition,
+}
+
 fn handle_click(
     commands: &mut Commands,
     pegs: Query<Entity, With<Peg>>,
@@ -422,6 +431,9 @@ fn handle_click(
         return;
     };
     let nearest_peg = world_to_board(world_pos_cursor.xy());
+    if !Board::inbounds((nearest_peg.y, nearest_peg.x)) {
+        commands.trigger(ToggleHints);
+    }
     let mut board = board.single_mut().expect("board");
     for entity in pegs {
         if let Ok((mut board_pos, mut transform)) = positions.get_mut(entity) {
@@ -450,8 +462,13 @@ fn handle_click(
                         }
                     }
                     // update peg position
-                    board_pos.y = destination.0;
-                    board_pos.x = destination.1;
+                    let prev_pos = *board_pos;
+                    let new_pos = BoardPosition {
+                        y: destination.0,
+                        x: destination.1,
+                    };
+                    *board_pos = new_pos;
+                    commands.trigger(PegMoved { prev_pos, new_pos });
                     // remove skipped peg
                     for peg in pegs {
                         if let Ok((b, _)) = positions.get(peg) {
@@ -641,7 +658,12 @@ impl Plugin for PegSolitaire {
         app.add_systems(Startup, create_solution_dag);
         app.add_systems(Update, poll_task);
         // app.add_systems(Update, draw_circles);
-        app.add_systems(Update, draw_possible_moves);
+        app.insert_resource(ShowHints);
+        app.add_observer(toggle_hints);
+        app.add_systems(
+            Update,
+            draw_possible_moves.run_if(resource_exists::<ShowHints>),
+        );
         app.add_systems(Update, snap_to_board_grid);
         app.add_systems(Update, follow_mouse);
         app.add_systems(
@@ -650,13 +672,66 @@ impl Plugin for PegSolitaire {
         );
         app.add_systems(Startup, touch_hack);
         app.add_systems(Update, peg_selection_touch);
-        app.add_systems(Startup, setup_next_move_chance_text);
-        app.add_systems(Update, (update_next_move_chance, update_overall_success));
+        app.add_observer(update_probabilities);
+        app.add_observer(update_next_move_chance);
+        app.add_observer(update_overall_success);
         app.add_systems(Update, fullscreen_toggle);
         app.add_systems(Update, handle_exit);
         app.add_observer(update_window_theme);
         app.add_systems(Update, highlight_selected);
+        app.add_systems(Startup, add_text);
     }
+}
+
+fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let latin_modern = asset_server.load("fonts/latinmodern-math.otf");
+    let large_font = TextFont {
+        font: latin_modern.clone(),
+        font_size: 100.0,
+        ..default()
+    };
+    let small_font = TextFont {
+        font: latin_modern.clone(),
+        font_size: 50.0,
+        ..default()
+    };
+    let title_pos =
+        Vec3::from((board_to_world(BoardPosition { x: 4, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
+    let title_pos_1 =
+        Vec3::from((board_to_world(BoardPosition { x: 1, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
+    let text_pos = title_pos - Vec3::Y;
+    commands
+        .spawn((
+            Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos),
+            large_font.clone(),
+            TextLayout::new_with_justify(JustifyText::Left),
+            Anchor::TopLeft,
+            OverallSuccessRatio,
+        ))
+        .with_child((TextSpan(" ... ?".into()), large_font.clone()));
+    commands.spawn((
+        Text2d::new("“chance of winning by chosing moves at random”"),
+        Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(text_pos),
+        small_font.clone(),
+        TextLayout::new(JustifyText::Center, LineBreak::WordBoundary),
+        TextBounds::from(Vec2::new(600.0, 300.0)),
+        Anchor::TopLeft,
+    ));
+    commands
+        .spawn((
+            Text2d::new(""),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos_1),
+            large_font.clone(),
+            TextLayout::new_with_justify(JustifyText::Center),
+            Anchor::TopRight,
+            NextMoveChanceText,
+        ))
+        .with_child((TextSpan("? / ?\n".into()), large_font.clone()))
+        .with_child((
+            TextSpan("moves lead to feasible\nconstellations".into()),
+            small_font.clone(),
+        ));
 }
 
 fn highlight_selected(mut painter: ShapePainter, selected: Query<&Transform, With<FollowMouse>>) {

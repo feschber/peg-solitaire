@@ -131,7 +131,7 @@ fn prune_pagoda(constellations: &mut Vec<Board>) {
         pb >= pe
     });
     let new_len = constellations.len();
-    println!("pruned {} configurations", len - new_len);
+    // println!("pruned {} configurations", len - new_len);
 }
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
