@@ -297,7 +297,7 @@ fn update_overall_success(
     let board = board.single().expect("board").board;
     let board = board.normalize();
 
-    let p_success = *p_success.get(&board).unwrap_or(&1.0);
+    let p_success = *p_success.get(&board).unwrap_or(&0.0);
     // let p = num_rational::BigRational::from_float(p_success).unwrap();
     // let odds = p.clone() / (num_rational::BigRational::from_float(1.0).unwrap() - p.clone());
     for text in overall_success_text {
