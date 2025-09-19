@@ -13,7 +13,8 @@ use bevy::{
     sprite::Anchor,
     tasks::{AsyncComputeTaskPool, Task},
     text::{FontSmoothing, TextBounds},
-    window::{PrimaryWindow, WindowMode, WindowTheme},
+    window::{PrimaryWindow, RequestRedraw, WindowMode, WindowTheme},
+    winit::WinitSettings,
 };
 use bevy::{prelude::*, window::WindowThemeChanged};
 use bevy_vector_shapes::{
@@ -73,24 +74,24 @@ pub fn run() {
         )
         .add_plugins(Shape2dPlugin::default())
         .add_plugins(PegSolitaire)
-        // .add_plugins(FpsOverlayPlugin {
-        //     config: FpsOverlayConfig {
-        //         text_config: TextFont {
-        //             // Here we define size of our overlay
-        //             font_size: 12.0,
-        //             // If we want, we can use a custom font
-        //             font: default(),
-        //             // We could also disable font smoothing,
-        //             font_smoothing: FontSmoothing::default(),
-        //             ..default()
-        //         },
-        //         // We can also change color of the overlay
-        //         text_color: Color::WHITE,
-        //         // We can also set the refresh interval for the FPS counter
-        //         refresh_interval: core::time::Duration::from_millis(100),
-        //         enabled: true,
-        //     },
-        // })
+        .add_plugins(FpsOverlayPlugin {
+            config: FpsOverlayConfig {
+                text_config: TextFont {
+                    // Here we define size of our overlay
+                    font_size: 12.0,
+                    // If we want, we can use a custom font
+                    font: default(),
+                    // We could also disable font smoothing,
+                    font_smoothing: FontSmoothing::default(),
+                    ..default()
+                },
+                // We can also change color of the overlay
+                text_color: Color::WHITE,
+                // We can also set the refresh interval for the FPS counter
+                refresh_interval: core::time::Duration::from_millis(100),
+                enabled: true,
+            },
+        })
         .run();
 }
 
@@ -302,6 +303,7 @@ fn update_overall_success(
     board: Query<&BoardComponent>,
     p_success: Option<Res<RandomMoveChances>>,
     mut writer: TextUiWriter,
+    mut request_redraw: EventWriter<RequestRedraw>,
 ) {
     let Some(p_success) = p_success else {
         return;
@@ -325,6 +327,7 @@ fn update_overall_success(
             *writer.text(text, 1) = format!("0");
         }
     }
+    request_redraw.write(RequestRedraw);
 }
 
 fn update_stats_on_solution(mut commands: Commands) {
@@ -344,6 +347,7 @@ fn update_next_move_chance(
     board: Query<&BoardComponent>,
     feasible: Option<Res<FeasibleConstellations>>,
     mut writer: TextUiWriter,
+    mut request_redraw: EventWriter<RequestRedraw>,
 ) {
     let Some(feasible) = feasible else {
         return;
@@ -359,8 +363,9 @@ fn update_next_move_chance(
     let possible_moves = possible_moves.len();
     let correct_moves = correct_moves.len();
     for text in next_move_text {
-        *writer.text(text, 1) = format!("{correct_moves} / {possible_moves}\n")
+        *writer.text(text, 1) = format!("{correct_moves} / {possible_moves}\n");
     }
+    request_redraw.write(RequestRedraw);
 }
 
 #[derive(Event)]
@@ -558,6 +563,7 @@ fn snap_to_board_grid(
     mut commands: Commands,
     pegs: Query<Entity, With<SnapToBoardPosition>>,
     mut pos: Query<(&BoardPosition, &mut Transform), With<SnapToBoardPosition>>,
+    mut request_redraw: EventWriter<RequestRedraw>,
 ) {
     for peg in pegs {
         if let Ok((board_pos, mut transform)) = pos.get_mut(peg) {
@@ -569,6 +575,7 @@ fn snap_to_board_grid(
                 commands.entity(peg).remove::<SnapToBoardPosition>();
             }
             transform.translation = new_pos;
+            request_redraw.write(RequestRedraw);
         }
     }
 }
@@ -577,6 +584,7 @@ fn follow_mouse(
     window: Single<&Window, With<PrimaryWindow>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
     transforms: Query<&mut Transform, With<FollowMouse>>,
+    mut request_redraw: EventWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
     if let Some(cursor_pos) = window.cursor_position() {
@@ -586,6 +594,7 @@ fn follow_mouse(
             if let Some(mut destination) = cursor_to_world(cursor_pos, camera, camera_transform) {
                 destination.z = current_z.lerp(destination_z, 0.2);
                 transform.translation = destination;
+                request_redraw.write(RequestRedraw);
             }
         }
     }
@@ -654,6 +663,7 @@ struct PegSolitaire;
 
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
+        app.insert_resource(WinitSettings::desktop_app());
         app.add_systems(Startup, (setup_board, spawn_pegs).chain());
         app.add_systems(Startup, setup_3d_meshes);
         // app.add_systems(Startup, camera_setup_3d);
