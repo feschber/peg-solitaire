@@ -4,15 +4,14 @@ use std::{
 };
 
 use bevy::{
-    color::palettes::css::GRAY,
-    dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
+    // dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
     ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
     log::{Level, LogPlugin},
     render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
     sprite::Anchor,
     tasks::{AsyncComputeTaskPool, Task},
-    text::{FontSmoothing, TextBounds},
+    text::TextBounds,
     window::{PrimaryWindow, RequestRedraw, WindowMode, WindowTheme},
     winit::WinitSettings,
 };
@@ -74,24 +73,24 @@ pub fn run() {
         )
         .add_plugins(Shape2dPlugin::default())
         .add_plugins(PegSolitaire)
-        .add_plugins(FpsOverlayPlugin {
-            config: FpsOverlayConfig {
-                text_config: TextFont {
-                    // Here we define size of our overlay
-                    font_size: 12.0,
-                    // If we want, we can use a custom font
-                    font: default(),
-                    // We could also disable font smoothing,
-                    font_smoothing: FontSmoothing::default(),
-                    ..default()
-                },
-                // We can also change color of the overlay
-                text_color: Color::WHITE,
-                // We can also set the refresh interval for the FPS counter
-                refresh_interval: core::time::Duration::from_millis(100),
-                enabled: true,
-            },
-        })
+        // .add_plugins(FpsOverlayPlugin {
+        //     config: FpsOverlayConfig {
+        //         text_config: TextFont {
+        //             // Here we define size of our overlay
+        //             font_size: 12.0,
+        //             // If we want, we can use a custom font
+        //             font: default(),
+        //             // We could also disable font smoothing,
+        //             font_smoothing: FontSmoothing::default(),
+        //             ..default()
+        //         },
+        //         // We can also change color of the overlay
+        //         text_color: Color::WHITE,
+        //         // We can also set the refresh interval for the FPS counter
+        //         refresh_interval: core::time::Duration::from_millis(100),
+        //         enabled: true,
+        //     },
+        // })
         .run();
 }
 
