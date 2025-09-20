@@ -9,13 +9,19 @@ pub struct Solution {
 }
 
 impl Solution {
-    pub(crate) fn push(&mut self, mov: Move) {
+    pub fn push(&mut self, mov: Move) {
         self.steps[self.count] = mov;
         self.count += 1;
     }
-    pub(crate) fn pop(&mut self) -> Move {
+    pub fn pop(&mut self) -> Move {
         self.count -= 1;
         self.steps[self.count]
+    }
+    pub fn total(&self) -> usize {
+        return self.steps.len();
+    }
+    pub fn len(&self) -> usize {
+        return self.count;
     }
 }
 

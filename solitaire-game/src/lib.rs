@@ -332,11 +332,58 @@ fn update_stats_on_move(_trigger: Trigger<PegMoved>, mut commands: Commands) {
     commands.trigger(UpdateStats);
 }
 
-fn update_solution(move_event: Trigger<PegMoved>) {
-    let prev = move_event.prev_pos;
-    let new = move_event.new_pos;
-    let mov = move_event.mov;
+fn update_solution(move_event: Trigger<PegMoved>, mut solution: ResMut<Solution>) {
+    solution.0.push(move_event.mov);
 }
+
+fn draw_solution(
+    solution: Res<Solution>,
+    mut painter: ShapePainter,
+    camera_query: Single<(&Camera, &GlobalTransform)>,
+) {
+    let cam = camera_query;
+    if let Some(view_port) = cam.0.logical_viewport_rect() {
+        let y_size = view_port.max.y - view_port.min.y;
+        let x_size = view_port.max.x - view_port.min.x;
+
+        let (start, end) = if y_size > x_size {
+            let pos_vp = (Vec2::new(view_port.min.x, view_port.max.y), view_port.max);
+            let pos_ws = (
+                viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
+                    + Vec3::new(0.2, 0.2, 0.0),
+                viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
+                    + Vec3::new(-0.2, 0.2, 0.0),
+            );
+            pos_ws
+        } else {
+            let pos_vp = (view_port.min, Vec2::new(view_port.min.x, view_port.max.y));
+            let pos_ws = (
+                viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
+                    + Vec3::new(0.2, -0.2, 0.0),
+                viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
+                    + Vec3::new(0.2, 0.2, 0.0),
+            );
+            pos_ws
+        };
+
+        info!("start: {start}, end: {end}");
+
+        for (i, mov) in solution.0.clone().into_iter().enumerate() {
+            let end_idx = solution.0.total() - 1;
+            let pos = start.lerp(end, i as f32 / end_idx as f32);
+            painter.set_translation(pos);
+            painter.set_color(Color::WHITE);
+            painter.circle(0.05);
+            if i >= solution.0.len() {
+                painter.set_color(Color::BLACK);
+                painter.circle(0.05 * 0.9);
+            }
+        }
+    }
+}
+
+#[derive(Resource)]
+struct Solution(solitaire_solver::Solution);
 
 #[derive(Event)]
 struct UpdateStats;
@@ -445,7 +492,7 @@ fn handle_click(
     camera_query: &Single<(&Camera, &GlobalTransform)>,
 ) {
     let (camera, camera_transform) = **camera_query;
-    let Some(world_pos_cursor) = cursor_to_world(cursor_pos, camera, camera_transform) else {
+    let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform) else {
         return;
     };
     let nearest_peg = world_to_board(world_pos_cursor.xy());
@@ -596,7 +643,7 @@ fn follow_mouse(
         for mut transform in transforms {
             let current_z = transform.translation.z;
             let destination_z = PEG_POS_RAISED;
-            if let Some(mut destination) = cursor_to_world(cursor_pos, camera, camera_transform) {
+            if let Some(mut destination) = viewport_to_world(cursor_pos, camera, camera_transform) {
                 destination.z = current_z.lerp(destination_z, 0.2);
                 transform.translation = destination;
                 request_redraw.write(RequestRedraw);
@@ -669,6 +716,9 @@ struct PegSolitaire;
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
         app.insert_resource(WinitSettings::desktop_app());
+        app.insert_resource(Solution(Default::default()));
+        app.add_observer(update_solution);
+        app.add_systems(Update, draw_solution);
         app.add_systems(Update, toggle_fps_overlay);
         app.add_systems(Startup, (setup_board, spawn_pegs).chain());
         app.add_systems(Startup, setup_3d_meshes);
@@ -812,7 +862,11 @@ fn board_to_world(board_pos: BoardPosition) -> Vec2 {
         .xy()
 }
 
-fn cursor_to_world(pos: Vec2, camera: &Camera, camera_transform: &GlobalTransform) -> Option<Vec3> {
+fn viewport_to_world(
+    pos: Vec2,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+) -> Option<Vec3> {
     let ray = camera.viewport_to_world(camera_transform, pos).ok()?;
     let ground_plane = InfinitePlane3d::new(Vec3::Z);
     let distance = ray.intersect_plane(Vec3::ZERO, ground_plane)?;
