@@ -4,7 +4,7 @@ use std::{
 };
 
 use bevy::{
-    // dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
+    dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
     ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
     log::{Level, LogPlugin},
@@ -73,24 +73,17 @@ pub fn run() {
         )
         .add_plugins(Shape2dPlugin::default())
         .add_plugins(PegSolitaire)
-        // .add_plugins(FpsOverlayPlugin {
-        //     config: FpsOverlayConfig {
-        //         text_config: TextFont {
-        //             // Here we define size of our overlay
-        //             font_size: 12.0,
-        //             // If we want, we can use a custom font
-        //             font: default(),
-        //             // We could also disable font smoothing,
-        //             font_smoothing: FontSmoothing::default(),
-        //             ..default()
-        //         },
-        //         // We can also change color of the overlay
-        //         text_color: Color::WHITE,
-        //         // We can also set the refresh interval for the FPS counter
-        //         refresh_interval: core::time::Duration::from_millis(100),
-        //         enabled: true,
-        //     },
-        // })
+        .add_plugins(FpsOverlayPlugin {
+            config: FpsOverlayConfig {
+                text_config: TextFont {
+                    font_size: 10.0,
+                    ..default()
+                },
+                text_color: Color::WHITE,
+                refresh_interval: core::time::Duration::from_millis(100),
+                enabled: false,
+            },
+        })
         .run();
 }
 
@@ -153,6 +146,8 @@ fn create_solution_dag(mut commands: Commands) {
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world.insert_resource(FeasibleConstellations(feasible_hashset));
+            info!("inserting feasible constellations...");
+            world.trigger(UpdateStats);
             world.entity_mut(entity).remove::<BackgroundTask>();
         });
         command_queue
@@ -337,6 +332,12 @@ fn update_stats_on_move(_trigger: Trigger<PegMoved>, mut commands: Commands) {
     commands.trigger(UpdateStats);
 }
 
+fn update_solution(move_event: Trigger<PegMoved>) {
+    let prev = move_event.prev_pos;
+    let new = move_event.new_pos;
+    let mov = move_event.mov;
+}
+
 #[derive(Event)]
 struct UpdateStats;
 
@@ -431,6 +432,7 @@ fn draw_possible_moves(
 struct PegMoved {
     prev_pos: BoardPosition,
     new_pos: BoardPosition,
+    mov: solitaire_solver::Move,
 }
 
 fn handle_click(
@@ -479,7 +481,11 @@ fn handle_click(
                         x: destination.1,
                     };
                     *board_pos = new_pos;
-                    commands.trigger(PegMoved { prev_pos, new_pos });
+                    commands.trigger(PegMoved {
+                        prev_pos,
+                        new_pos,
+                        mov,
+                    });
                     // remove skipped peg
                     for peg in pegs {
                         if let Ok((b, _)) = positions.get(peg) {
@@ -663,17 +669,17 @@ struct PegSolitaire;
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
         app.insert_resource(WinitSettings::desktop_app());
+        app.add_systems(Update, toggle_fps_overlay);
         app.add_systems(Startup, (setup_board, spawn_pegs).chain());
         app.add_systems(Startup, setup_3d_meshes);
         // app.add_systems(Startup, camera_setup_3d);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
         app.add_systems(Startup, create_solution_dag);
         app.add_systems(
-            Update,
+            FixedUpdate,
             calculate_random_move_chances.run_if(resource_added::<FeasibleConstellations>),
         );
-        app.add_systems(Update, poll_task);
-        // app.add_systems(Update, draw_circles);
+        app.add_systems(FixedUpdate, poll_task);
         app.insert_resource(ShowHints);
         app.add_observer(toggle_hints);
         app.add_systems(
@@ -692,7 +698,7 @@ impl Plugin for PegSolitaire {
         app.add_systems(Update, peg_selection_touch);
         app.add_observer(update_stats_on_move);
         app.add_systems(
-            Update,
+            FixedUpdate,
             update_stats_on_solution.run_if(
                 resource_added::<FeasibleConstellations>.or(resource_added::<RandomMoveChances>),
             ),
@@ -826,4 +832,10 @@ fn cursor_to_world_2d(
 fn world_to_board(world_pos: Vec2) -> BoardPosition {
     let pos = world_to_board_transform().transform_point((world_pos, BOARD_POS).into());
     BoardPosition::from(pos.xy())
+}
+
+fn toggle_fps_overlay(input: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<FpsOverlayConfig>) {
+    if input.just_pressed(KeyCode::KeyD) {
+        overlay.enabled = !overlay.enabled;
+    }
 }

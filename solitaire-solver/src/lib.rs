@@ -12,7 +12,7 @@ use std::{cmp::Ordering, collections::HashMap, hash::Hash, num::NonZero, thread}
 
 pub use board::Board;
 pub use dir::Dir;
-use mov::Move;
+pub use mov::Move;
 pub use solution::Solution;
 
 pub fn calculate_first_solution() -> Solution {
