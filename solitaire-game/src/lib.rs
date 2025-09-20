@@ -350,18 +350,18 @@ fn draw_solution(
             let pos_vp = (Vec2::new(view_port.min.x, view_port.max.y), view_port.max);
             let pos_ws = (
                 viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.2, 0.2, 0.0),
+                    + Vec3::new(0.6, 0.6, 0.0),
                 viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(-0.2, 0.2, 0.0),
+                    + Vec3::new(-0.6, 0.6, 0.0),
             );
             pos_ws
         } else {
             let pos_vp = (view_port.min, Vec2::new(view_port.min.x, view_port.max.y));
             let pos_ws = (
                 viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.2, -0.2, 0.0),
+                    + Vec3::new(0.6, -0.6, 0.0),
                 viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.2, 0.2, 0.0),
+                    + Vec3::new(0.6, 0.6, 0.0),
             );
             pos_ws
         };
@@ -373,10 +373,10 @@ fn draw_solution(
             let pos = start.lerp(end, i as f32 / end_idx as f32);
             painter.set_translation(pos);
             painter.set_color(Color::WHITE);
-            painter.circle(0.05);
+            painter.circle(0.07);
             if i >= solution.0.len() {
                 painter.set_color(Color::BLACK);
-                painter.circle(0.05 * 0.9);
+                painter.circle(0.07 * 0.9);
             }
         }
     }
