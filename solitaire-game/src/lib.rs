@@ -209,7 +209,7 @@ fn spawn_pegs(
         BoardMarker,
         Name::new("board"),
         Transform::from_translation(Vec3::new(0., 0., BOARD_POS)),
-        Mesh2d(meshes.add(CircleMeshBuilder::new(4., 1000).build())),
+        Mesh2d(meshes.add(CircleMeshBuilder::new(3.9, 1000).build())),
         MeshMaterial2d(color_materials.add(Color::WHITE.with_luminance(0.02))),
     ));
 
