@@ -1,192 +1,46 @@
-use std::u64;
-
 use bevy::{
-    dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
     input::common_conditions::input_just_pressed,
-    log::{Level, LogPlugin},
-    render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
-    window::{PrimaryWindow, RequestRedraw, WindowMode, WindowTheme},
+    prelude::*,
+    window::{PrimaryWindow, RequestRedraw},
     winit::WinitSettings,
 };
-use bevy::{prelude::*, window::WindowThemeChanged};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
 use crate::{
+    board::{BOARD_POS, BoardPlugin, BoardPosition, PEG_POS, PEG_POS_RAISED, PEG_RADIUS, Peg},
+    fps_overlay::FpsOverlay,
     hints::{HintsPlugin, ToggleHints},
     solver::Solver,
     stats::StatsPlugin,
     status::StatusPlugin,
+    window::MainWindow,
 };
 
+mod board;
+mod fps_overlay;
 mod hints;
 mod solver;
 mod stats;
 mod status;
+mod window;
 
 #[bevy_main]
 fn main() {
     run()
 }
 
-fn update_window_theme(
-    theme_changed: Trigger<WindowThemeChanged>,
-    mut clear_color: ResMut<ClearColor>,
-) {
-    info!("Theme Changed!");
-    match theme_changed.event().theme {
-        WindowTheme::Light => *clear_color = ClearColor(Color::WHITE),
-        WindowTheme::Dark => *clear_color = ClearColor(Color::BLACK),
-    }
-}
-
 pub fn run() {
     App::new()
-        .insert_resource(ClearColor(Color::BLACK))
-        .add_plugins(
-            DefaultPlugins
-                .set(LogPlugin {
-                    // This will show some log events from Bevy to the native logger.
-                    level: Level::INFO,
-                    filter: "wgpu=error,bevy_render=info,bevy_ecs=trace".to_string(),
-                    ..Default::default()
-                })
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        // title: "Peg Solitaire".into(),
-                        fit_canvas_to_parent: true,
-                        prevent_default_event_handling: false,
-                        desired_maximum_frame_latency: core::num::NonZero::new(1u32),
-                        present_mode: bevy::window::PresentMode::AutoVsync,
-                        mode: WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
-                        // on iOS, gestures must be enabled.
-                        // This doesn't work on Android
-                        recognize_rotation_gesture: true,
-                        // Only has an effect on iOS
-                        prefers_home_indicator_hidden: true,
-                        // Only has an effect on iOS
-                        prefers_status_bar_hidden: true,
-                        ..default()
-                    }),
-                    ..default()
-                }),
-        )
+        .add_plugins(MainWindow)
+        .add_plugins(FpsOverlay)
         .add_plugins(PegSolitaire)
-        .add_plugins(FpsOverlayPlugin {
-            config: FpsOverlayConfig {
-                text_config: TextFont {
-                    font_size: 10.0,
-                    ..default()
-                },
-                text_color: Color::WHITE,
-                refresh_interval: core::time::Duration::from_millis(100),
-                enabled: false,
-            },
-        })
         .run();
-}
-
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-struct BoardPosition {
-    x: i64,
-    y: i64,
-}
-
-impl From<BoardPosition> for Vec2 {
-    fn from(board_position: BoardPosition) -> Self {
-        Vec2::new(board_position.x as f32, board_position.y as f32)
-    }
-}
-
-impl From<Vec2> for BoardPosition {
-    fn from(v: Vec2) -> Self {
-        BoardPosition {
-            x: v.x.round() as _,
-            y: v.y.round() as _,
-        }
-    }
 }
 
 #[derive(Default, Resource)]
 /// represents the currently active board
 struct CurrentBoard(Board);
-
-#[derive(Component)]
-struct BoardMarker;
-
-#[derive(Component)]
-struct Peg;
-
-const BOARD_POS: f32 = 0.0;
-const MARKER_POS: f32 = 0.1;
-const PEG_POS: f32 = 0.2;
-const PEG_POS_RAISED: f32 = 1.0;
-
-fn spawn_pegs(
-    mut commands: Commands,
-    board: Res<CurrentBoard>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut color_materials: ResMut<Assets<ColorMaterial>>,
-) {
-    // the board itself
-    commands.spawn((
-        BoardMarker,
-        Name::new("board"),
-        Transform::from_translation(Vec3::new(0., 0., BOARD_POS)),
-        Mesh2d(meshes.add(CircleMeshBuilder::new(3.9, 1000).build())),
-        MeshMaterial2d(color_materials.add(Color::WHITE.with_luminance(0.02))),
-    ));
-
-    let board = &board.0;
-    let sphere = Mesh3d(
-        meshes.add(
-            SphereMeshBuilder::new(
-                1. / (2. * GOLDEN_RATIO),
-                SphereKind::Ico { subdivisions: 10 },
-            )
-            .build(),
-        ),
-    );
-    let hole_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(HOLE_RADIUS, 1000).build()));
-    let peg_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(PEG_RADIUS, 1000).build()));
-    let hole_color = Color::WHITE.with_luminance(0.01);
-    let hole_material = materials.add(hole_color);
-    let hole_color_material = color_materials.add(hole_color);
-    for y in 0..Board::SIZE {
-        for x in 0..Board::SIZE {
-            let board_pos = BoardPosition { y, x };
-            let world_pos = board_to_world(board_pos);
-            if Board::inbounds((y, x)) {
-                // spawn holes
-                commands.spawn((
-                    hole_circle.clone(),
-                    Transform::from_translation((world_pos, BOARD_POS).into()),
-                    MeshMaterial3d::from(hole_material.clone()),
-                    MeshMaterial2d::from(hole_color_material.clone()),
-                ));
-            }
-
-            // spawn pegs
-            let col = Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.7);
-            if board.occupied((y, x)) {
-                commands.spawn((
-                    sphere.clone(),
-                    peg_circle.clone(),
-                    MeshMaterial3d(materials.add(col)),
-                    MeshMaterial2d(color_materials.add(col)),
-                    BoardPosition { y, x },
-                    Transform::from_translation((world_pos, PEG_POS).into()),
-                    Peg,
-                ));
-            }
-        }
-    }
-}
-
-const GOLDEN_RATIO: f32 = 1.618033988749;
-const PEG_RADIUS: f32 = 1. / (2. * GOLDEN_RATIO);
-const HOLE_RADIUS: f32 = 0.9 * PEG_RADIUS;
 
 #[derive(Component)]
 struct Selected;
@@ -238,8 +92,8 @@ fn handle_click(
     let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform) else {
         return;
     };
-    let nearest_peg = world_to_board(world_pos_cursor.xy());
-    if !Board::inbounds((nearest_peg.y, nearest_peg.x)) {
+    let nearest_peg = BoardPosition::from_world_space(world_pos_cursor.xy());
+    if !Board::inbounds(nearest_peg.into()) {
         commands.trigger(ToggleHints);
     }
     for entity in pegs {
@@ -250,8 +104,8 @@ fn handle_click(
                 entity_commands.insert(SnapToBoardPosition);
 
                 // allow swapping pegs
-                let current = (board_pos.y, board_pos.x);
-                let destination = (nearest_peg.y, nearest_peg.x);
+                let current = (*board_pos).into();
+                let destination = nearest_peg.into();
                 if !Board::inbounds(destination) {
                     continue;
                 }
@@ -358,7 +212,7 @@ fn snap_to_board_grid(
     for peg in pegs {
         if let Ok((board_pos, mut transform)) = pos.get_mut(peg) {
             let current = transform.translation;
-            let target = Vec3::from((board_to_world(*board_pos), PEG_POS));
+            let target = Vec3::from(((*board_pos).to_world_space(), PEG_POS));
             let mut new_pos = current.lerp(target, 0.2);
             if new_pos.distance_squared(target) < 0.0001 {
                 new_pos = target;
@@ -458,14 +312,13 @@ impl Plugin for PegSolitaire {
         app.init_resource::<CurrentBoard>();
         app.init_resource::<CurrentSolution>();
 
+        app.add_plugins(BoardPlugin);
         app.add_plugins(Solver);
         app.add_plugins(HintsPlugin);
         app.add_plugins(StatsPlugin);
         app.add_plugins(StatusPlugin);
 
         app.add_observer(update_solution);
-        app.add_systems(Update, toggle_fps_overlay);
-        app.add_systems(Startup, spawn_pegs);
         app.add_systems(Startup, setup_3d_meshes);
         // app.add_systems(Startup, camera_setup_3d);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
@@ -477,9 +330,6 @@ impl Plugin for PegSolitaire {
         );
         app.add_systems(Startup, touch_hack);
         app.add_systems(Update, peg_selection_touch);
-        app.add_systems(Update, fullscreen_toggle);
-        app.add_systems(Update, handle_exit);
-        app.add_observer(update_window_theme);
         app.add_systems(Update, highlight_selected);
     }
 }
@@ -492,39 +342,8 @@ fn highlight_selected(mut painter: ShapePainter, selected: Query<&Transform, Wit
     }
 }
 
-fn fullscreen_toggle(mut window: Single<&mut Window>, input: Res<ButtonInput<KeyCode>>) {
-    if input.just_pressed(KeyCode::KeyF) {
-        window.mode = match window.mode {
-            WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
-            _ => WindowMode::Windowed,
-        }
-    }
-}
-
-fn handle_exit(input: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
-    if input.just_pressed(KeyCode::KeyQ) || input.all_just_pressed([KeyCode::AltLeft, KeyCode::F4])
-    {
-        exit.write(AppExit::Success);
-    }
-}
-
 fn camera_transform_3d() -> Transform {
     Transform::from_xyz(6., 3., 10.).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Z)
-}
-
-fn board_to_world_transform() -> Transform {
-    Transform::from_scale(Vec3::new(1., -1., 1.)).with_translation(Vec3::new(-3., 3., BOARD_POS))
-    // Transform::from_translation(Vec3::new(-3., 3., 0.)).with_scale(Vec3::new(1., -1., 1.))
-}
-
-fn world_to_board_transform() -> Transform {
-    Transform::from_matrix(board_to_world_transform().compute_matrix().inverse())
-}
-
-fn board_to_world(board_pos: BoardPosition) -> Vec2 {
-    board_to_world_transform()
-        .transform_point(Vec3::from((Vec2::from(board_pos), 0.)))
-        .xy()
 }
 
 fn viewport_to_world(
@@ -546,15 +365,4 @@ fn cursor_to_world_2d(
     camera_transform: &GlobalTransform,
 ) -> Option<Vec2> {
     Some(camera.viewport_to_world_2d(camera_transform, pos).ok()?)
-}
-
-fn world_to_board(world_pos: Vec2) -> BoardPosition {
-    let pos = world_to_board_transform().transform_point((world_pos, BOARD_POS).into());
-    BoardPosition::from(pos.xy())
-}
-
-fn toggle_fps_overlay(input: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<FpsOverlayConfig>) {
-    if input.just_pressed(KeyCode::KeyD) {
-        overlay.enabled = !overlay.enabled;
-    }
 }

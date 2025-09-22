@@ -1,7 +1,7 @@
 use bevy::{prelude::*, sprite::Anchor, text::TextBounds, window::RequestRedraw};
 
 use crate::{
-    BoardPosition, CurrentBoard, PegMoved, board_to_world,
+    BoardPosition, CurrentBoard, PegMoved,
     solver::{FeasibleConstellations, RandomMoveChances},
 };
 
@@ -49,9 +49,9 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         ..default()
     };
     let title_pos =
-        Vec3::from((board_to_world(BoardPosition { x: 4, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
+        Vec3::from((BoardPosition { x: 4, y: 4 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let title_pos_1 =
-        Vec3::from((board_to_world(BoardPosition { x: 1, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
+        Vec3::from((BoardPosition { x: 1, y: 4 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let text_pos = title_pos - 1.0 * Vec3::Y;
     commands
         .spawn((

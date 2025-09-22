@@ -2,9 +2,7 @@ use bevy::prelude::*;
 use bevy_vector_shapes::prelude::*;
 use solitaire_solver::{Board, Dir};
 
-use crate::{
-    BoardPosition, CurrentBoard, MARKER_POS, board_to_world, solver::FeasibleConstellations,
-};
+use crate::{BoardPosition, CurrentBoard, board::MARKER_POS, solver::FeasibleConstellations};
 
 pub struct HintsPlugin;
 
@@ -53,15 +51,9 @@ fn draw_possible_moves(
                     continue;
                 }
                 if let Some(mov) = board.0.get_legal_move((y, x), dir) {
-                    let start = board_to_world(BoardPosition {
-                        x: mov.pos.1,
-                        y: mov.pos.0,
-                    });
+                    let start = BoardPosition::from(mov.pos).to_world_space();
                     let start = Vec3::from((start, MARKER_POS));
-                    let target = board_to_world(BoardPosition {
-                        x: mov.target.1,
-                        y: mov.target.0,
-                    });
+                    let target = BoardPosition::from(mov.target).to_world_space();
                     let target = Vec3::from((target, MARKER_POS));
                     painter.set_color(if feasible.contains(&board.0.mov(mov).normalize()) {
                         Color::srgba(0., 1., 0., 1.)
