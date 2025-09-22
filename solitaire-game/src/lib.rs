@@ -1,28 +1,28 @@
-use std::{
-    collections::{HashMap, HashSet},
-    f32, u64,
-};
+use std::u64;
 
 use bevy::{
     dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
-    ecs::world::CommandQueue,
     input::common_conditions::input_just_pressed,
     log::{Level, LogPlugin},
     render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
-    sprite::Anchor,
-    tasks::{AsyncComputeTaskPool, Task},
-    text::TextBounds,
     window::{PrimaryWindow, RequestRedraw, WindowMode, WindowTheme},
     winit::WinitSettings,
 };
 use bevy::{prelude::*, window::WindowThemeChanged};
-use bevy_vector_shapes::{
-    Shape2dPlugin,
-    prelude::ShapePainter,
-    shapes::{DiscPainter, LinePainter, ThicknessType},
+use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
+use solitaire_solver::Board;
+
+use crate::{
+    hints::{HintsPlugin, ToggleHints},
+    solver::Solver,
+    stats::StatsPlugin,
+    status::StatusPlugin,
 };
-use futures_lite::future::{self, block_on};
-use solitaire_solver::{Board, Dir};
+
+mod hints;
+mod solver;
+mod stats;
+mod status;
 
 #[bevy_main]
 fn main() {
@@ -71,7 +71,6 @@ pub fn run() {
                     ..default()
                 }),
         )
-        .add_plugins(Shape2dPlugin::default())
         .add_plugins(PegSolitaire)
         .add_plugins(FpsOverlayPlugin {
             config: FpsOverlayConfig {
@@ -108,83 +107,9 @@ impl From<Vec2> for BoardPosition {
     }
 }
 
-#[derive(Component)]
-struct BoardComponent {
-    /// represents the currently active board
-    board: Board,
-}
-
-#[derive(Resource)]
-struct FeasibleConstellations(HashSet<Board>);
-
-#[derive(Resource)]
-struct RandomMoveChances(HashMap<Board, f64>);
-
-#[derive(Component)]
-struct BackgroundTask {
-    task: Task<CommandQueue>,
-}
-
-impl Default for BoardComponent {
-    fn default() -> Self {
-        let board = Board::default();
-        BoardComponent { board }
-    }
-}
-
-fn create_solution_dag(mut commands: Commands) {
-    info!("calculating feasible constellations ...");
-    let thread_pool = AsyncComputeTaskPool::get();
-    let entity = commands.spawn_empty().id();
-    let task = thread_pool.spawn(async move {
-        #[cfg(feature = "solution_cache")]
-        let feasible = solution_cache::load_solutions();
-        #[cfg(not(feature = "solution_cache"))]
-        let feasible = solitaire_solver::calculate_all_solutions(None);
-
-        let feasible_hashset = HashSet::from_iter(feasible.iter().copied());
-        let mut command_queue = CommandQueue::default();
-        command_queue.push(move |world: &mut World| {
-            world.insert_resource(FeasibleConstellations(feasible_hashset));
-            info!("inserting feasible constellations...");
-            world.trigger(UpdateStats);
-            world.entity_mut(entity).remove::<BackgroundTask>();
-        });
-        command_queue
-    });
-    commands.entity(entity).insert(BackgroundTask { task });
-}
-
-fn calculate_random_move_chances(mut commands: Commands, feasible: Res<FeasibleConstellations>) {
-    info!("calculating P(\"success by random moves\") ...");
-    let thread_pool = AsyncComputeTaskPool::get();
-    let entity = commands.spawn_empty().id();
-    let feasible = feasible.0.clone();
-    let task = thread_pool.spawn(async move {
-        let feasible = feasible.iter().copied().collect();
-        let p_random_chance = solitaire_solver::calculate_p_random_chance_success(feasible);
-
-        let mut command_queue = CommandQueue::default();
-        command_queue.push(move |world: &mut World| {
-            world.insert_resource(RandomMoveChances(p_random_chance));
-            world.entity_mut(entity).remove::<BackgroundTask>();
-        });
-        command_queue
-    });
-    commands.entity(entity).insert(BackgroundTask { task });
-}
-
-fn poll_task(mut commands: Commands, mut solution_task: Query<&mut BackgroundTask>) {
-    for mut task in &mut solution_task {
-        if let Some(mut commands_queue) = block_on(future::poll_once(&mut task.task)) {
-            commands.append(&mut commands_queue)
-        }
-    }
-}
-
-fn setup_board(mut commands: Commands) {
-    commands.spawn(BoardComponent::default());
-}
+#[derive(Default, Resource)]
+/// represents the currently active board
+struct CurrentBoard(Board);
 
 #[derive(Component)]
 struct BoardMarker;
@@ -199,7 +124,7 @@ const PEG_POS_RAISED: f32 = 1.0;
 
 fn spawn_pegs(
     mut commands: Commands,
-    board: Query<&BoardComponent>,
+    board: Res<CurrentBoard>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut color_materials: ResMut<Assets<ColorMaterial>>,
@@ -213,7 +138,7 @@ fn spawn_pegs(
         MeshMaterial2d(color_materials.add(Color::WHITE.with_luminance(0.02))),
     ));
 
-    let board = board.single().expect("board").board;
+    let board = &board.0;
     let sphere = Mesh3d(
         meshes.add(
             SphereMeshBuilder::new(
@@ -264,7 +189,7 @@ const PEG_RADIUS: f32 = 1. / (2. * GOLDEN_RATIO);
 const HOLE_RADIUS: f32 = 0.9 * PEG_RADIUS;
 
 #[derive(Component)]
-struct FollowMouse;
+struct Selected;
 
 #[derive(Component)]
 struct SnapToBoardPosition;
@@ -285,194 +210,12 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
     }
 }
 
-#[derive(Component)]
-struct NextMoveChanceText;
-
-#[derive(Component)]
-struct OverallSuccessRatio;
-
-fn update_overall_success(
-    _trigger: Trigger<UpdateStats>,
-    overall_success_text: Query<Entity, With<OverallSuccessRatio>>,
-    board: Query<&BoardComponent>,
-    p_success: Option<Res<RandomMoveChances>>,
-    mut writer: TextUiWriter,
-    mut request_redraw: EventWriter<RequestRedraw>,
-) {
-    let Some(p_success) = p_success else {
-        return;
-    };
-    let p_success = &p_success.0;
-    let board = board.single().expect("board").board;
-    let board = board.normalize();
-
-    let p_success = *p_success.get(&board).unwrap_or(&0.0);
-    // let p = num_rational::BigRational::from_float(p_success).unwrap();
-    // let odds = p.clone() / (num_rational::BigRational::from_float(1.0).unwrap() - p.clone());
-    for text in overall_success_text {
-        if p_success > 0. {
-            let inverse = 1. / p_success;
-            let mut str = format!("1/{inverse:.0}");
-            if str.len() > 4 {
-                str = format!("\n{str}");
-            }
-            *writer.text(text, 1) = str;
-        } else {
-            *writer.text(text, 1) = format!("0");
-        }
-    }
-    request_redraw.write(RequestRedraw);
-}
-
-fn update_stats_on_solution(mut commands: Commands) {
-    commands.trigger(UpdateStats);
-}
-
-fn update_stats_on_move(_trigger: Trigger<PegMoved>, mut commands: Commands) {
-    commands.trigger(UpdateStats);
-}
-
-fn update_solution(move_event: Trigger<PegMoved>, mut solution: ResMut<Solution>) {
+fn update_solution(move_event: Trigger<PegMoved>, mut solution: ResMut<CurrentSolution>) {
     solution.0.push(move_event.mov);
 }
 
-fn draw_solution(
-    solution: Res<Solution>,
-    mut painter: ShapePainter,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
-) {
-    let cam = camera_query;
-    if let Some(view_port) = cam.0.logical_viewport_rect() {
-        let y_size = view_port.max.y - view_port.min.y;
-        let x_size = view_port.max.x - view_port.min.x;
-
-        let (start, end) = if y_size > x_size {
-            let pos_vp = (Vec2::new(view_port.min.x, view_port.max.y), view_port.max);
-            let pos_ws = (
-                viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.6, 0.6, 0.0),
-                viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(-0.6, 0.6, 0.0),
-            );
-            pos_ws
-        } else {
-            let pos_vp = (view_port.min, Vec2::new(view_port.min.x, view_port.max.y));
-            let pos_ws = (
-                viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.6, -0.6, 0.0),
-                viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.6, 0.6, 0.0),
-            );
-            pos_ws
-        };
-
-        info!("start: {start}, end: {end}");
-
-        for (i, mov) in solution.0.clone().into_iter().enumerate() {
-            let end_idx = solution.0.total() - 1;
-            let pos = start.lerp(end, i as f32 / end_idx as f32);
-            painter.set_translation(pos);
-            painter.set_color(Color::WHITE);
-            painter.circle(0.07);
-            if i >= solution.0.len() {
-                painter.set_color(Color::BLACK);
-                painter.circle(0.07 * 0.9);
-            }
-        }
-    }
-}
-
-#[derive(Resource)]
-struct Solution(solitaire_solver::Solution);
-
-#[derive(Event)]
-struct UpdateStats;
-
-fn update_next_move_chance(
-    _: Trigger<UpdateStats>,
-    next_move_text: Query<Entity, With<NextMoveChanceText>>,
-    board: Query<&BoardComponent>,
-    feasible: Option<Res<FeasibleConstellations>>,
-    mut writer: TextUiWriter,
-    mut request_redraw: EventWriter<RequestRedraw>,
-) {
-    let Some(feasible) = feasible else {
-        return;
-    };
-    let feasible = &feasible.0;
-    let board = board.single().expect("board").board;
-    let possible_moves = board.get_legal_moves();
-    let correct_moves = possible_moves
-        .iter()
-        .copied()
-        .filter(|m| feasible.contains(&board.mov(*m).normalize()))
-        .collect::<Vec<_>>();
-    let possible_moves = possible_moves.len();
-    let correct_moves = correct_moves.len();
-    for text in next_move_text {
-        *writer.text(text, 1) = format!("{correct_moves} / {possible_moves}\n");
-    }
-    request_redraw.write(RequestRedraw);
-}
-
-#[derive(Event)]
-struct ToggleHints;
-
-#[derive(Resource)]
-struct ShowHints;
-
-fn toggle_hints(
-    _: Trigger<ToggleHints>,
-    mut commands: Commands,
-    show_hints: Option<Res<ShowHints>>,
-) {
-    if show_hints.is_none() {
-        commands.insert_resource(ShowHints);
-    } else {
-        commands.remove_resource::<ShowHints>();
-    }
-}
-
-fn draw_possible_moves(
-    mut painter: ShapePainter,
-    board: Query<&BoardComponent>,
-    feasible: Res<FeasibleConstellations>,
-) {
-    let feasible = &feasible.0;
-    let board = board.single().expect("board").board;
-    for y in 0..Board::SIZE {
-        for x in 0..Board::SIZE {
-            for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
-                if !board.occupied((y, x)) {
-                    continue;
-                }
-                if let Some(mov) = board.get_legal_move((y, x), dir) {
-                    let start = board_to_world(BoardPosition {
-                        x: mov.pos.1,
-                        y: mov.pos.0,
-                    });
-                    let start = Vec3::from((start, MARKER_POS));
-                    let target = board_to_world(BoardPosition {
-                        x: mov.target.1,
-                        y: mov.target.0,
-                    });
-                    let target = Vec3::from((target, MARKER_POS));
-                    painter.set_color(if feasible.contains(&board.mov(mov).normalize()) {
-                        Color::srgba(0., 1., 0., 1.)
-                    } else {
-                        Color::srgba(1., 0., 0., 1.)
-                    });
-                    painter.set_translation(Vec3::new(0., 0., 0.));
-                    painter.thickness_type = ThicknessType::World;
-                    painter.thickness = 0.075;
-                    painter.line(start, start + (target - start) * 0.2);
-                    painter.set_translation(start.xyz());
-                    painter.circle(0.1);
-                }
-            }
-        }
-    }
-}
+#[derive(Default, Resource)]
+struct CurrentSolution(solitaire_solver::Solution);
 
 #[allow(unused)]
 #[derive(Event)]
@@ -485,9 +228,9 @@ struct PegMoved {
 fn handle_click(
     commands: &mut Commands,
     pegs: Query<Entity, With<Peg>>,
-    positions: &mut Query<(&mut BoardPosition, &mut Transform)>,
-    follow_mouse: Query<&FollowMouse>,
-    board: &mut Query<&mut BoardComponent>,
+    selected: Query<&Selected>,
+    positions: &mut Query<&mut BoardPosition>,
+    board: &mut ResMut<CurrentBoard>,
     cursor_pos: Vec2,
     camera_query: &Single<(&Camera, &GlobalTransform)>,
 ) {
@@ -499,14 +242,12 @@ fn handle_click(
     if !Board::inbounds((nearest_peg.y, nearest_peg.x)) {
         commands.trigger(ToggleHints);
     }
-    let mut board = board.single_mut().expect("board");
     for entity in pegs {
-        if let Ok((mut board_pos, mut transform)) = positions.get_mut(entity) {
+        if let Ok(mut board_pos) = positions.get_mut(entity) {
             let mut entity_commands = commands.entity(entity);
-            if follow_mouse.contains(entity) {
-                entity_commands.remove::<FollowMouse>();
+            if selected.contains(entity) {
+                entity_commands.remove::<Selected>();
                 entity_commands.insert(SnapToBoardPosition);
-                transform.translation.z = PEG_POS;
 
                 // allow swapping pegs
                 let current = (board_pos.y, board_pos.x);
@@ -514,20 +255,17 @@ fn handle_click(
                 if !Board::inbounds(destination) {
                     continue;
                 }
-                if board.board.occupied(destination) {
+                if board.0.occupied(destination) {
                     // *board_pos = nearest_peg;
-                } else if let Some(mov) = board.board.is_legal_move(current, destination) {
+                } else if let Some(mov) = board.0.is_legal_move(current, destination) {
                     println!("{mov}");
                     // update board
-                    board.board = board.board.mov(mov);
+                    board.0 = board.0.mov(mov);
 
                     // update peg position
                     let prev_pos = *board_pos;
-                    let new_pos = BoardPosition {
-                        y: destination.0,
-                        x: destination.1,
-                    };
-                    *board_pos = new_pos;
+                    let new_pos = nearest_peg;
+                    *board_pos = nearest_peg;
                     commands.trigger(PegMoved {
                         prev_pos,
                         new_pos,
@@ -535,7 +273,7 @@ fn handle_click(
                     });
                     // remove skipped peg
                     for peg in pegs {
-                        if let Ok((b, _)) = positions.get(peg) {
+                        if let Ok(b) = positions.get(peg) {
                             if b.y == mov.skip.0 && b.x == mov.skip.1 {
                                 commands.entity(peg).despawn();
                             }
@@ -546,7 +284,7 @@ fn handle_click(
                 }
             } else {
                 if *board_pos == nearest_peg {
-                    entity_commands.insert(FollowMouse);
+                    entity_commands.insert(Selected);
                     entity_commands.remove::<SnapToBoardPosition>();
                 }
             }
@@ -558,17 +296,17 @@ fn peg_selection_cursor(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
     pegs: Query<Entity, With<Peg>>,
-    mut positions: Query<(&mut BoardPosition, &mut Transform)>,
-    follow_mouse: Query<&FollowMouse>,
-    mut board: Query<&mut BoardComponent>,
+    mut positions: Query<&mut BoardPosition>,
+    selected: Query<&Selected>,
+    mut board: ResMut<CurrentBoard>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
 ) {
     if let Some(cursor_pos) = window.cursor_position() {
         handle_click(
             &mut commands,
             pegs,
+            selected,
             &mut positions,
-            follow_mouse,
             &mut board,
             cursor_pos,
             &camera_query,
@@ -579,9 +317,9 @@ fn peg_selection_cursor(
 fn peg_selection_touch(
     mut commands: Commands,
     pegs: Query<Entity, With<Peg>>,
-    mut positions: Query<(&mut BoardPosition, &mut Transform)>,
-    follow_mouse: Query<&FollowMouse>,
-    mut board: Query<&mut BoardComponent>,
+    mut positions: Query<&mut BoardPosition>,
+    selected: Query<&Selected>,
+    mut board: ResMut<CurrentBoard>,
     touches: Res<Touches>,
     mut current_touch_id: Query<&mut CurrentTouchId>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
@@ -594,8 +332,8 @@ fn peg_selection_touch(
             handle_click(
                 &mut commands,
                 pegs,
+                selected,
                 &mut positions,
-                follow_mouse,
                 &mut board,
                 touch.position(),
                 &camera_query,
@@ -635,7 +373,7 @@ fn snap_to_board_grid(
 fn follow_mouse(
     window: Single<&Window, With<PrimaryWindow>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
-    transforms: Query<&mut Transform, With<FollowMouse>>,
+    transforms: Query<&mut Transform, With<Selected>>,
     mut request_redraw: EventWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
@@ -716,28 +454,21 @@ struct PegSolitaire;
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
         app.insert_resource(WinitSettings::desktop_app());
-        app.insert_resource(Solution(Default::default()));
+
+        app.init_resource::<CurrentBoard>();
+        app.init_resource::<CurrentSolution>();
+
+        app.add_plugins(Solver);
+        app.add_plugins(HintsPlugin);
+        app.add_plugins(StatsPlugin);
+        app.add_plugins(StatusPlugin);
+
         app.add_observer(update_solution);
-        app.add_systems(Update, draw_solution);
         app.add_systems(Update, toggle_fps_overlay);
-        app.add_systems(Startup, (setup_board, spawn_pegs).chain());
+        app.add_systems(Startup, spawn_pegs);
         app.add_systems(Startup, setup_3d_meshes);
         // app.add_systems(Startup, camera_setup_3d);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
-        app.add_systems(Startup, create_solution_dag);
-        app.add_systems(
-            FixedUpdate,
-            calculate_random_move_chances.run_if(resource_added::<FeasibleConstellations>),
-        );
-        app.add_systems(FixedUpdate, poll_task);
-        app.insert_resource(ShowHints);
-        app.add_observer(toggle_hints);
-        app.add_systems(
-            Update,
-            draw_possible_moves.run_if(
-                resource_exists::<ShowHints>.and(resource_exists::<FeasibleConstellations>),
-            ),
-        );
         app.add_systems(Update, snap_to_board_grid);
         app.add_systems(Update, follow_mouse);
         app.add_systems(
@@ -746,80 +477,14 @@ impl Plugin for PegSolitaire {
         );
         app.add_systems(Startup, touch_hack);
         app.add_systems(Update, peg_selection_touch);
-        app.add_observer(update_stats_on_move);
-        app.add_systems(
-            FixedUpdate,
-            update_stats_on_solution.run_if(
-                resource_added::<FeasibleConstellations>.or(resource_added::<RandomMoveChances>),
-            ),
-        );
-        app.add_observer(update_next_move_chance);
-        app.add_observer(update_overall_success);
         app.add_systems(Update, fullscreen_toggle);
         app.add_systems(Update, handle_exit);
         app.add_observer(update_window_theme);
         app.add_systems(Update, highlight_selected);
-        app.add_systems(Startup, add_text);
     }
 }
 
-fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let latin_modern = asset_server.load("fonts/latinmodern-math.otf");
-    let large_font = TextFont {
-        font: latin_modern.clone(),
-        font_size: 100.0,
-        ..default()
-    };
-    let medium_font = TextFont {
-        font: latin_modern.clone(),
-        font_size: 80.0,
-        ..default()
-    };
-    let small_font = TextFont {
-        font: latin_modern.clone(),
-        font_size: 50.0,
-        ..default()
-    };
-    let title_pos =
-        Vec3::from((board_to_world(BoardPosition { x: 4, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
-    let title_pos_1 =
-        Vec3::from((board_to_world(BoardPosition { x: 1, y: 4 }), 1.)) + Vec3::new(0.5, -0.5, 0.0);
-    let text_pos = title_pos - 1.0 * Vec3::Y;
-    commands
-        .spawn((
-            Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
-            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos),
-            medium_font.clone(),
-            TextLayout::new_with_justify(JustifyText::Left),
-            Anchor::TopLeft,
-            OverallSuccessRatio,
-        ))
-        .with_child((TextSpan(" ... ?".into()), medium_font.clone()));
-    commands.spawn((
-        Text2d::new("“chance of winning by chosing moves at random”"),
-        Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(text_pos),
-        small_font.clone(),
-        TextLayout::new(JustifyText::Center, LineBreak::WordBoundary),
-        TextBounds::from(Vec2::new(600.0, 300.0)),
-        Anchor::TopLeft,
-    ));
-    commands
-        .spawn((
-            Text2d::new(""),
-            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos_1),
-            large_font.clone(),
-            TextLayout::new_with_justify(JustifyText::Center),
-            Anchor::TopRight,
-            NextMoveChanceText,
-        ))
-        .with_child((TextSpan("? / ?\n".into()), large_font.clone()))
-        .with_child((
-            TextSpan("moves lead to feasible\nconstellations".into()),
-            small_font.clone(),
-        ));
-}
-
-fn highlight_selected(mut painter: ShapePainter, selected: Query<&Transform, With<FollowMouse>>) {
+fn highlight_selected(mut painter: ShapePainter, selected: Query<&Transform, With<Selected>>) {
     for selected in selected {
         painter.set_translation(selected.translation - Vec3::Z * 0.1);
         painter.set_color(Color::WHITE);
