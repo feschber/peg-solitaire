@@ -1,0 +1,60 @@
+use bevy::{
+    prelude::*,
+    window::{PrimaryWindow, RequestRedraw},
+};
+
+use crate::{
+    Selected, SnapToBoardPosition,
+    board::{BoardPosition, PEG_POS, PEG_POS_RAISED},
+    viewport_to_world,
+};
+
+pub struct Movement;
+
+impl Plugin for Movement {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, snap_to_board_grid);
+        app.add_systems(Update, follow_mouse);
+    }
+}
+
+fn snap_to_board_grid(
+    mut commands: Commands,
+    pegs: Query<Entity, With<SnapToBoardPosition>>,
+    mut pos: Query<(&BoardPosition, &mut Transform), With<SnapToBoardPosition>>,
+    mut request_redraw: EventWriter<RequestRedraw>,
+) {
+    for peg in pegs {
+        if let Ok((board_pos, mut transform)) = pos.get_mut(peg) {
+            let current = transform.translation;
+            let target = Vec3::from(((*board_pos).to_world_space(), PEG_POS));
+            let mut new_pos = current.lerp(target, 0.2);
+            if new_pos.distance_squared(target) < 0.0001 {
+                new_pos = target;
+                commands.entity(peg).remove::<SnapToBoardPosition>();
+            }
+            transform.translation = new_pos;
+            request_redraw.write(RequestRedraw);
+        }
+    }
+}
+
+fn follow_mouse(
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera_query: Single<(&Camera, &GlobalTransform)>,
+    transforms: Query<&mut Transform, With<Selected>>,
+    mut request_redraw: EventWriter<RequestRedraw>,
+) {
+    let (camera, camera_transform) = *camera_query;
+    if let Some(cursor_pos) = window.cursor_position() {
+        for mut transform in transforms {
+            let current_z = transform.translation.z;
+            let destination_z = PEG_POS_RAISED;
+            if let Some(mut destination) = viewport_to_world(cursor_pos, camera, camera_transform) {
+                destination.z = current_z.lerp(destination_z, 0.2);
+                transform.translation = destination;
+                request_redraw.write(RequestRedraw);
+            }
+        }
+    }
+}
