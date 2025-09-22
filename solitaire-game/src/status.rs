@@ -41,7 +41,7 @@ fn draw_solution(
             pos_ws
         };
 
-        for (i, mov) in solution.0.clone().into_iter().enumerate() {
+        for (i, _mov) in solution.0.clone().into_iter().enumerate() {
             let end_idx = solution.0.total() - 1;
             let pos = start.lerp(end, i as f32 / end_idx as f32);
             painter.set_translation(pos);

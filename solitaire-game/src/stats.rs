@@ -31,6 +31,14 @@ struct NextMoveChanceText;
 #[derive(Component)]
 struct OverallSuccessRatio;
 
+fn update_stats_on_solution(mut commands: Commands) {
+    commands.trigger(UpdateStats);
+}
+
+fn update_stats_on_move(_trigger: Trigger<PegMoved>, mut commands: Commands) {
+    commands.trigger(UpdateStats);
+}
+
 fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
     let latin_modern = asset_server.load("fonts/latinmodern-math.otf");
     let large_font = TextFont {
@@ -85,14 +93,6 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             TextSpan("moves lead to feasible\nconstellations".into()),
             small_font.clone(),
         ));
-}
-
-fn update_stats_on_solution(mut commands: Commands) {
-    commands.trigger(UpdateStats);
-}
-
-fn update_stats_on_move(_trigger: Trigger<PegMoved>, mut commands: Commands) {
-    commands.trigger(UpdateStats);
 }
 
 fn update_overall_success(

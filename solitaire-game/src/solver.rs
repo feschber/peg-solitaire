@@ -5,6 +5,7 @@ use bevy::{
     ecs::world::CommandQueue,
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task},
+    winit::{EventLoopProxyWrapper, WakeUp},
 };
 use solitaire_solver::Board;
 
@@ -48,6 +49,10 @@ fn create_solution_dag(mut commands: Commands) {
             info!("feasible constellations calculated!");
             world.insert_resource(FeasibleConstellations(feasible_hashset));
             world.entity_mut(entity).remove::<BackgroundTask>();
+            let event_loop = world
+                .get_resource::<EventLoopProxyWrapper<WakeUp>>()
+                .unwrap();
+            event_loop.send_event(WakeUp).expect("wakeup");
         });
         command_queue
     });
