@@ -3539,6 +3539,7 @@ dependencies = [
  "clap",
  "solitaire-game",
  "solitaire-solver",
+ "solution-cache",
 ]
 
 [[package]]

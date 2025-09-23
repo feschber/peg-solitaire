@@ -28,6 +28,9 @@ enum Command {
     CompareSolutions,
     /// calculate success ratio when chosing moves at random
     CalculateRandomChanceSuccessRatio,
+    /// load solutions from cache
+    #[cfg(feature = "solution_cache")]
+    LoadSolutions,
 }
 
 fn main() {
@@ -67,6 +70,10 @@ fn main() {
                         .into_iter()
                         .collect();
                 assert_eq!(solutions, solutions_naive)
+            }
+            #[cfg(feature = "solution_cache")]
+            Command::LoadSolutions => {
+                solution_cache::load_solutions();
             }
         },
         None => {

@@ -11,6 +11,7 @@ use crate::{
     solver::Solver,
     stats::StatsPlugin,
     status::StatusPlugin,
+    undo::Buttons,
     window::MainWindow,
 };
 
@@ -22,6 +23,7 @@ mod movement;
 mod solver;
 mod stats;
 mod status;
+mod undo;
 mod window;
 
 #[bevy_main]
@@ -93,6 +95,7 @@ impl Plugin for PegSolitaire {
         app.add_plugins(StatusPlugin);
         app.add_plugins(Movement);
         app.add_plugins(Input);
+        app.add_plugins(Buttons);
 
         app.add_observer(update_solution);
         // app.add_systems(Startup, camera_setup_3d);
