@@ -101,7 +101,6 @@ fn peg_selection_touch(
                 return;
             };
             let board_pos = BoardPosition::from_world_space(world_pos.xy());
-            error!("TOUCH EVENT: {board_pos:?}");
             commands.trigger(PosClicked(board_pos));
         }
         commands.insert_resource(CurrentTouchId(touch.id()));
