@@ -1,9 +1,9 @@
-use bevy::{ecs::entity_disabling::Disabled, prelude::*, winit::WinitSettings};
+use bevy::{prelude::*, winit::WinitSettings};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
 use crate::{
-    board::{BoardPlugin, BoardPosition, PEG_RADIUS, Peg},
+    board::{BoardPlugin, BoardPosition, PEG_RADIUS},
     fps_overlay::FpsOverlay,
     hints::HintsPlugin,
     input::Input,
