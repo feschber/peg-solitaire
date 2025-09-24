@@ -129,7 +129,9 @@ fn handle_button<T: Component, U: Default + Event>(
 
 fn do_undo(_: Trigger<UndoEvent>, mut solution: ResMut<CurrentSolution>) {
     info!("undo triggered!");
-    solution.0.pop();
+    if solution.0.len() > 0 {
+        solution.0.pop();
+    }
 }
 
 #[derive(Component)]
