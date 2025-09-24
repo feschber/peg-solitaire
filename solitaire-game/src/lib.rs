@@ -1,9 +1,9 @@
-use bevy::{prelude::*, winit::WinitSettings};
+use bevy::{ecs::entity_disabling::Disabled, prelude::*, winit::WinitSettings};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
 use crate::{
-    board::{BoardPlugin, BoardPosition, PEG_RADIUS},
+    board::{BoardPlugin, BoardPosition, PEG_RADIUS, Peg},
     fps_overlay::FpsOverlay,
     hints::HintsPlugin,
     input::Input,
@@ -67,10 +67,17 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
 
 fn update_solution(move_event: Trigger<PegMoved>, mut solution: ResMut<CurrentSolution>) {
     solution.0.push(move_event.mov);
+    solution.1.push(move_event.pegs);
 }
 
 #[derive(Default, Resource)]
-struct CurrentSolution(solitaire_solver::Solution);
+struct CurrentSolution(solitaire_solver::Solution, Vec<MovedPegs>);
+
+#[derive(Clone, Copy, Debug)]
+struct MovedPegs {
+    moved: Entity,
+    skipped: Entity,
+}
 
 #[allow(unused)]
 #[derive(Event)]
@@ -78,6 +85,7 @@ struct PegMoved {
     prev_pos: BoardPosition,
     new_pos: BoardPosition,
     mov: solitaire_solver::Move,
+    pegs: MovedPegs,
 }
 struct PegSolitaire;
 

@@ -1,8 +1,11 @@
-use bevy::{input::common_conditions::input_just_pressed, prelude::*, window::PrimaryWindow};
+use bevy::{
+    ecs::entity_disabling::Disabled, input::common_conditions::input_just_pressed, prelude::*,
+    window::PrimaryWindow,
+};
 use solitaire_solver::Board;
 
 use crate::{
-    CurrentBoard, PegMoved, Selected, SnapToBoardPosition,
+    CurrentBoard, MovedPegs, PegMoved, Selected, SnapToBoardPosition,
     board::{BoardPosition, Peg},
     hints::ToggleHints,
     viewport_to_world,
@@ -62,7 +65,20 @@ fn handle_click(
                     let prev_pos = *board_pos;
                     let new_pos = nearest_peg;
                     *board_pos = nearest_peg;
+                    let moved_peg = entity;
+                    let skipped_pos = BoardPosition::from(mov.skip);
+                    let skipped_peg = pegs
+                        .iter()
+                        .find(|e| {
+                            let pos = positions.get_mut(*e).unwrap();
+                            *pos == skipped_pos
+                        })
+                        .unwrap();
                     commands.trigger(PegMoved {
+                        pegs: MovedPegs {
+                            moved: moved_peg,
+                            skipped: skipped_peg,
+                        },
                         prev_pos,
                         new_pos,
                         mov,
@@ -71,7 +87,7 @@ fn handle_click(
                     for peg in pegs {
                         if let Ok(b) = positions.get(peg) {
                             if b.y == mov.skip.0 && b.x == mov.skip.1 {
-                                commands.entity(peg).despawn();
+                                commands.entity(peg).insert(Disabled);
                             }
                         }
                     }

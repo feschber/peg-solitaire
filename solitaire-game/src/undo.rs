@@ -1,12 +1,14 @@
 use bevy::{
+    ecs::entity_disabling::Disabled,
     input::common_conditions::input_just_pressed,
     prelude::*,
     window::{PrimaryWindow, RequestRedraw},
-    winit::{EventLoopProxyWrapper, WakeUp},
 };
 use bevy_vector_shapes::prelude::*;
 
-use crate::{CurrentSolution, viewport_to_world};
+use crate::{
+    CurrentBoard, CurrentSolution, SnapToBoardPosition, board::BoardPosition, viewport_to_world,
+};
 
 pub struct Buttons;
 
@@ -127,10 +129,28 @@ fn handle_button<T: Component, U: Default + Event>(
     }
 }
 
-fn do_undo(_: Trigger<UndoEvent>, mut solution: ResMut<CurrentSolution>) {
+fn do_undo(
+    _: Trigger<UndoEvent>,
+    mut solution: ResMut<CurrentSolution>,
+    mut board: ResMut<CurrentBoard>,
+    mut commands: Commands,
+) {
     info!("undo triggered!");
     if solution.0.len() > 0 {
-        solution.0.pop();
+        let mov = solution.0.pop();
+        let pegs = solution.1.pop().unwrap();
+        board.0 = board.0.reverse_mov(mov);
+        let prev_pos = BoardPosition::from(mov.pos);
+        let skip_pos = BoardPosition::from(mov.skip);
+        commands
+            .entity(pegs.skipped)
+            .remove::<Disabled>()
+            .insert(skip_pos)
+            .insert(SnapToBoardPosition);
+        commands
+            .entity(pegs.moved)
+            .insert(prev_pos)
+            .insert(SnapToBoardPosition);
     }
 }
 
@@ -156,14 +176,28 @@ fn reset(
     mut solution: ResMut<CurrentSolution>,
     mut commands: Commands,
     mut request_redraw: EventWriter<RequestRedraw>,
+    mut board: ResMut<CurrentBoard>,
 ) {
     let entity = *reset_entity;
     let mut reset = reset.get_mut(entity).unwrap();
     let ticks = reset.elapsed;
     reset.elapsed += 1;
-    if ticks % 10 == 0 {
+    if ticks % 3 == 0 {
         if solution.0.len() > 0 {
-            solution.0.pop();
+            let mov = solution.0.pop();
+            let pegs = solution.1.pop().unwrap();
+            board.0 = board.0.reverse_mov(mov);
+            let prev_pos = BoardPosition::from(mov.pos);
+            let skip_pos = BoardPosition::from(mov.skip);
+            commands
+                .entity(pegs.skipped)
+                .remove::<Disabled>()
+                .insert(skip_pos)
+                .insert(SnapToBoardPosition);
+            commands
+                .entity(pegs.moved)
+                .insert(prev_pos)
+                .insert(SnapToBoardPosition);
         } else {
             commands.entity(entity).despawn();
         }
