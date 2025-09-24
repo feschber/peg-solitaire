@@ -1,7 +1,7 @@
 use bevy::{prelude::*, sprite::Anchor, text::TextBounds, window::RequestRedraw};
 
 use crate::{
-    BoardPosition, CurrentBoard, PegMoved,
+    BoardPosition, CurrentBoard,
     solver::{FeasibleConstellations, RandomMoveChances},
 };
 
@@ -10,11 +10,12 @@ pub struct StatsPlugin;
 impl Plugin for StatsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, add_text);
-        app.add_observer(update_stats_on_move);
         app.add_systems(
             FixedUpdate,
-            update_stats_on_solution.run_if(
-                resource_added::<FeasibleConstellations>.or(resource_added::<RandomMoveChances>),
+            update_stats.run_if(
+                resource_added::<FeasibleConstellations>
+                    .or(resource_added::<RandomMoveChances>)
+                    .or(resource_changed::<CurrentBoard>),
             ),
         );
         app.add_observer(update_next_move_chance);
@@ -31,11 +32,7 @@ struct NextMoveChanceText;
 #[derive(Component)]
 struct OverallSuccessRatio;
 
-fn update_stats_on_solution(mut commands: Commands) {
-    commands.trigger(UpdateStats);
-}
-
-fn update_stats_on_move(_trigger: Trigger<PegMoved>, mut commands: Commands) {
+fn update_stats(mut commands: Commands) {
     commands.trigger(UpdateStats);
 }
 

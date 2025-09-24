@@ -7,7 +7,8 @@ use bevy::{
 use bevy_vector_shapes::prelude::*;
 
 use crate::{
-    CurrentBoard, CurrentSolution, SnapToBoardPosition, board::BoardPosition, viewport_to_world,
+    CurrentBoard, CurrentSolution, PegMoved, board::BoardPosition, hints::ToggleHints,
+    viewport_to_world,
 };
 
 pub struct Buttons;
@@ -17,17 +18,18 @@ impl Plugin for Buttons {
         app.add_systems(Startup, add_buttons);
         app.add_systems(
             Update,
-            handle_button::<Undo, UndoEvent>.run_if(input_just_pressed(MouseButton::Left)),
+            (
+                handle_button::<Undo, UndoEvent>.run_if(input_just_pressed(MouseButton::Left)),
+                handle_button::<Reset, ResetEvent>.run_if(input_just_pressed(MouseButton::Left)),
+                handle_button::<Hints, ToggleHints>.run_if(input_just_pressed(MouseButton::Left)),
+                handle_touch::<Undo, UndoEvent>,
+                handle_touch::<Reset, ResetEvent>,
+                handle_touch::<Hints, ToggleHints>,
+            ),
         );
-        app.add_systems(
-            Update,
-            handle_button::<Reset, ResetEvent>.run_if(input_just_pressed(MouseButton::Left)),
-        );
-        app.add_systems(Update, draw_buttons);
-        app.add_systems(Update, update_button_pos);
+        app.add_systems(Update, (draw_buttons, update_button_pos, reset));
         app.add_observer(do_undo);
         app.add_observer(do_reset);
-        app.add_systems(Update, reset);
     }
 }
 
@@ -51,6 +53,9 @@ struct Undo;
 
 #[derive(Component)]
 struct Reset;
+
+#[derive(Component)]
+struct Hints;
 
 fn viewport_topleft_world_space(camera: &Camera, transform: &GlobalTransform) -> Option<Vec3> {
     camera.logical_viewport_rect().and_then(|view_port| {
@@ -82,7 +87,7 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     };
     // reset button
     commands.spawn((
-        ViewPortRelativeTranslation(Vec3::new(1.5, -0.5, 0.0)),
+        ViewPortRelativeTranslation(Vec3::new(1.5, -1.0, 0.0)),
         Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
         CircleButton {
             color: Color::WHITE,
@@ -95,7 +100,7 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
     // undo button
     commands.spawn((
-        ViewPortRelativeTranslation(Vec3::new(2.5, -0.5, 0.0)),
+        ViewPortRelativeTranslation(Vec3::new(2.5, -1.0, 0.0)),
         Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
         CircleButton {
             color: Color::WHITE,
@@ -106,12 +111,25 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
         font_awesome.clone(),
         Undo,
     ));
+    // hints button
+    commands.spawn((
+        ViewPortRelativeTranslation(Vec3::new(3.5, -1.0, 0.0)),
+        Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
+        CircleButton {
+            color: Color::WHITE,
+            radius: 0.4,
+        },
+        Text2d::new("\u{f0eb}".to_string()),
+        TextColor(Color::BLACK.into()),
+        font_awesome.clone(),
+        Hints,
+    ));
 }
 
 fn handle_button<T: Component, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform)>,
-    undo_button: Query<(&CircleButton, &Transform), With<T>>,
+    button: Query<(&CircleButton, &Transform), With<T>>,
     mut commands: Commands,
 ) where
     T: Send + Sync,
@@ -121,7 +139,28 @@ fn handle_button<T: Component, U: Default + Event>(
         let Some(world_pos) = viewport_to_world(cursor_pos, camera, transform) else {
             return;
         };
-        for (button, transform) in undo_button {
+        for (button, transform) in button {
+            if world_pos.xy().distance(transform.translation.xy()) < button.radius {
+                commands.trigger(U::default());
+            }
+        }
+    }
+}
+
+fn handle_touch<T: Component, U: Default + Event>(
+    camera: Single<(&Camera, &GlobalTransform)>,
+    button: Query<(&CircleButton, &Transform), With<T>>,
+    mut commands: Commands,
+    touches: Res<Touches>,
+) where
+    T: Send + Sync,
+{
+    for pos in touches.iter_just_pressed().map(|t| t.position()) {
+        let (camera, transform) = *camera;
+        let Some(world_pos) = viewport_to_world(pos, camera, transform) else {
+            return;
+        };
+        for (button, transform) in button {
             if world_pos.xy().distance(transform.translation.xy()) < button.radius {
                 commands.trigger(U::default());
             }
@@ -137,21 +176,27 @@ fn do_undo(
 ) {
     info!("undo triggered!");
     if solution.0.len() > 0 {
-        let mov = solution.0.pop();
-        let pegs = solution.1.pop().unwrap();
-        board.0 = board.0.reverse_mov(mov);
-        let prev_pos = BoardPosition::from(mov.pos);
-        let skip_pos = BoardPosition::from(mov.skip);
-        commands
-            .entity(pegs.skipped)
-            .remove::<Disabled>()
-            .insert(skip_pos)
-            .insert(SnapToBoardPosition);
-        commands
-            .entity(pegs.moved)
-            .insert(prev_pos)
-            .insert(SnapToBoardPosition);
+        reverse_last_move(&mut solution, &mut board, &mut commands);
     }
+}
+
+fn reverse_last_move(
+    solution: &mut CurrentSolution,
+    board: &mut CurrentBoard,
+    commands: &mut Commands,
+) {
+    let mov = solution.0.pop();
+    let pegs = solution.1.pop().unwrap();
+    board.0 = board.0.reverse_mov(mov);
+    let prev_pos = BoardPosition::from(mov.pos);
+    let skip_pos = BoardPosition::from(mov.skip);
+    commands
+        .entity(pegs.skipped)
+        .remove::<Disabled>()
+        .insert(skip_pos);
+    commands.entity(pegs.moved).insert(prev_pos);
+    commands.trigger(PegMoved { peg: pegs.moved });
+    commands.trigger(PegMoved { peg: pegs.skipped });
 }
 
 #[derive(Component)]
@@ -184,20 +229,7 @@ fn reset(
     reset.elapsed += 1;
     if ticks % 3 == 0 {
         if solution.0.len() > 0 {
-            let mov = solution.0.pop();
-            let pegs = solution.1.pop().unwrap();
-            board.0 = board.0.reverse_mov(mov);
-            let prev_pos = BoardPosition::from(mov.pos);
-            let skip_pos = BoardPosition::from(mov.skip);
-            commands
-                .entity(pegs.skipped)
-                .remove::<Disabled>()
-                .insert(skip_pos)
-                .insert(SnapToBoardPosition);
-            commands
-                .entity(pegs.moved)
-                .insert(prev_pos)
-                .insert(SnapToBoardPosition);
+            reverse_last_move(&mut solution, &mut board, &mut commands);
         } else {
             commands.entity(entity).despawn();
         }

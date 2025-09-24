@@ -1,16 +1,19 @@
 use bevy::{
+    ecs::entity_disabling::Disabled,
     prelude::*,
     render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
 };
 use solitaire_solver::Board;
 
-use crate::CurrentBoard;
+use crate::{CurrentBoard, MoveEvent, PegMoved, input::RequestPegMove};
 
 pub struct BoardPlugin;
 
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_pegs);
+        app.add_observer(on_peg_move_request);
+        app.add_observer(on_move_peg);
     }
 }
 
@@ -32,6 +35,11 @@ pub struct Peg;
 pub struct BoardPosition {
     pub x: i64,
     pub y: i64,
+}
+
+#[derive(Event)]
+struct MovePeg {
+    mov: solitaire_solver::Move,
 }
 
 impl From<BoardPosition> for Vec2 {
@@ -155,4 +163,46 @@ fn spawn_pegs(
             }
         }
     }
+}
+
+/// request to move peg comming from input system
+fn on_peg_move_request(
+    move_request: Trigger<RequestPegMove>,
+    mut board: ResMut<CurrentBoard>,
+    mut commands: Commands,
+) {
+    let src = move_request.src;
+    let dst = move_request.dst;
+    if let Some(mov) = board.0.is_legal_move(src.into(), dst.into()) {
+        board.0 = board.0.mov(mov);
+        commands.trigger(MovePeg { mov });
+    }
+}
+
+fn on_move_peg(
+    move_peg: Trigger<MovePeg>,
+    mut pegs: Query<(Entity, &mut BoardPosition), With<Peg>>,
+    mut commands: Commands,
+) {
+    let mov = move_peg.mov;
+    let prev_pos: BoardPosition = mov.pos.into();
+    let skipped_pos: BoardPosition = mov.skip.into();
+    let new_pos: BoardPosition = mov.target.into();
+    let (skipped, _) = pegs
+        .iter()
+        .find(|(_, p)| **p == skipped_pos)
+        .expect("skipped");
+    // move peg
+    let (moved, mut p) = pegs.iter_mut().find(|(_, p)| **p == prev_pos).expect("peg");
+    *p = new_pos;
+    // disable skipped peg
+    commands.entity(skipped).insert(Disabled);
+
+    // trigger moved event
+    commands.trigger(MoveEvent {
+        mov,
+        moved,
+        skipped,
+    });
+    commands.trigger(PegMoved { peg: moved });
 }

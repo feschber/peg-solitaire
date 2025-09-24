@@ -20,7 +20,7 @@ impl Plugin for HintsPlugin {
     }
 }
 
-#[derive(Event)]
+#[derive(Default, Event)]
 pub struct ToggleHints;
 
 #[derive(Resource)]

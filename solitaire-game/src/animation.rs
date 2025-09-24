@@ -4,18 +4,28 @@ use bevy::{
 };
 
 use crate::{
-    Selected, SnapToBoardPosition,
+    PegMoved, Selected,
     board::{BoardPosition, PEG_POS, PEG_POS_RAISED},
     viewport_to_world,
 };
 
-pub struct Movement;
+/// animates pegs to move to their current position smoothly
+/// or follow the cursor
+pub struct PegAnimation;
 
-impl Plugin for Movement {
+impl Plugin for PegAnimation {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, snap_to_board_grid);
         app.add_systems(Update, follow_mouse);
+        app.add_observer(on_peg_move);
     }
+}
+
+#[derive(Component)]
+struct SnapToBoardPosition;
+
+fn on_peg_move(moved: Trigger<PegMoved>, mut commands: Commands) {
+    commands.entity(moved.peg).insert(SnapToBoardPosition);
 }
 
 fn snap_to_board_grid(

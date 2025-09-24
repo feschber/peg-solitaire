@@ -3,11 +3,11 @@ use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
 use crate::{
+    animation::PegAnimation,
     board::{BoardPlugin, BoardPosition, PEG_RADIUS},
     fps_overlay::FpsOverlay,
     hints::HintsPlugin,
     input::Input,
-    movement::Movement,
     solver::Solver,
     stats::StatsPlugin,
     status::StatusPlugin,
@@ -15,11 +15,11 @@ use crate::{
     window::MainWindow,
 };
 
+mod animation;
 mod board;
 mod fps_overlay;
 mod hints;
 mod input;
-mod movement;
 mod solver;
 mod stats;
 mod status;
@@ -46,9 +46,6 @@ struct CurrentBoard(Board);
 #[derive(Component)]
 struct Selected;
 
-#[derive(Component)]
-struct SnapToBoardPosition;
-
 fn camera_setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
@@ -65,16 +62,17 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
     }
 }
 
-fn update_solution(move_event: Trigger<PegMoved>, mut solution: ResMut<CurrentSolution>) {
+fn update_solution(move_event: Trigger<MoveEvent>, mut solution: ResMut<CurrentSolution>) {
     solution.0.push(move_event.mov);
-    solution.1.push(move_event.pegs);
+    solution.1.push(*move_event);
 }
 
 #[derive(Default, Resource)]
-struct CurrentSolution(solitaire_solver::Solution, Vec<MovedPegs>);
+struct CurrentSolution(solitaire_solver::Solution, Vec<MoveEvent>);
 
-#[derive(Clone, Copy, Debug)]
-struct MovedPegs {
+#[derive(Clone, Copy, Debug, Event)]
+struct MoveEvent {
+    mov: solitaire_solver::Move,
     moved: Entity,
     skipped: Entity,
 }
@@ -82,10 +80,7 @@ struct MovedPegs {
 #[allow(unused)]
 #[derive(Event)]
 struct PegMoved {
-    prev_pos: BoardPosition,
-    new_pos: BoardPosition,
-    mov: solitaire_solver::Move,
-    pegs: MovedPegs,
+    peg: Entity,
 }
 struct PegSolitaire;
 
@@ -101,7 +96,7 @@ impl Plugin for PegSolitaire {
         app.add_plugins(HintsPlugin);
         app.add_plugins(StatsPlugin);
         app.add_plugins(StatusPlugin);
-        app.add_plugins(Movement);
+        app.add_plugins(PegAnimation);
         app.add_plugins(Input);
         app.add_plugins(Buttons);
 

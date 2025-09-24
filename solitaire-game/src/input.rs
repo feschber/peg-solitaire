@@ -1,16 +1,12 @@
-use bevy::{
-    ecs::entity_disabling::Disabled, input::common_conditions::input_just_pressed, prelude::*,
-    window::PrimaryWindow,
-};
-use solitaire_solver::Board;
+use bevy::{input::common_conditions::input_just_pressed, prelude::*, window::PrimaryWindow};
 
 use crate::{
-    CurrentBoard, MovedPegs, PegMoved, Selected, SnapToBoardPosition,
+    PegMoved, Selected,
     board::{BoardPosition, Peg},
-    hints::ToggleHints,
     viewport_to_world,
 };
 
+/// triggers peg movement request events based on mouse / touch input
 pub struct Input;
 
 impl Plugin for Input {
@@ -19,144 +15,95 @@ impl Plugin for Input {
             Update,
             peg_selection_cursor.run_if(input_just_pressed(MouseButton::Left)),
         );
-        app.add_systems(Startup, touch_hack);
         app.add_systems(Update, peg_selection_touch);
+        app.add_observer(on_board_clicked);
     }
 }
 
-fn handle_click(
-    commands: &mut Commands,
-    pegs: Query<Entity, With<Peg>>,
-    selected: Query<&Selected>,
-    positions: &mut Query<&mut BoardPosition>,
-    board: &mut ResMut<CurrentBoard>,
-    cursor_pos: Vec2,
-    camera_query: &Single<(&Camera, &GlobalTransform)>,
+#[derive(Event)]
+pub struct RequestPegMove {
+    pub src: BoardPosition,
+    pub dst: BoardPosition,
+}
+
+#[derive(Resource)]
+struct SelectedPos(BoardPosition);
+
+#[derive(Event)]
+struct PosClicked(BoardPosition);
+
+fn on_board_clicked(
+    clicked_pos: Trigger<PosClicked>,
+    mut commands: Commands,
+    selected_pos: Option<ResMut<SelectedPos>>,
+    pegs: Query<(Entity, &BoardPosition), With<Peg>>,
 ) {
-    let (camera, camera_transform) = **camera_query;
-    let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform) else {
-        return;
-    };
-    let nearest_peg = BoardPosition::from_world_space(world_pos_cursor.xy());
-    if !Board::inbounds(nearest_peg.into()) {
-        commands.trigger(ToggleHints);
-    }
-    for entity in pegs {
-        if let Ok(mut board_pos) = positions.get_mut(entity) {
-            let mut entity_commands = commands.entity(entity);
-            if selected.contains(entity) {
-                entity_commands.remove::<Selected>();
-                entity_commands.insert(SnapToBoardPosition);
+    let clicked = pegs.iter().find(|(_, p)| **p == clicked_pos.0);
+    let selected =
+        selected_pos.map(|selected_pos| pegs.iter().find(|(_, p)| **p == selected_pos.0).unwrap());
 
-                // allow swapping pegs
-                let current = (*board_pos).into();
-                let destination = nearest_peg.into();
-                if !Board::inbounds(destination) {
-                    continue;
-                }
-                if board.0.occupied(destination) {
-                    // *board_pos = nearest_peg;
-                } else if let Some(mov) = board.0.is_legal_move(current, destination) {
-                    println!("{mov}");
-                    // update board
-                    board.0 = board.0.mov(mov);
-
-                    // update peg position
-                    let prev_pos = *board_pos;
-                    let new_pos = nearest_peg;
-                    *board_pos = nearest_peg;
-                    let moved_peg = entity;
-                    let skipped_pos = BoardPosition::from(mov.skip);
-                    let skipped_peg = pegs
-                        .iter()
-                        .find(|e| {
-                            let pos = positions.get_mut(*e).unwrap();
-                            *pos == skipped_pos
-                        })
-                        .unwrap();
-                    commands.trigger(PegMoved {
-                        pegs: MovedPegs {
-                            moved: moved_peg,
-                            skipped: skipped_peg,
-                        },
-                        prev_pos,
-                        new_pos,
-                        mov,
-                    });
-                    // remove skipped peg
-                    for peg in pegs {
-                        if let Ok(b) = positions.get(peg) {
-                            if b.y == mov.skip.0 && b.x == mov.skip.1 {
-                                commands.entity(peg).insert(Disabled);
-                            }
-                        }
-                    }
-                } else {
-                    println!("illegal move!");
+    match (selected, clicked) {
+        (None, Some((clicked, clicked_pos))) => {
+            commands.insert_resource(SelectedPos(*clicked_pos));
+            commands.entity(clicked).insert(Selected);
+        }
+        (Some((selected, selected_pos)), clicked) => {
+            commands.entity(selected).remove::<Selected>();
+            commands.remove_resource::<SelectedPos>();
+            commands.trigger(PegMoved { peg: selected }); // snap back
+            if let Some((clicked, clicked_pos)) = clicked {
+                if selected != clicked {
+                    commands.insert_resource(SelectedPos(*clicked_pos));
+                    commands.entity(clicked).insert(Selected);
                 }
             } else {
-                if *board_pos == nearest_peg {
-                    entity_commands.insert(Selected);
-                    entity_commands.remove::<SnapToBoardPosition>();
-                }
+                commands.trigger(RequestPegMove {
+                    src: *selected_pos,
+                    dst: clicked_pos.0,
+                });
             }
         }
+        _ => {}
     }
 }
 
 fn peg_selection_cursor(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
-    pegs: Query<Entity, With<Peg>>,
-    mut positions: Query<&mut BoardPosition>,
-    selected: Query<&Selected>,
-    mut board: ResMut<CurrentBoard>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
 ) {
     if let Some(cursor_pos) = window.cursor_position() {
-        handle_click(
-            &mut commands,
-            pegs,
-            selected,
-            &mut positions,
-            &mut board,
-            cursor_pos,
-            &camera_query,
-        )
+        let (camera, camera_transform) = *camera_query;
+        let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform) else {
+            return;
+        };
+        let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
+        commands.trigger(PosClicked(board_pos));
     }
 }
+
+#[derive(Resource, PartialEq, Eq)]
+struct CurrentTouchId(u64);
 
 fn peg_selection_touch(
     mut commands: Commands,
-    pegs: Query<Entity, With<Peg>>,
-    mut positions: Query<&mut BoardPosition>,
-    selected: Query<&Selected>,
-    mut board: ResMut<CurrentBoard>,
     touches: Res<Touches>,
-    mut current_touch_id: Query<&mut CurrentTouchId>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
+    current_touch_id: Option<Res<CurrentTouchId>>,
 ) {
-    let mut current_touch_id = current_touch_id.single_mut().unwrap();
     for touch in touches.iter() {
-        if touch.id() != current_touch_id.0 || touches.just_pressed(touch.id()) {
-            current_touch_id.0 = touch.id();
-            info!("touch position: {:?}", touch.position());
-            handle_click(
-                &mut commands,
-                pegs,
-                selected,
-                &mut positions,
-                &mut board,
-                touch.position(),
-                &camera_query,
-            )
+        if touches.just_pressed(touch.id())
+            || Some(touch.id()) != current_touch_id.as_ref().map(|id| id.0)
+        {
+            let (camera, camera_transform) = *camera_query;
+            let Some(world_pos) = viewport_to_world(touch.position(), camera, camera_transform)
+            else {
+                return;
+            };
+            let board_pos = BoardPosition::from_world_space(world_pos.xy());
+            error!("TOUCH EVENT: {board_pos:?}");
+            commands.trigger(PosClicked(board_pos));
         }
+        commands.insert_resource(CurrentTouchId(touch.id()));
     }
 }
-
-fn touch_hack(mut commands: Commands) {
-    commands.spawn(CurrentTouchId(u64::MAX));
-}
-
-#[derive(Component)]
-struct CurrentTouchId(u64);
