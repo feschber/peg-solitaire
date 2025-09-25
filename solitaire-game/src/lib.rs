@@ -103,7 +103,7 @@ impl Plugin for PegSolitaire {
         app.add_observer(update_solution);
         // app.add_systems(Startup, camera_setup_3d);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
-        app.add_systems(Update, highlight_selected);
+        app.add_systems(PostUpdate, highlight_selected);
     }
 }
 
