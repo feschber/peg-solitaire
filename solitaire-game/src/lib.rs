@@ -91,10 +91,7 @@ struct PegSolitaire;
 
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
-        app.insert_resource(WinitSettings {
-            focused_mode: UpdateMode::reactive(Duration::from_secs(20)),
-            unfocused_mode: UpdateMode::reactive_low_power(Duration::from_secs(60)),
-        });
+        app.insert_resource(WinitSettings::desktop_app());
 
         app.init_resource::<CurrentBoard>();
         app.init_resource::<CurrentSolution>();
