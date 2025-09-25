@@ -1,4 +1,9 @@
-use bevy::{prelude::*, winit::WinitSettings};
+use std::time::Duration;
+
+use bevy::{
+    prelude::*,
+    winit::{UpdateMode, WinitSettings},
+};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
@@ -86,7 +91,10 @@ struct PegSolitaire;
 
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
-        app.insert_resource(WinitSettings::desktop_app());
+        app.insert_resource(WinitSettings {
+            focused_mode: UpdateMode::reactive(Duration::from_secs(20)),
+            unfocused_mode: UpdateMode::reactive_low_power(Duration::from_secs(60)),
+        });
 
         app.init_resource::<CurrentBoard>();
         app.init_resource::<CurrentSolution>();

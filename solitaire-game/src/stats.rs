@@ -11,7 +11,7 @@ impl Plugin for StatsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, add_text);
         app.add_systems(
-            FixedUpdate,
+            Update,
             update_stats.run_if(
                 resource_added::<FeasibleConstellations>
                     .or(resource_added::<RandomMoveChances>)

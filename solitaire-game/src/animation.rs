@@ -24,8 +24,13 @@ impl Plugin for PegAnimation {
 #[derive(Component)]
 struct SnapToBoardPosition;
 
-fn on_peg_move(moved: Trigger<PegMoved>, mut commands: Commands) {
+fn on_peg_move(
+    moved: Trigger<PegMoved>,
+    mut commands: Commands,
+    mut request_redraw: EventWriter<RequestRedraw>,
+) {
     commands.entity(moved.peg).insert(SnapToBoardPosition);
+    request_redraw.write(RequestRedraw);
 }
 
 fn snap_to_board_grid(
@@ -53,7 +58,6 @@ fn follow_mouse(
     window: Single<&Window, With<PrimaryWindow>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
     transforms: Query<&mut Transform, With<Selected>>,
-    mut request_redraw: EventWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
     if let Some(cursor_pos) = window.cursor_position() {
@@ -63,7 +67,7 @@ fn follow_mouse(
             if let Some(mut destination) = viewport_to_world(cursor_pos, camera, camera_transform) {
                 destination.z = current_z.lerp(destination_z, 0.2);
                 transform.translation = destination;
-                request_redraw.write(RequestRedraw);
+                // no need to RequestRedraw, since mouse movement already triggers a wakeup
             }
         }
     }
