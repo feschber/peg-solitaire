@@ -1,8 +1,5 @@
-use bevy::{
-    ecs::entity_disabling::Disabled,
-    prelude::*,
-    render::mesh::{CircleMeshBuilder, SphereKind, SphereMeshBuilder},
-};
+use bevy::{ecs::entity_disabling::Disabled, prelude::*};
+use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
 use crate::{CurrentBoard, MoveEvent, PegMoved, input::RequestPegMove};
@@ -14,6 +11,7 @@ impl Plugin for BoardPlugin {
         app.add_systems(Startup, spawn_pegs);
         app.add_observer(on_peg_move_request);
         app.add_observer(on_move_peg);
+        app.add_systems(Update, draw_pegs);
     }
 }
 
@@ -103,37 +101,24 @@ fn world_to_board_transform() -> Transform {
     Transform::from_matrix(board_to_world_transform().compute_matrix().inverse())
 }
 
-fn spawn_pegs(
-    mut commands: Commands,
-    board: Res<CurrentBoard>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut color_materials: ResMut<Assets<ColorMaterial>>,
-) {
+#[derive(Component)]
+struct CircleComponent {
+    radius: f32,
+    color: Color,
+}
+
+fn spawn_pegs(mut commands: Commands, board: Res<CurrentBoard>) {
     // the board itself
     commands.spawn((
         BoardMarker,
-        Name::new("board"),
         Transform::from_translation(Vec3::new(0., 0., BOARD_POS)),
-        Mesh2d(meshes.add(CircleMeshBuilder::new(3.9, 1000).build())),
-        MeshMaterial2d(color_materials.add(Color::WHITE.with_luminance(0.02))),
+        CircleComponent {
+            radius: 3.9,
+            color: Color::WHITE.with_luminance(0.02),
+        },
     ));
 
     let board = &board.0;
-    let sphere = Mesh3d(
-        meshes.add(
-            SphereMeshBuilder::new(
-                1. / (2. * GOLDEN_RATIO),
-                SphereKind::Ico { subdivisions: 10 },
-            )
-            .build(),
-        ),
-    );
-    let hole_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(HOLE_RADIUS, 1000).build()));
-    let peg_circle = Mesh2d(meshes.add(CircleMeshBuilder::new(PEG_RADIUS, 1000).build()));
-    let hole_color = Color::WHITE.with_luminance(0.01);
-    let hole_material = materials.add(hole_color);
-    let hole_color_material = color_materials.add(hole_color);
     for y in 0..Board::SIZE {
         for x in 0..Board::SIZE {
             let board_pos = BoardPosition { y, x };
@@ -141,27 +126,36 @@ fn spawn_pegs(
             if Board::inbounds((y, x)) {
                 // spawn holes
                 commands.spawn((
-                    hole_circle.clone(),
+                    CircleComponent {
+                        radius: HOLE_RADIUS,
+                        color: Color::WHITE.with_luminance(0.01),
+                    },
                     Transform::from_translation((world_pos, BOARD_POS).into()),
-                    MeshMaterial3d::from(hole_material.clone()),
-                    MeshMaterial2d::from(hole_color_material.clone()),
                 ));
             }
 
             // spawn pegs
-            let col = Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.7);
+            let color = Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.7);
             if board.occupied((y, x)) {
                 commands.spawn((
-                    sphere.clone(),
-                    peg_circle.clone(),
-                    MeshMaterial3d(materials.add(col)),
-                    MeshMaterial2d(color_materials.add(col)),
+                    CircleComponent {
+                        radius: PEG_RADIUS,
+                        color,
+                    },
                     BoardPosition { y, x },
                     Transform::from_translation((world_pos, PEG_POS).into()),
                     Peg,
                 ));
             }
         }
+    }
+}
+
+fn draw_pegs(mut painter: ShapePainter, circles: Query<(&Transform, &CircleComponent)>) {
+    for (transform, circle) in circles {
+        painter.transform = *transform;
+        painter.set_color(circle.color);
+        painter.circle(circle.radius);
     }
 }
 

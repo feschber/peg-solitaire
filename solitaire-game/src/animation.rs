@@ -16,7 +16,7 @@ pub struct PegAnimation;
 impl Plugin for PegAnimation {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, snap_to_board_grid);
-        app.add_systems(Update, follow_mouse);
+        app.add_systems(PreUpdate, follow_mouse);
         app.add_observer(on_peg_move);
     }
 }

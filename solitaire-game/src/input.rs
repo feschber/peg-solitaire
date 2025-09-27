@@ -12,10 +12,10 @@ pub struct Input;
 impl Plugin for Input {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Update,
+            PreUpdate,
             peg_selection_cursor.run_if(input_just_pressed(MouseButton::Left)),
         );
-        app.add_systems(Update, peg_selection_touch);
+        app.add_systems(PreUpdate, peg_selection_touch);
         app.add_observer(on_board_clicked);
     }
 }

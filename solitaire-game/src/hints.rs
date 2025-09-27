@@ -60,7 +60,7 @@ fn draw_possible_moves(
                     } else {
                         Color::srgba(1., 0., 0., 1.)
                     });
-                    painter.set_translation(Vec3::new(0., 0., 0.));
+                    painter.set_translation(Vec3::new(0., 0., 0.1));
                     painter.thickness_type = ThicknessType::World;
                     painter.thickness = 0.075;
                     painter.line(start, start + (target - start) * 0.2);
