@@ -1,4 +1,4 @@
-use bevy::{prelude::*, winit::WinitSettings};
+use bevy::prelude::*;
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
@@ -86,8 +86,6 @@ struct PegSolitaire;
 
 impl Plugin for PegSolitaire {
     fn build(&self, app: &mut App) {
-        app.insert_resource(WinitSettings::desktop_app());
-
         app.init_resource::<CurrentBoard>();
         app.init_resource::<CurrentSolution>();
 
@@ -102,7 +100,7 @@ impl Plugin for PegSolitaire {
 
         app.add_observer(update_solution);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
-        app.add_systems(Update, highlight_selected);
+        app.add_systems(PostUpdate, highlight_selected);
     }
 }
 
