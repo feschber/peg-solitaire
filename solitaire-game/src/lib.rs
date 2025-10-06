@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{camera::ScalingMode, prelude::*};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
@@ -55,14 +55,14 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
         return;
     };
     if let Projection::Orthographic(projection2d) = &mut *projection {
-        projection2d.scaling_mode = bevy::render::camera::ScalingMode::AutoMin {
+        projection2d.scaling_mode = ScalingMode::AutoMin {
             min_width: 8.,
             min_height: 8.,
         }
     }
 }
 
-fn update_solution(move_event: Trigger<MoveEvent>, mut solution: ResMut<CurrentSolution>) {
+fn update_solution(move_event: On<MoveEvent>, mut solution: ResMut<CurrentSolution>) {
     solution.0.push(move_event.mov);
     solution.1.push(*move_event);
 }

@@ -63,8 +63,8 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos),
             medium_font.clone(),
-            TextLayout::new_with_justify(JustifyText::Left),
-            Anchor::TopLeft,
+            TextLayout::new_with_justify(Justify::Left),
+            Anchor::TOP_LEFT,
             OverallSuccessRatio,
         ))
         .with_child((TextSpan(" ... ?".into()), medium_font.clone()));
@@ -72,17 +72,17 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         Text2d::new("“chance of winning by chosing moves at random”"),
         Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(text_pos),
         small_font.clone(),
-        TextLayout::new(JustifyText::Center, LineBreak::WordBoundary),
+        TextLayout::new(Justify::Center, LineBreak::WordBoundary),
         TextBounds::from(Vec2::new(600.0, 300.0)),
-        Anchor::TopLeft,
+        Anchor::TOP_LEFT,
     ));
     commands
         .spawn((
             Text2d::new(""),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos_1),
             large_font.clone(),
-            TextLayout::new_with_justify(JustifyText::Center),
-            Anchor::TopRight,
+            TextLayout::new_with_justify(Justify::Center),
+            Anchor::TOP_RIGHT,
             NextMoveChanceText,
         ))
         .with_child((TextSpan("? / ?\n".into()), large_font.clone()))
@@ -93,12 +93,12 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn update_overall_success(
-    _trigger: Trigger<UpdateStats>,
+    _trigger: On<UpdateStats>,
     overall_success_text: Query<Entity, With<OverallSuccessRatio>>,
     board: Res<CurrentBoard>,
     p_success: Option<Res<RandomMoveChances>>,
     mut writer: TextUiWriter,
-    mut request_redraw: EventWriter<RequestRedraw>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let Some(p_success) = p_success else {
         return;
@@ -125,12 +125,12 @@ fn update_overall_success(
 }
 
 fn update_next_move_chance(
-    _: Trigger<UpdateStats>,
+    _: On<UpdateStats>,
     next_move_text: Query<Entity, With<NextMoveChanceText>>,
     board: Res<CurrentBoard>,
     feasible: Option<Res<FeasibleConstellations>>,
     mut writer: TextUiWriter,
-    mut request_redraw: EventWriter<RequestRedraw>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let Some(feasible) = feasible else {
         return;

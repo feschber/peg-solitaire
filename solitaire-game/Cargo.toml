@@ -14,7 +14,7 @@ crate-type = [
 ]
 
 [dependencies]
-bevy = { version = "0.16.1", default-features = false, features = [
+bevy = { version = "0.17.2", default-features = false, features = [
   "std",
   "async_executor",
   # "android-game-activity",
@@ -26,6 +26,8 @@ bevy = { version = "0.16.1", default-features = false, features = [
   "bevy_color",
   "bevy_core_pipeline",
   "bevy_dev_tools", # required for fps_overlay
+  "bevy_post_process",
+  "bevy_anti_alias",
   "bevy_gilrs",
   "bevy_gizmos",
   "bevy_gltf",
@@ -36,28 +38,42 @@ bevy = { version = "0.16.1", default-features = false, features = [
   "bevy_picking",
   "bevy_render",
   "bevy_scene",
+  "bevy_image",
+  "bevy_mesh",
+  # "bevy_mikktspace",
+  "bevy_camera",
+  "bevy_light",
+  "bevy_shader",
   "bevy_sprite",
   "bevy_sprite_picking_backend",
+  "bevy_sprite_render",
   "bevy_state",
   "bevy_text",
   "bevy_ui",
   "bevy_ui_picking_backend",
+  "bevy_ui_render",
   "bevy_window",
   "bevy_winit",
   "custom_cursor",
   "default_font",
   "hdr",
+  "ktx2",
+  # "morph",
+  # "morph_animation",
   "multi_threaded",
   "png",
+  "reflect_auto_register",
   "smaa_luts",
   "sysinfo_plugin",
   "tonemapping_luts",
   "vorbis",
   "webgl2",
   "x11",
-  "wayland", # enable wayland support
+  "wayland",
+  "debug",
+  "zstd_rust",
 ] }
-bevy_vector_shapes = "0.10.0"
+bevy_vector_shapes = "0.11.0"
 futures-lite = "2.6.0"
 num-rational = "0.4.2"
 solitaire-solver = { path = "../solitaire-solver", version = "0.0.1" }

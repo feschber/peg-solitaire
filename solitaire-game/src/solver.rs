@@ -86,7 +86,7 @@ fn calculate_random_move_chances(
 fn poll_task(
     mut commands: Commands,
     tasks: Query<(Entity, &mut BackgroundTask)>,
-    mut request_redraw: EventWriter<RequestRedraw>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     for (entity, mut task) in tasks {
         if let Some(mut commands_queue) = block_on(future::poll_once(&mut task.task)) {

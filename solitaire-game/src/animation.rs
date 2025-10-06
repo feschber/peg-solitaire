@@ -25,9 +25,9 @@ impl Plugin for PegAnimation {
 struct SnapToBoardPosition;
 
 fn on_peg_move(
-    moved: Trigger<PegMoved>,
+    moved: On<PegMoved>,
     mut commands: Commands,
-    mut request_redraw: EventWriter<RequestRedraw>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     commands.entity(moved.peg).insert(SnapToBoardPosition);
     request_redraw.write(RequestRedraw);
@@ -37,7 +37,7 @@ fn snap_to_board_grid(
     mut commands: Commands,
     pegs: Query<Entity, With<SnapToBoardPosition>>,
     mut pos: Query<(&BoardPosition, &mut Transform), With<SnapToBoardPosition>>,
-    mut request_redraw: EventWriter<RequestRedraw>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     for peg in pegs {
         if let Ok((board_pos, mut transform)) = pos.get_mut(peg) {

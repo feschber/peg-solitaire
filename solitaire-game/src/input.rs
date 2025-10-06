@@ -33,7 +33,7 @@ struct SelectedPos(BoardPosition);
 struct PosClicked(BoardPosition);
 
 fn on_board_clicked(
-    clicked_pos: Trigger<PosClicked>,
+    clicked_pos: On<PosClicked>,
     mut commands: Commands,
     selected_pos: Option<ResMut<SelectedPos>>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,

@@ -98,7 +98,7 @@ fn board_to_world_transform() -> Transform {
 }
 
 fn world_to_board_transform() -> Transform {
-    Transform::from_matrix(board_to_world_transform().compute_matrix().inverse())
+    Transform::from_matrix(board_to_world_transform().to_matrix().inverse())
 }
 
 #[derive(Component)]
@@ -161,7 +161,7 @@ fn draw_pegs(mut painter: ShapePainter, circles: Query<(&Transform, &CircleCompo
 
 /// request to move peg comming from input system
 fn on_peg_move_request(
-    move_request: Trigger<RequestPegMove>,
+    move_request: On<RequestPegMove>,
     mut board: ResMut<CurrentBoard>,
     mut commands: Commands,
 ) {
@@ -174,7 +174,7 @@ fn on_peg_move_request(
 }
 
 fn on_move_peg(
-    move_peg: Trigger<MovePeg>,
+    move_peg: On<MovePeg>,
     mut pegs: Query<(Entity, &mut BoardPosition), With<Peg>>,
     mut commands: Commands,
 ) {

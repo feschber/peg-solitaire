@@ -126,13 +126,14 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
 }
 
-fn handle_button<T: Component, U: Default + Event>(
+fn handle_button<'a, T: Component, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform)>,
     button: Query<(&CircleButton, &Transform), With<T>>,
     mut commands: Commands,
 ) where
     T: Send + Sync,
+    <U as bevy::prelude::Event>::Trigger<'a>: std::default::Default,
 {
     if let Some(cursor_pos) = window.cursor_position() {
         let (camera, transform) = *camera;
@@ -147,13 +148,14 @@ fn handle_button<T: Component, U: Default + Event>(
     }
 }
 
-fn handle_touch<T: Component, U: Default + Event>(
+fn handle_touch<'a, T: Component, U: Default + Event>(
     camera: Single<(&Camera, &GlobalTransform)>,
     button: Query<(&CircleButton, &Transform), With<T>>,
     mut commands: Commands,
     touches: Res<Touches>,
 ) where
     T: Send + Sync,
+    <U as bevy::prelude::Event>::Trigger<'a>: std::default::Default,
 {
     for pos in touches.iter_just_pressed().map(|t| t.position()) {
         let (camera, transform) = *camera;
@@ -169,7 +171,7 @@ fn handle_touch<T: Component, U: Default + Event>(
 }
 
 fn do_undo(
-    _: Trigger<UndoEvent>,
+    _: On<UndoEvent>,
     mut solution: ResMut<CurrentSolution>,
     mut board: ResMut<CurrentBoard>,
     mut commands: Commands,
@@ -204,11 +206,7 @@ struct ResetComponent {
     elapsed: u64,
 }
 
-fn do_reset(
-    _: Trigger<ResetEvent>,
-    mut commands: Commands,
-    reset_component: Query<&ResetComponent>,
-) {
+fn do_reset(_: On<ResetEvent>, mut commands: Commands, reset_component: Query<&ResetComponent>) {
     info!("reset triggered!");
     if reset_component.is_empty() {
         commands.spawn(ResetComponent { elapsed: 0 });
@@ -220,7 +218,7 @@ fn reset(
     mut reset: Query<&mut ResetComponent>,
     mut solution: ResMut<CurrentSolution>,
     mut commands: Commands,
-    mut request_redraw: EventWriter<RequestRedraw>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
     mut board: ResMut<CurrentBoard>,
 ) {
     let entity = *reset_entity;

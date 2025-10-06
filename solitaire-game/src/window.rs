@@ -44,22 +44,24 @@ impl Plugin for MainWindow {
         );
         app.add_systems(Update, handle_exit);
         app.add_systems(Update, fullscreen_toggle);
-        app.add_observer(update_window_theme);
+        app.add_systems(Update, update_window_theme);
     }
 }
 
 fn update_window_theme(
-    theme_changed: Trigger<WindowThemeChanged>,
+    mut theme_changed: MessageReader<WindowThemeChanged>,
     mut clear_color: ResMut<ClearColor>,
 ) {
-    info!("Theme Changed!");
-    match theme_changed.event().theme {
-        WindowTheme::Light => *clear_color = ClearColor(Color::WHITE),
-        WindowTheme::Dark => *clear_color = ClearColor(Color::BLACK),
+    for message in theme_changed.read() {
+        info!("Theme Changed!");
+        match message.theme {
+            WindowTheme::Light => *clear_color = ClearColor(Color::WHITE),
+            WindowTheme::Dark => *clear_color = ClearColor(Color::BLACK),
+        }
     }
 }
 
-fn handle_exit(input: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
+fn handle_exit(input: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
     if input.just_pressed(KeyCode::KeyQ) || input.all_just_pressed([KeyCode::AltLeft, KeyCode::F4])
     {
         exit.write(AppExit::Success);

@@ -26,11 +26,7 @@ pub struct ToggleHints;
 #[derive(Resource)]
 struct ShowHints;
 
-fn update_hints(
-    _: Trigger<ToggleHints>,
-    mut commands: Commands,
-    show_hints: Option<Res<ShowHints>>,
-) {
+fn update_hints(_: On<ToggleHints>, mut commands: Commands, show_hints: Option<Res<ShowHints>>) {
     if show_hints.is_none() {
         commands.insert_resource(ShowHints);
     } else {

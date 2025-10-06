@@ -1,5 +1,5 @@
 use bevy::{
-    dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
+    dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin, FrameTimeGraphConfig},
     prelude::*,
 };
 
@@ -9,6 +9,11 @@ impl Plugin for FpsOverlay {
     fn build(&self, app: &mut App) {
         app.add_plugins(FpsOverlayPlugin {
             config: FpsOverlayConfig {
+                frame_time_graph_config: FrameTimeGraphConfig {
+                    enabled: true,
+                    min_fps: 0.0,
+                    target_fps: 120.0,
+                },
                 text_config: TextFont {
                     font_size: 10.0,
                     ..default()
