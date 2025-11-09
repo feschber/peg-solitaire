@@ -113,16 +113,18 @@ const PAGODA: [[f32; 7]; 7] = [
 
 fn pagoda(board: Board) -> f32 {
     let mut result = 0.;
-    for y in 0..=7 {
-        for x in 0..=7 {
-            if board.occupied((y, x)) {
-                result += PAGODA[y as usize][x as usize];
-            }
-        }
+    let mut copy = board.0;
+    while copy != 0 {
+        let idx = copy.trailing_zeros();
+        let y = idx as i64 / Board::REPR;
+        let x = idx as i64 % Board::REPR;
+        copy &= !(1 << idx);
+        result += PAGODA[y as usize][x as usize];
     }
     result
 }
 
+#[allow(unused)]
 fn prune_pagoda(constellations: &mut Vec<Board>) {
     let len = constellations.len();
     constellations.retain(|b| {
@@ -286,15 +288,16 @@ pub fn calculate_all_solutions_naive() -> Vec<Board> {
         }
 
         let mut any_solution = false;
-        for y in 0..Board::SIZE {
-            for x in 0..Board::SIZE {
-                if board.occupied((y, x)) {
-                    for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
-                        if let Some(mov) = board.get_legal_move((y, x), dir) {
-                            any_solution |=
-                                solve_all(board.mov(mov).normalize(), already_checked, solvable);
-                        }
-                    }
+        let mut copy = board.0;
+        while copy != 0 {
+            let idx = copy.trailing_zeros();
+            copy &= !(1 << idx);
+            let y = idx as i64 / Board::REPR;
+            let x = idx as i64 % Board::REPR;
+            for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
+                if let Some(mov) = board.get_legal_move((y, x), dir) {
+                    any_solution |=
+                        solve_all(board.mov(mov).normalize(), already_checked, solvable);
                 }
             }
         }
