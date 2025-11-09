@@ -116,11 +116,11 @@ impl Board {
 
     pub fn normalize(&self) -> Self {
         let normalized = self.symmetries().map(|s| s.0).into_iter().min().unwrap();
-        Board { 0: normalized }
+        Board(normalized)
     }
 
     pub const fn empty() -> Self {
-        Self { 0: 0 }
+        Self(0)
     }
 
     pub const fn solved() -> Self {
