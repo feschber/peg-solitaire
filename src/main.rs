@@ -38,7 +38,8 @@ fn main() {
     match args.command {
         Some(command) => match command {
             Command::CalculateAll => {
-                solitaire_solver::calculate_all_solutions(args.threads.into());
+                let vec = solitaire_solver::calculate_all_solutions(args.threads.into());
+                println!("solutions: {}", vec.len());
             }
             Command::CalculateAllNaive => {
                 solitaire_solver::calculate_all_solutions_naive();
@@ -86,12 +87,5 @@ fn main() {
                 std::process::exit(1)
             }
         }
-    }
-    if std::env::args().any(|a| &a == "-a") {
-    } else if std::env::args().any(|a| &a == "-n") {
-    } else if std::env::args().any(|a| &a == "-c") {
-    } else if std::env::args().any(|a| &a == "-s") {
-        let solution = solitaire_solver::calculate_first_solution();
-        solitaire_solver::print_solution(solution);
     }
 }

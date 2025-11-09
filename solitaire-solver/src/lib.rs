@@ -138,33 +138,35 @@ fn prune_pagoda(constellations: &mut Vec<Board>) {
 fn possible_moves(states: &[Board]) -> Vec<Board> {
     let mut legal_moves = Vec::default();
     for board in states {
-        for y in 0..Board::SIZE {
-            for x in 0..Board::SIZE {
-                if board.occupied((y, x)) {
-                    for dir in Dir::enumerate() {
-                        if let Some(mov) = board.get_legal_move((y, x), dir) {
-                            legal_moves.push(board.mov(mov).normalize());
-                        }
-                    }
+        let mut copy = board.0;
+        while copy != 0 {
+            let idx = copy.trailing_zeros();
+            let y = idx as i64 / Board::REPR;
+            let x = idx as i64 % Board::REPR;
+            copy &= !(1 << idx);
+            for dir in Dir::enumerate() {
+                if let Some(mov) = board.get_legal_move((y, x), dir) {
+                    legal_moves.push(board.mov(mov).normalize());
                 }
             }
         }
     }
-    prune_pagoda(&mut legal_moves);
+    // prune_pagoda(&mut legal_moves);
     legal_moves
 }
 
 fn reverse_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
     for board in states {
-        for y in 0..Board::SIZE {
-            for x in 0..Board::SIZE {
-                if board.occupied((y, x)) {
-                    for dir in Dir::enumerate() {
-                        if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
-                            constellations.push(board.reverse_mov(mov).normalize());
-                        }
-                    }
+        let mut copy = board.0;
+        while copy != 0 {
+            let idx = copy.trailing_zeros();
+            copy &= !(1 << idx);
+            let y = idx as i64 / Board::REPR;
+            let x = idx as i64 % Board::REPR;
+            for dir in Dir::enumerate() {
+                if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
+                    constellations.push(board.reverse_mov(mov).normalize());
                 }
             }
         }

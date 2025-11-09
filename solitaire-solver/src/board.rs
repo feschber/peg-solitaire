@@ -54,16 +54,13 @@ impl Display for Board {
 
 impl Default for Board {
     fn default() -> Self {
-        let mut board = Self::full();
-        board.unset((Board::SIZE / 2, Board::SIZE / 2));
-        board
+        const { Self::full().unset((Board::SIZE / 2, Board::SIZE / 2)) }
     }
 }
 
 #[test]
 fn test_compression() {
-    let mut board = Board::default();
-    board.set((3, 3));
+    let board = Board::default().set((3, 3));
     let compressed = board.to_compressed_repr();
     assert_eq!(compressed, 0x1_ffff_ffff);
     println!("{:b}", compressed);
@@ -76,19 +73,18 @@ fn test_compression() {
 impl Board {
     pub const SLOTS: usize = 33;
     pub const SIZE: Idx = 7;
-    const REPR: Idx = 8;
+    pub const REPR: Idx = 8;
 
-    pub fn full() -> Self {
-        let mut board = Self(0);
-        for y in 0..Board::SIZE {
-            for x in 0..Board::SIZE {
-                let pos = (y, x);
-                if Self::inbounds(pos) {
-                    board.set(pos);
-                }
-            }
-        }
-        board
+    pub const fn full() -> Self {
+        let mut b = Self::empty();
+        b.0 |= 0x7 << 2;
+        b.0 |= 0x7 << (Board::REPR + 2);
+        b.0 |= 0x7f << (2 * Board::REPR);
+        b.0 |= 0x7f << (3 * Board::REPR);
+        b.0 |= 0x7f << (4 * Board::REPR);
+        b.0 |= 0x7 << (5 * Board::REPR + 2);
+        b.0 |= 0x7 << (6 * Board::REPR + 2);
+        b
     }
 
     pub fn to_compressed_repr(&self) -> u64 {
@@ -123,13 +119,13 @@ impl Board {
         Board { 0: normalized }
     }
 
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self { 0: 0 }
     }
 
-    pub fn solved() -> Self {
+    pub const fn solved() -> Self {
         let mut board = Self::empty();
-        board.set((3, 3));
+        board.0 |= 1 << Board::REPR * 3 + 3;
         board
     }
 
@@ -174,60 +170,52 @@ impl Board {
 
     #[inline(always)]
     pub fn mov(&self, mov: Move) -> Board {
-        let mut board = *self;
         debug_assert!(Self::inbounds(mov.pos));
         debug_assert!(Self::inbounds(mov.skip));
         debug_assert!(Self::inbounds(mov.target));
         debug_assert!(self.occupied(mov.pos));
         debug_assert!(self.occupied(mov.skip));
         debug_assert!(!self.occupied(mov.target));
-        board.unset(mov.pos);
-        board.unset(mov.skip);
-        board.set(mov.target);
-        board
+        self.unset(mov.pos).unset(mov.skip).set(mov.target)
     }
 
     pub fn reverse_mov(&self, mov: Move) -> Board {
-        let mut board = *self;
         debug_assert!(Self::inbounds(mov.pos));
         debug_assert!(Self::inbounds(mov.skip));
         debug_assert!(Self::inbounds(mov.target));
         debug_assert!(!self.occupied(mov.pos));
         debug_assert!(!self.occupied(mov.skip));
         debug_assert!(self.occupied(mov.target));
-        board.set(mov.pos);
-        board.set(mov.skip);
-        board.unset(mov.target);
-        board
+        self.set(mov.pos).set(mov.skip).unset(mov.target)
     }
 
     #[inline(always)]
-    pub fn occupied(&self, pos: (Idx, Idx)) -> bool {
+    pub const fn occupied(&self, pos: (Idx, Idx)) -> bool {
         let (y, x) = pos;
-        let idx = y * Board::REPR + x;
-        (self.0 & (1 << idx)) != 0
+        (self.0 & (1 << y * Board::REPR + x)) != 0
     }
 
     #[inline(always)]
-    pub fn set(&mut self, pos: (Idx, Idx)) {
+    pub const fn set(self, pos: (Idx, Idx)) -> Self {
         debug_assert!(!self.occupied(pos));
         let (y, x) = pos;
-        let idx = y * Board::REPR + x;
-        self.0 |= 1 << idx;
+        Self(self.0 | 1 << y * Board::REPR + x)
     }
 
     #[inline(always)]
-    fn unset(&mut self, pos: (Idx, Idx)) {
+    const fn unset(self, pos: (Idx, Idx)) -> Self {
         debug_assert!(self.occupied(pos));
         let (y, x) = pos;
-        let idx = y * Board::REPR + x;
-        self.0 &= !(1 << idx);
+        Self(self.0 & !(1 << y * Board::REPR + x))
     }
 
     #[inline(always)]
-    pub fn inbounds(pos: (Idx, Idx)) -> bool {
-        let (y, x) = pos;
-        in_mid_section(x) && in_whole_range(y) || in_mid_section(y) && in_whole_range(x)
+    pub const fn inbounds(pos: (Idx, Idx)) -> bool {
+        (Board::empty().set(pos).0 & Board::full().0) != 0
+            && pos.0 >= 0
+            && pos.0 < Board::SIZE
+            && pos.1 >= 0
+            && pos.1 < Board::SIZE
     }
 
     #[inline(always)]
@@ -253,14 +241,15 @@ impl Board {
 
     pub fn get_legal_moves(&self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
-        for y in 0..Board::SIZE {
-            for x in 0..Board::SIZE {
-                if self.occupied((y, x)) {
-                    for dir in Dir::enumerate() {
-                        if let Some(mov) = self.get_legal_move((y, x), dir) {
-                            legal_moves.push(mov);
-                        }
-                    }
+        let mut copy = self.0;
+        while copy != 0 {
+            let idx = copy.trailing_zeros();
+            let y = idx as i64 / Board::REPR;
+            let x = idx as i64 % Board::REPR;
+            copy &= !(1 << idx);
+            for dir in Dir::enumerate() {
+                if let Some(mov) = self.get_legal_move((y, x), dir) {
+                    legal_moves.push(mov);
                 }
             }
         }
@@ -269,14 +258,15 @@ impl Board {
 
     pub fn get_legal_inverse_moves(&self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
-        for y in 0..Board::SIZE {
-            for x in 0..Board::SIZE {
-                if self.occupied((y, x)) {
-                    for dir in Dir::enumerate() {
-                        if let Some(mov) = self.get_legal_inverse_move((y, x), dir) {
-                            legal_moves.push(mov);
-                        }
-                    }
+        let mut copy = self.0;
+        while copy != 0 {
+            let idx = copy.trailing_zeros();
+            let y = idx as i64 / Board::REPR;
+            let x = idx as i64 % Board::REPR;
+            copy &= !(1 << idx);
+            for dir in Dir::enumerate() {
+                if let Some(mov) = self.get_legal_inverse_move((y, x), dir) {
+                    legal_moves.push(mov);
                 }
             }
         }
@@ -370,14 +360,4 @@ impl Board {
             transposed,
         ]
     }
-}
-
-#[inline(always)]
-fn in_mid_section(i: Idx) -> bool {
-    (2..5).contains(&i)
-}
-
-#[inline(always)]
-fn in_whole_range(i: Idx) -> bool {
-    (0..Board::SIZE).contains(&i)
 }
