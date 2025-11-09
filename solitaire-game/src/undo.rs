@@ -60,8 +60,7 @@ struct Hints;
 fn viewport_topleft_world_space(camera: &Camera, transform: &GlobalTransform) -> Option<Vec3> {
     camera.logical_viewport_rect().and_then(|view_port| {
         let top_left = view_port.min;
-        let top_left_world_space = viewport_to_world(top_left, camera, transform);
-        top_left_world_space
+        viewport_to_world(top_left, camera, transform)
     })
 }
 
@@ -94,7 +93,7 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
             radius: 0.4,
         },
         Text2d::new("\u{f2ea}".to_string()),
-        TextColor(Color::BLACK.into()),
+        TextColor(Color::BLACK),
         font_awesome.clone(),
         Reset,
     ));
@@ -107,7 +106,7 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
             radius: 0.4,
         },
         Text2d::new("\u{f060}".to_string()),
-        TextColor(Color::BLACK.into()),
+        TextColor(Color::BLACK),
         font_awesome.clone(),
         Undo,
     ));
@@ -120,19 +119,19 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
             radius: 0.4,
         },
         Text2d::new("\u{f0eb}".to_string()),
-        TextColor(Color::BLACK.into()),
+        TextColor(Color::BLACK),
         font_awesome.clone(),
         Hints,
     ));
 }
 
-fn handle_button<'a, T: Component, U: Default + Event>(
+fn handle_button<'a, T, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform)>,
     button: Query<(&CircleButton, &Transform), With<T>>,
     mut commands: Commands,
 ) where
-    T: Send + Sync,
+    T: Component + Send + Sync,
     <U as bevy::prelude::Event>::Trigger<'a>: std::default::Default,
 {
     if let Some(cursor_pos) = window.cursor_position() {
@@ -148,13 +147,13 @@ fn handle_button<'a, T: Component, U: Default + Event>(
     }
 }
 
-fn handle_touch<'a, T: Component, U: Default + Event>(
+fn handle_touch<'a, T, U: Default + Event>(
     camera: Single<(&Camera, &GlobalTransform)>,
     button: Query<(&CircleButton, &Transform), With<T>>,
     mut commands: Commands,
     touches: Res<Touches>,
 ) where
-    T: Send + Sync,
+    T: Component + Send + Sync,
     <U as bevy::prelude::Event>::Trigger<'a>: std::default::Default,
 {
     for pos in touches.iter_just_pressed().map(|t| t.position()) {
@@ -177,7 +176,7 @@ fn do_undo(
     mut commands: Commands,
 ) {
     info!("undo triggered!");
-    if solution.0.len() > 0 {
+    if !solution.0.is_empty() {
         reverse_last_move(&mut solution, &mut board, &mut commands);
     }
 }
@@ -225,8 +224,8 @@ fn reset(
     let mut reset = reset.get_mut(entity).unwrap();
     let ticks = reset.elapsed;
     reset.elapsed += 1;
-    if ticks % 3 == 0 {
-        if solution.0.len() > 0 {
+    if ticks.is_multiple_of(3) {
+        if !solution.0.is_empty() {
             reverse_last_move(&mut solution, &mut board, &mut commands);
         } else {
             commands.entity(entity).despawn();

@@ -76,7 +76,7 @@ where
     #[cfg(not(target_family = "wasm"))]
     {
         let mut chunks = states.chunks(states.len().div_ceil(num_threads));
-        let result = thread::scope(|s| {
+        thread::scope(|s| {
             let mut threads = Vec::with_capacity(num_threads - 1);
             let first_chunk = chunks.next().unwrap();
             for chunk in chunks {
@@ -88,8 +88,7 @@ where
                 result.extend(thread.join().unwrap());
             }
             result
-        });
-        result
+        })
     }
 }
 

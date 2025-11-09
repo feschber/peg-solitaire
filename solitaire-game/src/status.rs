@@ -23,22 +23,20 @@ fn draw_solution(
 
         let (start, end) = if y_size > x_size {
             let pos_vp = (Vec2::new(view_port.min.x, view_port.max.y), view_port.max);
-            let pos_ws = (
+            (
                 viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
                     + Vec3::new(0.6, 0.6, 0.0),
                 viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
                     + Vec3::new(-0.6, 0.6, 0.0),
-            );
-            pos_ws
+            )
         } else {
             let pos_vp = (view_port.min, Vec2::new(view_port.min.x, view_port.max.y));
-            let pos_ws = (
+            (
                 viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
                     + Vec3::new(0.6, -0.6, 0.0),
                 viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
                     + Vec3::new(0.6, 0.6, 0.0),
-            );
-            pos_ws
+            )
         };
 
         for (i, _mov) in solution.0.clone().into_iter().enumerate() {

@@ -17,7 +17,7 @@ impl Hash for Board {
         const SEED2: u64 = 0x13198a2e03707344;
         let x = self.0;
         let a = (x as u32) as u64 ^ SEED1;
-        let b = (x >> 32 as u32) as u64 ^ SEED2;
+        let b = (x >> 32_u32) ^ SEED2;
         let x: u128 = a as u128 * b as u128;
         let lo = x as u64;
         let hi = (x >> 64) as u64;
@@ -102,10 +102,10 @@ impl Board {
         let board = (compressed & 0x7) << 2
             | (compressed & (0x7 << 3)) << (8 + 2 - 3)
             | (compressed & (0x7f << 6)) << (16 - 6)
-            | (compressed & (0x7f << 6 + 7)) << (24 - (6 + 7))
-            | (compressed & (0x7f << 6 + 14)) << (32 - (6 + 14))
-            | (compressed & (0x7 << 6 + 21)) << (42 - (6 + 21))
-            | (compressed & (0x7 << 6 + 21 + 3)) << (50 - (6 + 21 + 3));
+            | (compressed & (0x7f << (6 + 7))) << (24 - (6 + 7))
+            | (compressed & (0x7f << (6 + 14))) << (32 - (6 + 14))
+            | (compressed & (0x7 << (6 + 21))) << (42 - (6 + 21))
+            | (compressed & (0x7 << (6 + 21 + 3))) << (50 - (6 + 21 + 3));
         Board(board)
     }
 
@@ -124,21 +124,16 @@ impl Board {
     }
 
     pub const fn solved() -> Self {
-        let mut board = Self::empty();
-        board.0 |= 1 << Board::REPR * 3 + 3;
-        board
+        Self::empty().set((3, 3))
     }
 
-    pub fn count_balls(&self) -> u64 {
+    pub const fn count_balls(&self) -> u64 {
         self.0.count_ones() as u64
     }
 
     #[inline(always)]
     pub fn is_solved(&self) -> bool {
-        // exactly one bit is set
-        // self.0.is_power_of_two()
-        const SOLUTION: u64 = 1 << (3 * Board::REPR + 3);
-        self.0 == SOLUTION
+        *self == Self::solved()
     }
 
     /// the game is not solvable, if none of the marked fields contain a ball:
@@ -192,21 +187,21 @@ impl Board {
     #[inline(always)]
     pub const fn occupied(&self, pos: (Idx, Idx)) -> bool {
         let (y, x) = pos;
-        (self.0 & (1 << y * Board::REPR + x)) != 0
+        (self.0 & (1 << (y * Board::REPR + x))) != 0
     }
 
     #[inline(always)]
     pub const fn set(self, pos: (Idx, Idx)) -> Self {
         debug_assert!(!self.occupied(pos));
         let (y, x) = pos;
-        Self(self.0 | 1 << y * Board::REPR + x)
+        Self(self.0 | 1 << (y * Board::REPR + x))
     }
 
     #[inline(always)]
     const fn unset(self, pos: (Idx, Idx)) -> Self {
         debug_assert!(self.occupied(pos));
         let (y, x) = pos;
-        Self(self.0 & !(1 << y * Board::REPR + x))
+        Self(self.0 & !(1 << (y * Board::REPR + x)))
     }
 
     #[inline(always)]

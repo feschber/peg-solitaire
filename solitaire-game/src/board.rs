@@ -19,7 +19,7 @@ pub const BOARD_POS: f32 = 0.0;
 pub const MARKER_POS: f32 = 0.1;
 pub const PEG_POS: f32 = 0.2;
 pub const PEG_POS_RAISED: f32 = 1.0;
-pub const GOLDEN_RATIO: f32 = 1.618033988749;
+pub const GOLDEN_RATIO: f32 = 1.618_034;
 pub const PEG_RADIUS: f32 = 1. / (2. * GOLDEN_RATIO);
 pub const HOLE_RADIUS: f32 = 0.9 * PEG_RADIUS;
 
@@ -85,9 +85,9 @@ impl BoardPosition {
         let pos = world_to_board_transform().transform_point((world_pos, BOARD_POS).into());
         BoardPosition::from(pos.xy())
     }
-    pub fn to_world_space(&self) -> Vec2 {
+    pub fn to_world_space(self) -> Vec2 {
         board_to_world_transform()
-            .transform_point(Vec3::from((Vec2::from(*self), 0.)))
+            .transform_point(Vec3::from((Vec2::from(self), 0.)))
             .xy()
     }
 }

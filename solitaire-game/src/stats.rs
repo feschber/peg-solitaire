@@ -118,7 +118,7 @@ fn update_overall_success(
             }
             *writer.text(text, 1) = str;
         } else {
-            *writer.text(text, 1) = format!("0");
+            *writer.text(text, 1) = "0".to_string();
         }
     }
     request_redraw.write(RequestRedraw);

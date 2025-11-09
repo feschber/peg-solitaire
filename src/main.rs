@@ -38,7 +38,7 @@ fn main() {
     match args.command {
         Some(command) => match command {
             Command::CalculateAll => {
-                let vec = solitaire_solver::calculate_all_solutions(args.threads.into());
+                let vec = solitaire_solver::calculate_all_solutions(args.threads);
                 println!("solutions: {}", vec.len());
             }
             Command::CalculateAllNaive => {

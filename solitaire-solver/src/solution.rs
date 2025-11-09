@@ -18,10 +18,13 @@ impl Solution {
         self.steps[self.count]
     }
     pub fn total(&self) -> usize {
-        return self.steps.len();
+        self.steps.len()
     }
     pub fn len(&self) -> usize {
-        return self.count;
+        self.count
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
