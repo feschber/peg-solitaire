@@ -110,13 +110,11 @@ impl Board {
     }
 
     pub fn inverse(&self) -> Board {
-        let full = Board::full();
-        Self(!self.0 & full.0)
+        Self(!self.0 & Board::full().0)
     }
 
     pub fn normalize(&self) -> Self {
-        let normalized = self.symmetries().map(|s| s.0).into_iter().min().unwrap();
-        Board(normalized)
+        Board(self.symmetries().map(|s| s.0).into_iter().min().unwrap())
     }
 
     pub const fn empty() -> Self {
@@ -206,11 +204,11 @@ impl Board {
 
     #[inline(always)]
     pub const fn inbounds(pos: (Idx, Idx)) -> bool {
-        (Board::empty().set(pos).0 & Board::full().0) != 0
-            && pos.0 >= 0
+        pos.0 >= 0
             && pos.0 < Board::SIZE
             && pos.1 >= 0
             && pos.1 < Board::SIZE
+            && (Board::empty().set(pos).0 & Board::full().0) != 0
     }
 
     #[inline(always)]
