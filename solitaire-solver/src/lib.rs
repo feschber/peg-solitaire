@@ -4,6 +4,7 @@ mod hash;
 mod mov;
 mod solution;
 
+use rayon::slice::ParallelSliceMut;
 // use ahash::AHashSet as HashSet; // 1.194s
 // use fnv::FnvHashSet as HashSet; // 1.024s
 use hash::CustomHashSet as HashSet;
@@ -173,7 +174,7 @@ pub fn calculate_all_solutions(_threads: Option<NonZero<usize>>) -> Vec<Board> {
     for i in 1..(Board::SLOTS - 1) / 2 {
         let mut constellations: Vec<Board> = reverse_moves(&visited[i]);
         println!("constellations: {}", constellations.len());
-        constellations.sort_unstable();
+        constellations.par_sort_unstable();
         constellations.dedup();
         visited.push(constellations);
     }
@@ -188,7 +189,7 @@ pub fn calculate_all_solutions(_threads: Option<NonZero<usize>>) -> Vec<Board> {
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let mut legal_moves = possible_moves(&visited[remaining]);
         println!("{}", legal_moves.len());
-        legal_moves.sort_unstable();
+        legal_moves.par_sort_unstable();
         legal_moves.dedup();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
