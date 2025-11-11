@@ -1,6 +1,7 @@
 use std::{
     fmt::{Display, Formatter, Write},
     hash::Hash,
+    ops::{BitAnd, BitAndAssign},
 };
 
 use crate::{Dir, Move};
@@ -8,6 +9,20 @@ pub(crate) type Idx = i64;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Board(pub u64);
+
+impl BitAnd for Board {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl BitAndAssign for Board {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0
+    }
+}
 
 impl nohash_hasher::IsEnabled for Board {}
 
@@ -125,6 +140,45 @@ impl Board {
         Self::empty().set((3, 3))
     }
 
+    pub const fn movable_positions(&self, dir: Dir) -> Self {
+        //     o . .
+        //     o . .
+        // o o o o o . .
+        // o o o o o . .
+        // o o o o o . .
+        //     o . .
+        //     o . .
+        const MOVABLE_EAST: Board = Board::empty()
+            .set((0, 2))
+            .set((1, 2))
+            .set((2, 0))
+            .set((2, 1))
+            .set((2, 2))
+            .set((2, 3))
+            .set((2, 4))
+            .set((3, 0))
+            .set((3, 1))
+            .set((3, 2))
+            .set((3, 3))
+            .set((3, 4))
+            .set((4, 0))
+            .set((4, 1))
+            .set((4, 2))
+            .set((4, 3))
+            .set((4, 4))
+            .set((5, 0))
+            .set((6, 0));
+        const MOVABLE_WEST: Board = MOVABLE_EAST.rotate_180();
+        const MOVABLE_SOUTH: Board = MOVABLE_EAST.transpose();
+        const MOVABLE_NORTH: Board = MOVABLE_WEST.transpose();
+        match dir {
+            Dir::North => MOVABLE_NORTH,
+            Dir::East => MOVABLE_EAST,
+            Dir::South => MOVABLE_SOUTH,
+            Dir::West => MOVABLE_WEST,
+        }
+    }
+
     pub const fn count_balls(&self) -> u64 {
         self.0.count_ones() as u64
     }
@@ -232,6 +286,10 @@ impl Board {
         }
     }
 
+    pub fn legal_moves(&self) -> impl Iterator<Item = Move> {
+        let occupied = self.movable_positions();
+    }
+
     pub fn get_legal_moves(&self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
         let mut copy = self.0;
@@ -285,23 +343,23 @@ impl Board {
     }
 
     #[inline]
-    fn reverse_rows(&self) -> Self {
+    const fn reverse_rows(&self) -> Self {
         // we swap twice so we dont have to shift
         Self(self.0.swap_bytes().reverse_bits() >> 1)
     }
 
     #[inline]
-    fn reverse_cols(&self) -> Self {
+    const fn reverse_cols(&self) -> Self {
         Self(self.0.swap_bytes() >> 8)
     }
 
     #[inline]
-    fn rotate_180(&self) -> Self {
+    const fn rotate_180(&self) -> Self {
         Self(self.0.reverse_bits() >> 9)
     }
 
     #[inline]
-    fn transpose(&self) -> Self {
+    const fn transpose(&self) -> Self {
         let mut x = self.0;
         let mut t;
 
@@ -333,7 +391,7 @@ impl Board {
         Self(x)
     }
 
-    pub fn symmetries(&self) -> [Self; 8] {
+    pub const fn symmetries(&self) -> [Self; 8] {
         let transposed = self.transpose();
         let reverse_cols = self.reverse_cols();
         let reverse_rows = self.reverse_rows();

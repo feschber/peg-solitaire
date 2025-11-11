@@ -38,7 +38,7 @@ pub fn calculate_first_solution() -> Solution {
             .map(|m| (board.mov(m), m))
             .collect::<Vec<_>>();
         // for some reason sorting this way makes it orders of magnitude faster
-        legal_moves.sort_by_key(|(b, _)| u64::MAX - b.0);
+        legal_moves.sort_unstable_by_key(|(b, _)| u64::MAX - b.0);
         legal_moves.dedup();
         for (b, m) in legal_moves {
             solution.push(m);
@@ -90,14 +90,6 @@ where
             result
         })
     }
-}
-
-fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    parallel(states, num_threads, possible_moves)
-}
-
-fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    parallel(states, num_threads, reverse_moves)
 }
 
 const PAGODA: [[f32; 7]; 7] = [
@@ -175,12 +167,11 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
     constellations
 }
 
-pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
-    let threads = threads.unwrap_or(num_threads()).into();
+pub fn calculate_all_solutions(_threads: Option<NonZero<usize>>) -> Vec<Board> {
     let mut visited = vec![vec![], vec![Board::solved()]];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
-        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+        let mut constellations: Vec<Board> = reverse_moves(&visited[i]);
         println!("constellations: {}", constellations.len());
         constellations.sort_unstable();
         constellations.dedup();
@@ -195,7 +186,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let mut legal_moves = possible_moves_par(&visited[remaining], threads);
+        let mut legal_moves = possible_moves(&visited[remaining]);
         println!("{}", legal_moves.len());
         legal_moves.sort_unstable();
         legal_moves.dedup();
