@@ -166,8 +166,8 @@ impl Board {
             .set((4, 2))
             .set((4, 3))
             .set((4, 4))
-            .set((5, 0))
-            .set((6, 0));
+            .set((5, 2))
+            .set((6, 2));
         const MOVABLE_WEST: Board = MOVABLE_EAST.rotate_180();
         const MOVABLE_SOUTH: Board = MOVABLE_EAST.transpose();
         const MOVABLE_NORTH: Board = MOVABLE_WEST.transpose();
@@ -284,10 +284,6 @@ impl Board {
         } else {
             None
         }
-    }
-
-    pub fn legal_moves(&self) -> impl Iterator<Item = Move> {
-        let occupied = self.movable_positions();
     }
 
     pub fn get_legal_moves(&self) -> Vec<Move> {

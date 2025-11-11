@@ -130,14 +130,15 @@ fn prune_pagoda(constellations: &mut Vec<Board>) {
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
     let mut legal_moves = Vec::default();
-    for board in states {
-        let mut copy = board.0;
-        while copy != 0 {
-            let idx = copy.trailing_zeros();
-            let y = idx as i64 / Board::REPR;
-            let x = idx as i64 % Board::REPR;
-            copy &= !(1 << idx);
-            for dir in Dir::enumerate() {
+    for dir in Dir::enumerate() {
+        for board in states {
+            let movable_positions = board.movable_positions(dir);
+            let mut copy = *board & movable_positions;
+            while copy != Board::empty() {
+                let idx = copy.0.trailing_zeros();
+                let y = idx as i64 / Board::REPR;
+                let x = idx as i64 % Board::REPR;
+                copy &= Board(!(1 << idx));
                 if let Some(mov) = board.get_legal_move((y, x), dir) {
                     legal_moves.push(board.mov(mov).normalize());
                 }
