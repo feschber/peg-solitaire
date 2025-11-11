@@ -132,8 +132,7 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
     let mut legal_moves = Vec::default();
     for dir in Dir::enumerate() {
         for board in states {
-            let movable_positions = board.movable_positions(dir);
-            let mut copy = *board & movable_positions;
+            let mut copy = *board & board.movable_positions(dir);
             while copy != Board::empty() {
                 let idx = copy.0.trailing_zeros();
                 let y = idx as i64 / Board::REPR;
@@ -151,14 +150,14 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
 
 fn reverse_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
-    for board in states {
-        let mut copy = board.0;
-        while copy != 0 {
-            let idx = copy.trailing_zeros();
-            copy &= !(1 << idx);
-            let y = idx as i64 / Board::REPR;
-            let x = idx as i64 % Board::REPR;
-            for dir in Dir::enumerate() {
+    for dir in Dir::enumerate() {
+        for board in states {
+            let mut copy = *board & board.movable_positions(dir);
+            while copy != Board::empty() {
+                let idx = copy.0.trailing_zeros();
+                copy &= Board(!(1 << idx));
+                let y = idx as i64 / Board::REPR;
+                let x = idx as i64 % Board::REPR;
                 if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
                     constellations.push(board.reverse_mov(mov).normalize());
                 }
