@@ -8,7 +8,7 @@ mod solution;
 // use fnv::FnvHashSet as HashSet; // 1.024s
 use hash::CustomHashSet as HashSet;
 // use rustc_hash::FxHashSet as HashSet; // 0.866s
-use std::{cmp::Ordering, collections::HashMap, hash::Hash, num::NonZero, thread};
+use std::{cmp::Ordering, collections::HashMap, hash::Hash, iter::Copied, num::NonZero, thread};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -62,43 +62,52 @@ fn num_threads() -> NonZero<usize> {
     std::thread::available_parallelism().unwrap_or(NonZero::new(4).unwrap())
 }
 
-fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> Vec<R>
-where
-    T: Send + Sync,
-    F: Fn(&[T]) -> Vec<R> + Send + Sync,
-    R: Send + Eq + Hash + nohash_hasher::IsEnabled,
-{
-    #[cfg(target_family = "wasm")]
-    {
-        let _ = num_threads;
-        return f(states);
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let mut chunks = states.chunks(states.len().div_ceil(num_threads));
-        thread::scope(|s| {
-            let mut threads = Vec::with_capacity(num_threads - 1);
-            let first_chunk = chunks.next().unwrap();
-            for chunk in chunks {
-                threads.push(s.spawn(|| f(chunk)));
-            }
-            // execute on current thread
-            let mut result = f(first_chunk);
-            for thread in threads {
-                result.extend(thread.join().unwrap());
-            }
-            result
-        })
-    }
-}
+// fn parallel<F, T, R, I>(states: &[T], num_threads: usize, f: F) -> HashSet<R>
+// where
+//     T: Copy + Send + Sync,
+//     F: Fn(I) -> HashSet<R> + Send + Sync,
+//     R: Send + Eq + Hash + nohash_hasher::IsEnabled,
+//     I: Iterator<Item = T>,
+// {
+//     #[cfg(target_family = "wasm")]
+//     {
+//         let _ = num_threads;
+//         return f(states);
+//     }
+//     #[cfg(not(target_family = "wasm"))]
+//     {
+//         let mut chunks = states.chunks(states.len().div_ceil(num_threads));
+//         thread::scope(|s| {
+//             let mut threads = Vec::with_capacity(num_threads - 1);
+//             let first_chunk = chunks.next().unwrap();
+//             for chunk in chunks {
+//                 threads.push(s.spawn(|| f(chunk.iter().copied())));
+//             }
+//             // execute on current thread
+//             let mut result = f(first_chunk.iter().copied());
+//             for thread in threads {
+//                 result.extend(thread.join().unwrap());
+//             }
+//             result
+//         })
+//     }
+// }
 
-fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    parallel(states, num_threads, possible_moves)
-}
+// fn possible_moves_par(states: &[Board], num_threads: usize) -> HashSet<Board> {
+//     parallel::<_, Board, Board, Copied<std::slice::Iter<'_, Board>>>(
+//         states,
+//         num_threads,
+//         possible_moves,
+//     )
+// }
 
-fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    parallel(states, num_threads, reverse_moves)
-}
+// fn reverse_moves_par(states: &[Board], num_threads: usize) -> HashSet<Board> {
+//     parallel::<_, Board, Board, Copied<std::slice::Iter<'_, Board>>>(
+//         states,
+//         num_threads,
+//         reverse_moves,
+//     )
+// }
 
 const PAGODA: [[f32; 7]; 7] = [
     [0.0, 0.0, -0.3, 0.4, 0.0, 0.0, 0.0],
@@ -136,8 +145,8 @@ fn prune_pagoda(constellations: &mut Vec<Board>) {
     // println!("pruned {} configurations", diff);
 }
 
-fn possible_moves(states: &[Board]) -> Vec<Board> {
-    let mut legal_moves = Vec::default();
+fn possible_moves(states: impl IntoIterator<Item = Board>) -> HashSet<Board> {
+    let mut legal_moves = HashSet::default();
     for board in states {
         let mut copy = board.0;
         while copy != 0 {
@@ -147,7 +156,7 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
             copy &= !(1 << idx);
             for dir in Dir::enumerate() {
                 if let Some(mov) = board.get_legal_move((y, x), dir) {
-                    legal_moves.push(board.mov(mov).normalize());
+                    legal_moves.insert(board.mov(mov).normalize());
                 }
             }
         }
@@ -156,8 +165,8 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
     legal_moves
 }
 
-fn reverse_moves(states: &[Board]) -> Vec<Board> {
-    let mut constellations = Vec::default();
+fn reverse_moves(states: impl IntoIterator<Item = Board>) -> HashSet<Board> {
+    let mut constellations = HashSet::default();
     for board in states {
         let mut copy = board.0;
         while copy != 0 {
@@ -167,7 +176,7 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
             let x = idx as i64 % Board::REPR;
             for dir in Dir::enumerate() {
                 if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
-                    constellations.push(board.reverse_mov(mov).normalize());
+                    constellations.insert(board.reverse_mov(mov).normalize());
                 }
             }
         }
@@ -176,14 +185,12 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
 }
 
 pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
-    let threads = threads.unwrap_or(num_threads()).into();
-    let mut visited = vec![vec![], vec![Board::solved()]];
+    let _threads: usize = threads.unwrap_or(num_threads()).into();
+    let mut visited = vec![HashSet::default(), HashSet::from_iter([Board::solved()])];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
-        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+        let constellations: HashSet<Board> = reverse_moves(visited[i].iter().copied());
         println!("constellations: {}", constellations.len());
-        constellations.sort_unstable();
-        constellations.dedup();
         visited.push(constellations);
     }
 
@@ -195,11 +202,12 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let mut legal_moves = possible_moves_par(&visited[remaining], threads);
+        let legal_moves = possible_moves(visited[remaining].iter().copied());
         println!("{}", legal_moves.len());
-        legal_moves.sort_unstable();
-        legal_moves.dedup();
-        visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
+        visited[remaining - 1] = visited[remaining - 1]
+            .intersection(&legal_moves)
+            .copied()
+            .collect();
     }
 
     let solvable: Vec<Board> = visited
