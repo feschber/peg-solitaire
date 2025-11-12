@@ -149,6 +149,10 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
     legal_moves
 }
 
+fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
+    parallel(states, num_threads, possible_moves)
+}
+
 fn reverse_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
     for dir in Dir::enumerate() {
@@ -168,11 +172,16 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
     constellations
 }
 
-pub fn calculate_all_solutions(_threads: Option<NonZero<usize>>) -> Vec<Board> {
+fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
+    parallel(states, num_threads, reverse_moves)
+}
+
+pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
+    let threads = threads.unwrap_or(num_threads()).get();
     let mut visited = vec![vec![], vec![Board::solved()]];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
-        let mut constellations: Vec<Board> = reverse_moves(&visited[i]);
+        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
         println!("constellations: {}", constellations.len());
         constellations.par_sort_unstable();
         constellations.dedup();
@@ -187,10 +196,10 @@ pub fn calculate_all_solutions(_threads: Option<NonZero<usize>>) -> Vec<Board> {
     );
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let mut legal_moves = possible_moves(&visited[remaining]);
+        let mut legal_moves = possible_moves_par(&visited[remaining], threads);
         println!("{}", legal_moves.len());
         legal_moves.par_sort_unstable();
-        legal_moves.dedup();
+        // legal_moves.dedup();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
 

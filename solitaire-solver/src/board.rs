@@ -286,10 +286,6 @@ impl Board {
         }
     }
 
-    pub fn legal_moves(&self) -> impl Iterator<Item = Move> {
-        let occupied = self.movable_positions();
-    }
-
     pub fn get_legal_moves(&self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
         let mut copy = self.0;
