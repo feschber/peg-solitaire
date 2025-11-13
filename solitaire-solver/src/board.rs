@@ -5,10 +5,20 @@ use std::{
 };
 
 use crate::{Dir, Move};
+use voracious_radix_sort::Radixable;
+
 pub(crate) type Idx = i64;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Board(pub u64);
+
+impl Radixable<u64> for Board {
+    type Key = u64;
+    #[inline]
+    fn key(&self) -> Self::Key {
+        self.0
+    }
+}
 
 impl BitAnd for Board {
     type Output = Self;
