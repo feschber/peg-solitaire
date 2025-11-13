@@ -1,7 +1,7 @@
 use std::{
     fmt::{Display, Formatter, Write},
     hash::Hash,
-    ops::{BitAnd, BitAndAssign},
+    ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, Not, Shl, Shr},
 };
 
 use crate::{Dir, Move};
@@ -18,9 +18,63 @@ impl BitAnd for Board {
     }
 }
 
+impl BitAnd<u64> for Board {
+    type Output = Self;
+
+    fn bitand(self, idx: u64) -> Self::Output {
+        Self(self.0 & idx as u64)
+    }
+}
+
 impl BitAndAssign for Board {
     fn bitand_assign(&mut self, rhs: Self) {
         self.0 &= rhs.0
+    }
+}
+
+impl BitOr for Board {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for Board {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0
+    }
+}
+
+impl BitXor for Board {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Self(self.0 ^ rhs.0)
+    }
+}
+
+impl Not for Board {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self(!self.0)
+    }
+}
+
+impl Shl<u32> for Board {
+    type Output = Self;
+
+    fn shl(self, rhs: u32) -> Self::Output {
+        Self(self.0 << rhs)
+    }
+}
+
+impl Shr<u32> for Board {
+    type Output = Self;
+
+    fn shr(self, rhs: u32) -> Self::Output {
+        Self(self.0 >> rhs)
     }
 }
 
@@ -125,7 +179,7 @@ impl Board {
     }
 
     pub fn inverse(&self) -> Board {
-        Self(!self.0 & Board::full().0)
+        !*self & Board::full()
     }
 
     pub fn normalize(&self) -> Self {
@@ -236,10 +290,48 @@ impl Board {
         self.set(mov.pos).set(mov.skip).unset(mov.target)
     }
 
+    pub fn reverse_movable_at_no_bounds_check(&self, idx: usize, dir: Dir) -> bool {
+        match dir {
+            Dir::East => *self & Board(7 << idx) == Board(1 << idx),
+            Dir::West => *self & Board(7 << (idx - 2)) == Board(4 << (idx - 2)),
+            Dir::South => *self & Board(0x010101 << idx) == Board(0x000001 << idx),
+            Dir::North => {
+                *self & Board(0x010101 << idx - 2 * Board::REPR as usize)
+                    == Board(0x010000 << idx - 2 * Board::REPR as usize)
+            }
+        }
+    }
+
+    pub fn movable_at_no_bounds_check(&self, idx: usize, dir: Dir) -> bool {
+        match dir {
+            Dir::East => *self & Board(7 << idx) == Board(3 << idx),
+            Dir::West => *self & Board(7 << (idx - 2)) == Board(6 << (idx - 2)),
+            Dir::South => *self & Board(0x010101 << idx) == Board(0x000101 << idx),
+            Dir::North => {
+                *self & Board(0x010101 << idx - 2 * Board::REPR as usize)
+                    == Board(0x010100 << idx - 2 * Board::REPR as usize)
+            }
+        }
+    }
+
+    /// Toggles the state of a move at a given index and direction.
+    pub fn toggle_mov_idx_unchecked(&self, idx: usize, dir: Dir) -> Board {
+        match dir {
+            Dir::East => *self ^ Board(7 << idx),
+            Dir::West => *self ^ Board(7 << (idx - 2)),
+            Dir::North => *self ^ Board(0x010101 << idx - 2 * Board::REPR as usize),
+            Dir::South => *self ^ Board(0x010101 << idx),
+        }
+    }
+
     #[inline(always)]
     pub const fn occupied(&self, pos: (Idx, Idx)) -> bool {
         let (y, x) = pos;
         (self.0 & (1 << (y * Board::REPR + x))) != 0
+    }
+
+    pub const fn occupied_idx(&self, idx: usize) -> bool {
+        (self.0 & (1 << idx)) != 0
     }
 
     #[inline(always)]

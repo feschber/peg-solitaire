@@ -9,7 +9,7 @@ use rayon::slice::ParallelSliceMut;
 // use fnv::FnvHashSet as HashSet; // 1.024s
 use hash::CustomHashSet as HashSet;
 // use rustc_hash::FxHashSet as HashSet; // 0.866s
-use std::{cmp::Ordering, collections::HashMap, hash::Hash, num::NonZero, thread};
+use std::{cmp::Ordering, collections::HashMap, hash::Hash, num::NonZero, thread, time::Instant};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -136,11 +136,13 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
             let mut copy = *board & board.movable_positions(dir);
             while copy != Board::empty() {
                 let idx = copy.0.trailing_zeros();
-                let y = idx as i64 / Board::REPR;
-                let x = idx as i64 % Board::REPR;
                 copy &= Board(!(1 << idx));
-                if let Some(mov) = board.get_legal_move((y, x), dir) {
-                    legal_moves.push(board.mov(mov).normalize());
+                if board.movable_at_no_bounds_check(idx as usize, dir) {
+                    legal_moves.push(
+                        board
+                            .toggle_mov_idx_unchecked(idx as usize, dir)
+                            .normalize(),
+                    );
                 }
             }
         }
@@ -161,10 +163,12 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
             while copy != Board::empty() {
                 let idx = copy.0.trailing_zeros();
                 copy &= Board(!(1 << idx));
-                let y = idx as i64 / Board::REPR;
-                let x = idx as i64 % Board::REPR;
-                if let Some(mov) = board.get_legal_inverse_move((y, x), dir) {
-                    constellations.push(board.reverse_mov(mov).normalize());
+                if board.reverse_movable_at_no_bounds_check(idx as usize, dir) {
+                    constellations.push(
+                        board
+                            .toggle_mov_idx_unchecked(idx as usize, dir)
+                            .normalize(),
+                    );
                 }
             }
         }
@@ -177,6 +181,7 @@ fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
 }
 
 pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
+    let start = Instant::now();
     let threads = threads.unwrap_or(num_threads()).get();
     let mut visited = vec![vec![], vec![Board::solved()]];
 
@@ -187,6 +192,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         constellations.dedup();
         visited.push(constellations);
     }
+    let reverse_step = Instant::now();
 
     visited.push(
         visited[(Board::SLOTS - 1) / 2]
@@ -194,6 +200,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
             .map(|b| b.inverse().normalize())
             .collect(),
     );
+    let invert_step = Instant::now();
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let mut legal_moves = possible_moves_par(&visited[remaining], threads);
@@ -202,13 +209,29 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         // legal_moves.dedup();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
+    let forward_step = Instant::now();
 
     let solvable: Vec<Board> = visited
         .into_iter()
         .take((Board::SLOTS - 1) / 2 + 1)
         .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
         .collect();
+    let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
+    println!("reverse step: {:?}", reverse_step.duration_since(start));
+    println!(
+        " invert step: {:?}",
+        invert_step.duration_since(reverse_step)
+    );
+    println!(
+        "forward step: {:?}",
+        forward_step.duration_since(invert_step)
+    );
+    println!(
+        "forward step: {:?}",
+        collect_step.duration_since(forward_step)
+    );
+    println!("       total: {:?}", collect_step.duration_since(start));
     solvable
 }
 
