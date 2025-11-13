@@ -290,37 +290,37 @@ impl Board {
         self.set(mov.pos).set(mov.skip).unset(mov.target)
     }
 
-    pub fn reverse_movable_at_no_bounds_check(&self, idx: usize, dir: Dir) -> bool {
+    pub fn reverse_movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
         match dir {
-            Dir::East => *self & Board(7 << idx) == Board(1 << idx),
-            Dir::West => *self & Board(7 << (idx - 2)) == Board(4 << (idx - 2)),
-            Dir::South => *self & Board(0x010101 << idx) == Board(0x000001 << idx),
+            Dir::East => self & Board(7 << idx) == Board(1 << idx),
+            Dir::West => self & Board(7 << (idx - 2)) == Board(4 << (idx - 2)),
+            Dir::South => self & Board(0x010101 << idx) == Board(0x000001 << idx),
             Dir::North => {
-                *self & Board(0x010101 << idx - 2 * Board::REPR as usize)
+                self & Board(0x010101 << idx - 2 * Board::REPR as usize)
                     == Board(0x010000 << idx - 2 * Board::REPR as usize)
             }
         }
     }
 
-    pub fn movable_at_no_bounds_check(&self, idx: usize, dir: Dir) -> bool {
+    pub fn movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
         match dir {
-            Dir::East => *self & Board(7 << idx) == Board(3 << idx),
-            Dir::West => *self & Board(7 << (idx - 2)) == Board(6 << (idx - 2)),
-            Dir::South => *self & Board(0x010101 << idx) == Board(0x000101 << idx),
+            Dir::East => self & Board(7 << idx) == Board(3 << idx),
+            Dir::West => self & Board(7 << (idx - 2)) == Board(6 << (idx - 2)),
+            Dir::South => self & Board(0x010101 << idx) == Board(0x000101 << idx),
             Dir::North => {
-                *self & Board(0x010101 << idx - 2 * Board::REPR as usize)
+                self & Board(0x010101 << idx - 2 * Board::REPR as usize)
                     == Board(0x010100 << idx - 2 * Board::REPR as usize)
             }
         }
     }
 
     /// Toggles the state of a move at a given index and direction.
-    pub fn toggle_mov_idx_unchecked(&self, idx: usize, dir: Dir) -> Board {
+    pub fn toggle_mov_idx_unchecked(self, idx: usize, dir: Dir) -> Board {
         match dir {
-            Dir::East => *self ^ Board(7 << idx),
-            Dir::West => *self ^ Board(7 << (idx - 2)),
-            Dir::North => *self ^ Board(0x010101 << idx - 2 * Board::REPR as usize),
-            Dir::South => *self ^ Board(0x010101 << idx),
+            Dir::East => self ^ Board(7 << idx),
+            Dir::West => self ^ Board(7 << (idx - 2)),
+            Dir::North => self ^ Board(0x010101 << idx - 2 * Board::REPR as usize),
+            Dir::South => self ^ Board(0x010101 << idx),
         }
     }
 
