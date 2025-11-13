@@ -441,18 +441,18 @@ impl Board {
     }
 
     #[inline]
-    const fn reverse_rows(&self) -> Self {
+    pub const fn reverse_rows(&self) -> Self {
         // we swap twice so we dont have to shift
         Self(self.0.swap_bytes().reverse_bits() >> 1)
     }
 
     #[inline]
-    const fn reverse_cols(&self) -> Self {
+    pub const fn reverse_cols(&self) -> Self {
         Self(self.0.swap_bytes() >> 8)
     }
 
     #[inline]
-    const fn rotate_180(&self) -> Self {
+    pub const fn rotate_180(&self) -> Self {
         Self(self.0.reverse_bits() >> 9)
     }
 

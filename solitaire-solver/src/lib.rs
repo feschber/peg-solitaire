@@ -199,7 +199,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     visited.push(
         visited[(Board::SLOTS - 1) / 2]
             .iter()
-            .map(|b| b.inverse().normalize())
+            .map(|b| b.inverse().rotate_180())
             .collect(),
     );
     let invert_step = Instant::now();
