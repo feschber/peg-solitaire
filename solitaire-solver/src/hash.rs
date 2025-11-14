@@ -6,5 +6,5 @@
 use nohash_hasher::BuildNoHashHasher;
 use std::collections::{HashMap, HashSet};
 
-pub(crate) type CustomHashSet<V> = HashSet<V, BuildNoHashHasher<V>>;
-pub(crate) type CustomHashMap<K, V> = HashMap<K, V, BuildNoHashHasher<K>>;
+pub type CustomHashSet<V> = HashSet<V, BuildNoHashHasher<V>>;
+pub type CustomHashMap<K, V> = HashMap<K, V, BuildNoHashHasher<K>>;

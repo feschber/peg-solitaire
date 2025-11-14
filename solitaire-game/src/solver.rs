@@ -1,5 +1,5 @@
 use futures_lite::future::{self, block_on};
-use std::collections::{HashMap, HashSet};
+use solitaire_solver::{HashMap, HashSet};
 
 use bevy::{
     ecs::world::CommandQueue,

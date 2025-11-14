@@ -17,6 +17,7 @@ use std::{cmp::Ordering, hash::Hash, num::NonZero, thread, time::Instant};
 
 pub use board::Board;
 pub use dir::Dir;
+pub use hash::{CustomHashMap as HashMap, CustomHashSet as HashSet};
 pub use mov::Move;
 pub use solution::Solution;
 
@@ -152,6 +153,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
         println!("constellations: {}", constellations.len());
         // constellations.par_sort_unstable();
+        println!("is sorted: {}", constellations.is_sorted());
         constellations.fast_sort_unstable_mt(threads);
         constellations.dedup();
         visited.push(constellations);
@@ -161,7 +163,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     visited.push(
         visited[(Board::SLOTS - 1) / 2]
             .iter()
-            .map(|b| b.inverse().rotate_180())
+            .map(|b| b.inverse())
             .collect(),
     );
     let invert_step = Instant::now();
@@ -179,7 +181,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let solvable: Vec<Board> = visited
         .into_iter()
         .take((Board::SLOTS - 1) / 2 + 1)
-        .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().rotate_180()]))
+        .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
         .collect();
     let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
