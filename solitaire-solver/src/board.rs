@@ -16,7 +16,7 @@ impl Radixable<u64> for Board {
     type Key = u64;
     #[inline]
     fn key(&self) -> Self::Key {
-        self.0
+        self.to_compressed_repr() as u64
     }
 }
 

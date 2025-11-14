@@ -1,64 +1,26 @@
 mod board;
+mod calc_first;
+mod calc_naive;
+mod calc_success;
 mod dir;
 mod hash;
 mod mov;
 mod solution;
+mod sort;
 
-// use rayon::slice::ParallelSliceMut;
-// use ahash::AHashSet as HashSet; // 1.194s
-// use fnv::FnvHashSet as HashSet; // 1.024s
-use hash::CustomHashSet as HashSet;
-use voracious_radix_sort::RadixSort;
-// use rustc_hash::FxHashSet as HashSet; // 0.866s
-use std::{cmp::Ordering, collections::HashMap, hash::Hash, num::NonZero, thread, time::Instant};
+pub use calc_first::calculate_first_solution;
+pub use calc_naive::calculate_all_solutions_naive;
+pub use calc_success::calculate_p_random_chance_success;
+pub use solution::print_solution;
+
+use std::{cmp::Ordering, hash::Hash, num::NonZero, thread, time::Instant};
 
 pub use board::Board;
 pub use dir::Dir;
 pub use mov::Move;
 pub use solution::Solution;
 
-pub fn calculate_first_solution() -> Solution {
-    fn solve(
-        board: Board,
-        solution: &mut Solution,
-        visited: &mut HashSet<Board>,
-        count: &mut u64,
-    ) -> bool {
-        *count += 1;
-        if board.is_solved() {
-            return true;
-        }
-        if !board.is_solvable() {
-            return false;
-        }
-        if visited.contains(&board) {
-            return false;
-        }
-        let mut legal_moves = board
-            .get_legal_moves()
-            .into_iter()
-            .map(|m| (board.mov(m), m))
-            .collect::<Vec<_>>();
-        // for some reason sorting this way makes it orders of magnitude faster
-        legal_moves.sort_unstable_by_key(|(b, _)| u64::MAX - b.0);
-        legal_moves.dedup();
-        for (b, m) in legal_moves {
-            solution.push(m);
-            if solve(b, solution, visited, count) {
-                return true;
-            }
-            solution.pop();
-        }
-        visited.insert(board);
-        false
-    }
-    let mut solution = Default::default();
-    let mut visited = HashSet::default();
-    let mut count = 0;
-    solve(Board::default(), &mut solution, &mut visited, &mut count);
-    println!("tried {count} constellations!");
-    solution
-}
+use crate::sort::Sort;
 
 fn num_threads() -> NonZero<usize> {
     std::thread::available_parallelism().unwrap_or(NonZero::new(4).unwrap())
@@ -190,7 +152,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
         println!("constellations: {}", constellations.len());
         // constellations.par_sort_unstable();
-        constellations.voracious_mt_sort(threads);
+        constellations.fast_sort_unstable_mt(threads);
         constellations.dedup();
         visited.push(constellations);
     }
@@ -208,7 +170,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let mut legal_moves = possible_moves_par(&visited[remaining], threads);
         println!("{}", legal_moves.len());
         // legal_moves.par_sort_unstable();
-        legal_moves.voracious_mt_sort(threads);
+        legal_moves.fast_sort_unstable_mt(threads);
         // legal_moves.dedup();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
@@ -238,42 +200,6 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     solvable
 }
 
-/// calculate the chances of winning the game by chosing possible moves at random
-pub fn calculate_p_random_chance_success(feasible: Vec<Board>) -> HashMap<Board, f64> {
-    let feasible: HashSet<_> = feasible.into_iter().collect();
-    let mut chances = HashMap::new();
-    chances.insert(Board::solved(), 1.0);
-    for i in 2..=(Board::SLOTS - 1) {
-        let feasible_with_i_pegs = feasible
-            .iter()
-            .copied()
-            .filter(|b| b.count_balls() == i as u64)
-            .collect::<Vec<_>>();
-        for constellation in feasible_with_i_pegs {
-            let legal_moves = constellation.get_legal_moves();
-
-            // we assume each legal move has equal chance of being taken (1 / n)
-            // p_success = sum(moves, P(move) * P(success | move))
-            // P(success | move) = 0.0 if infeasible, else lookup
-            let p_move = 1.0 / legal_moves.len() as f64;
-
-            let mut p_success = 0.0;
-
-            for mov in legal_moves {
-                let c_new = constellation.mov(mov).normalize();
-                p_success += if feasible.contains(&c_new) {
-                    p_move * *chances.get(&c_new).expect("already present")
-                } else {
-                    p_move * 0.0
-                };
-            }
-
-            chances.insert(constellation, p_success);
-        }
-    }
-    chances
-}
-
 fn intersect_sorted_vecs<R>(a: &[R], b: &[R]) -> Vec<R>
 where
     R: Copy + Eq + Ord,
@@ -293,65 +219,4 @@ where
         }
     }
     res
-}
-
-pub fn calculate_all_solutions_naive() -> Vec<Board> {
-    fn solve_all(
-        board: Board,
-        already_checked: &mut HashSet<Board>,
-        solvable: &mut HashSet<Board>,
-    ) -> bool {
-        // board is solved
-        if board.is_solved() {
-            solvable.insert(board);
-            already_checked.insert(board);
-            return true;
-        }
-
-        // found a known configuration
-        if already_checked.contains(&board) {
-            return solvable.contains(&board);
-        }
-
-        let mut any_solution = false;
-        let mut copy = board.0;
-        while copy != 0 {
-            let idx = copy.trailing_zeros();
-            copy &= !(1 << idx);
-            let y = idx as i64 / Board::REPR;
-            let x = idx as i64 % Board::REPR;
-            for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
-                if let Some(mov) = board.get_legal_move((y, x), dir) {
-                    any_solution |=
-                        solve_all(board.mov(mov).normalize(), already_checked, solvable);
-                }
-            }
-        }
-        already_checked.insert(board);
-        if any_solution {
-            solvable.insert(board);
-        }
-        any_solution
-    }
-    let mut solvable = HashSet::default();
-    let mut already_checked = HashSet::default();
-    solve_all(Board::default(), &mut already_checked, &mut solvable);
-    let total = already_checked.len();
-    let solvable_count = solvable.len();
-    assert_eq!(solvable_count, 1679072);
-    println!(
-        "checked {total} constellations, {solvable_count} have a solution ({:.2}%)",
-        (solvable_count as f64 / total as f64) * 100.
-    );
-    solvable.into_iter().collect()
-}
-
-pub fn print_solution(solution: Solution) {
-    let mut board = Board::default();
-    println!("{board}");
-    for mov in solution {
-        board = board.mov(mov);
-        println!("{mov}");
-        println!("{board}");
-    }
 }

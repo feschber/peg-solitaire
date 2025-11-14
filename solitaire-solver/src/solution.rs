@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter, Result};
 
-use crate::Move;
+use crate::{Board, Move};
 
 #[derive(Clone, Default)]
 pub struct Solution {
@@ -64,5 +64,15 @@ impl Iterator for SolutionIter {
         } else {
             None
         }
+    }
+}
+
+pub fn print_solution(solution: Solution) {
+    let mut board = Board::default();
+    println!("{board}");
+    for mov in solution {
+        board = board.mov(mov);
+        println!("{mov}");
+        println!("{board}");
     }
 }
