@@ -40,57 +40,60 @@ where
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        let mut chunks = states.chunks(states.len().div_ceil(num_threads));
-        thread::scope(|s| {
-            let mut threads = Vec::with_capacity(num_threads - 1);
-            let first_chunk = chunks.next().unwrap();
-            for chunk in chunks {
-                threads.push(s.spawn(|| f(chunk)));
-            }
-            // execute on current thread
-            let mut result = f(first_chunk);
-            for thread in threads {
-                result.extend(thread.join().unwrap());
-            }
-            result
-        })
+        if num_threads == 1 {
+            return f(states);
+        } else {
+            let mut chunks = states.chunks(states.len().div_ceil(num_threads));
+            thread::scope(|s| {
+                let mut threads = Vec::with_capacity(num_threads - 1);
+                let first_chunk = chunks.next().unwrap();
+                for chunk in chunks {
+                    threads.push(s.spawn(|| f(chunk)));
+                }
+                // execute on current thread
+                let mut result = f(first_chunk);
+                for thread in threads {
+                    result.extend(thread.join().unwrap());
+                }
+                result
+            })
+        }
     }
 }
 
-const PAGODA: [[f32; 7]; 7] = [
-    [0.0, 0.0, -0.3, 0.4, 0.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
-    [0.5, 0.0, 0.5, 0.4, 0.1, 0.3, -0.1],
-    [0.0, 0.9, 0.7, 0.3, 0.9, 1.1, 0.4],
-    [0.5, 0.6, 0.1, 0.5, 0.2, 0.6, 0.2],
-    [0.0, 0.0, 0.8, 0.0, 0.8, 0.0, 0.0],
-    [0.0, 0.0, 0.0, 0.5, -0.2, 0.0, 0.0],
+// somewhat effective
+#[rustfmt::skip]
+const PAGODA: [usize; 64] = [
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 0, 1, 0, 1, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
-fn pagoda(board: Board) -> f32 {
-    let mut result = 0.;
+fn pagoda(board: Board) -> usize {
+    let mut result = 0;
     let mut copy = board.0;
     while copy != 0 {
         let idx = copy.trailing_zeros();
-        let y = idx as i64 / Board::REPR;
-        let x = idx as i64 % Board::REPR;
         copy &= !(1 << idx);
-        result += PAGODA[y as usize][x as usize];
+        result += PAGODA[idx as usize];
     }
     result
 }
 
 #[allow(unused)]
-fn prune_pagoda(constellations: &mut Vec<Board>) {
+fn prune_pagoda_inverse(constellations: &mut Vec<Board>) {
     let len = constellations.len();
-    constellations.retain(|b| {
-        let pb = pagoda(*b);
-        let pe = pagoda(Board::solved());
-        pb >= pe
-    });
-    let new_len = constellations.len();
-    let _diff = len - new_len;
-    // println!("pruned {} configurations", diff);
+    constellations.retain(|&b| pagoda(b.inverse()) >= pagoda(Board::solved()));
+    println!(
+        "pruned {} configurations ({}%)",
+        len - constellations.len(),
+        (len - constellations.len()) as f32 / len as f32
+    );
 }
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
@@ -111,7 +114,6 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
             }
         }
     }
-    // prune_pagoda(&mut legal_moves);
     legal_moves
 }
 
@@ -137,6 +139,7 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
             }
         }
     }
+    // prune_pagoda_inverse(&mut constellations);
     constellations
 }
 
@@ -151,9 +154,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
     for i in 1..(Board::SLOTS - 1) / 2 {
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
-        println!("constellations: {}", constellations.len());
-        // constellations.par_sort_unstable();
-        println!("is sorted: {}", constellations.is_sorted());
+        println!("{}", constellations.len());
         constellations.fast_sort_unstable_mt(threads);
         constellations.dedup();
         visited.push(constellations);
@@ -171,9 +172,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let mut legal_moves = possible_moves_par(&visited[remaining], threads);
         println!("{}", legal_moves.len());
-        // legal_moves.par_sort_unstable();
         legal_moves.fast_sort_unstable_mt(threads);
-        // legal_moves.dedup();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
     let forward_step = Instant::now();
