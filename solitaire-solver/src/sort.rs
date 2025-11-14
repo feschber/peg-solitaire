@@ -2,7 +2,9 @@
 use voracious_radix_sort::{RadixKey, RadixSort, Radixable};
 
 pub trait Sort<T: Radixable<K>, K: RadixKey> {
+    #[allow(unused)]
     fn fast_sort_unstable(&mut self);
+    #[allow(unused)]
     fn fast_sort_unstable_mt(&mut self, threads: usize);
 }
 
