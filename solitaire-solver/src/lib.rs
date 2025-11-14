@@ -13,7 +13,13 @@ pub use calc_naive::calculate_all_solutions_naive;
 pub use calc_success::calculate_p_random_chance_success;
 pub use solution::print_solution;
 
-use std::{cmp::Ordering, hash::Hash, num::NonZero, thread, time::Instant};
+use std::{
+    cmp::Ordering,
+    hash::Hash,
+    num::NonZero,
+    thread,
+    time::{Duration, Instant},
+};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -31,7 +37,7 @@ fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> Vec<R>
 where
     T: Send + Sync,
     F: Fn(&[T]) -> Vec<R> + Send + Sync,
-    R: Send + Eq + Hash + nohash_hasher::IsEnabled,
+    R: Copy + Send + Sync + Eq + Hash + nohash_hasher::IsEnabled,
 {
     #[cfg(target_family = "wasm")]
     {
@@ -40,23 +46,50 @@ where
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        if num_threads == 1 {
+        if num_threads == 1 || states.len() < 100 * num_threads {
             return f(states);
         } else {
             let mut chunks = states.chunks(states.len().div_ceil(num_threads));
-            thread::scope(|s| {
+            let results: Vec<Vec<R>> = thread::scope(|s| {
+                let start = Instant::now();
                 let mut threads = Vec::with_capacity(num_threads - 1);
                 let first_chunk = chunks.next().unwrap();
                 for chunk in chunks {
                     threads.push(s.spawn(|| f(chunk)));
                 }
                 // execute on current thread
-                let mut result = f(first_chunk);
-                for thread in threads {
-                    result.extend(thread.join().unwrap());
+                let mut results = vec![f(first_chunk)];
+                results.extend(threads.into_iter().map(|t| t.join().unwrap()));
+                results
+            });
+            let t_done = Instant::now();
+            let mut total_len = results.iter().map(|r| r.len()).sum();
+            let result = Vec::with_capacity(total_len);
+            result.reserve(total_len);
+            // SAFETY: we initialize below
+            unsafe { result.set_len(result.len() + total_len) };
+
+            let mut result_slices = vec![];
+            let mut remaining = &mut result[..];
+            for len in results.iter().map(|r| r.len()) {
+                let (a, b) = remaining.split_at_mut(len);
+                result_slices.push(a);
+                remaining = b;
+                total_len += len;
+            }
+            thread::scope(|s| {
+                let mut collect_threads = vec![];
+                for (slice, result) in result_slices.into_iter().zip(results) {
+                    collect_threads.push(s.spawn(move || {
+                        slice.copy_from_slice(&result);
+                    }));
                 }
-                result
-            })
+                let t_collect = Instant::now();
+                let t_processing = t_done.duration_since(start);
+                let t_collect = t_collect.duration_since(t_done);
+                println!("processing: {t_processing:?}, collecting: {t_collect:?}");
+            });
+            result
         }
     }
 }
@@ -149,13 +182,16 @@ fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
 
 pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let start = Instant::now();
+    let mut time_sort = Duration::default();
     let threads = threads.unwrap_or(num_threads()).get();
     let mut visited = vec![vec![], vec![Board::solved()]];
 
     for i in 1..(Board::SLOTS - 1) / 2 {
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
         println!("{}", constellations.len());
+        let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
+        time_sort += start.elapsed();
         constellations.dedup();
         visited.push(constellations);
     }
@@ -172,7 +208,9 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let mut legal_moves = possible_moves_par(&visited[remaining], threads);
         println!("{}", legal_moves.len());
+        let start = Instant::now();
         legal_moves.fast_sort_unstable_mt(threads);
+        time_sort += start.elapsed();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
     let forward_step = Instant::now();
@@ -198,6 +236,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         collect_step.duration_since(forward_step)
     );
     println!("       total: {:?}", collect_step.duration_since(start));
+    println!("     sorting: {time_sort:?}");
     solvable
 }
 
