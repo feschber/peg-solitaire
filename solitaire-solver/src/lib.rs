@@ -4,7 +4,7 @@ mod hash;
 mod mov;
 mod solution;
 
-use rayon::slice::ParallelSliceMut;
+// use rayon::slice::ParallelSliceMut;
 // use ahash::AHashSet as HashSet; // 1.194s
 // use fnv::FnvHashSet as HashSet; // 1.024s
 use hash::CustomHashSet as HashSet;
@@ -217,7 +217,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let solvable: Vec<Board> = visited
         .into_iter()
         .take((Board::SLOTS - 1) / 2 + 1)
-        .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
+        .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().rotate_180()]))
         .collect();
     let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
@@ -231,7 +231,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         forward_step.duration_since(invert_step)
     );
     println!(
-        "forward step: {:?}",
+        "collect step: {:?}",
         collect_step.duration_since(forward_step)
     );
     println!("       total: {:?}", collect_step.duration_since(start));
