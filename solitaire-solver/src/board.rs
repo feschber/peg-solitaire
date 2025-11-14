@@ -166,6 +166,19 @@ impl Board {
         b
     }
 
+    #[cfg(target_arch = "x86_64")]
+    pub fn to_compressed_repr(&self) -> u64 {
+        const MASK: u64 = (0x7 << 2)
+            | (0x7 << 10)
+            | (0x7f << 16)
+            | (0x7f << 24)
+            | (0x7f << 32)
+            | (0x7 << 42)
+            | (0x7 << 50);
+        unsafe { core::arch::x86_64::_pext_u64(self.0, MASK) }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
     pub fn to_compressed_repr(&self) -> u64 {
         let board = self.0;
         (board & (0x7 << 2)) >> 2
