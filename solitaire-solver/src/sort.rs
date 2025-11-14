@@ -13,7 +13,11 @@ impl<T: Radixable<K>, K: RadixKey> Sort<T, K> for [T] {
         self.voracious_sort()
     }
     fn fast_sort_unstable_mt(&mut self, threads: usize) {
-        self.voracious_mt_sort(threads)
+        if threads == 1 {
+            self.voracious_sort()
+        } else {
+            self.voracious_mt_sort(threads)
+        }
     }
 }
 
