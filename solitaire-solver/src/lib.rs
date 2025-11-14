@@ -37,7 +37,7 @@ fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> Vec<R>
 where
     T: Send + Sync,
     F: Fn(&[T]) -> Vec<R> + Send + Sync,
-    R: Copy + Send + Sync + Eq + Hash + nohash_hasher::IsEnabled,
+    R: Copy + Default + Send + Sync + Eq + Hash + nohash_hasher::IsEnabled,
 {
     #[cfg(target_family = "wasm")]
     {
@@ -49,9 +49,10 @@ where
         if num_threads == 1 || states.len() < 100 * num_threads {
             return f(states);
         } else {
+            println!("processing with {num_threads} threads");
+            let start = Instant::now();
             let mut chunks = states.chunks(states.len().div_ceil(num_threads));
-            let results: Vec<Vec<R>> = thread::scope(|s| {
-                let start = Instant::now();
+            let mut results: Vec<Vec<R>> = thread::scope(|s| {
                 let mut threads = Vec::with_capacity(num_threads - 1);
                 let first_chunk = chunks.next().unwrap();
                 for chunk in chunks {
@@ -64,13 +65,16 @@ where
             });
             let t_done = Instant::now();
             let mut total_len = results.iter().map(|r| r.len()).sum();
-            let result = Vec::with_capacity(total_len);
-            result.reserve(total_len);
-            // SAFETY: we initialize below
-            unsafe { result.set_len(result.len() + total_len) };
+            // take first result slice as final vector
+            let mut result = std::mem::take(&mut results[0]);
+            let first_len = result.len();
+            result.reserve(total_len - first_len);
+            unsafe {
+                result.set_len(total_len);
+            }
 
             let mut result_slices = vec![];
-            let mut remaining = &mut result[..];
+            let mut remaining = &mut result[first_len..];
             for len in results.iter().map(|r| r.len()) {
                 let (a, b) = remaining.split_at_mut(len);
                 result_slices.push(a);
