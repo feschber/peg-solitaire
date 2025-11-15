@@ -1,4 +1,3 @@
-#![feature(slice_partition_dedup)]
 mod board;
 mod calc_first;
 mod calc_naive;
