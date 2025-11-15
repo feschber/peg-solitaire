@@ -1,5 +1,5 @@
 [workspace]
-members = ["solitaire-game", "solitaire-solver", "solution-cache"]
+members = ["solitaire-game", "solitaire-solver"]
 
 [package]
 name = "peg-solitaire"
@@ -10,7 +10,6 @@ edition = "2024"
 clap = { version = "4.5.45", features = ["derive"] }
 solitaire-game = { path = "./solitaire-game", version = "0.0.1", optional = true }
 solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
-solution-cache = { path = "./solution-cache", version = "0.0.1", optional = true }
 
 # run build.rs in release mode, otherwise it takes 100 years
 [profile.dev.build-override]
@@ -23,7 +22,6 @@ opt-level = 2
 [features]
 default = ["game"]
 game = ["dep:solitaire-game"]
-solution_cache = ["dep:solution-cache", "solitaire-game/solution_cache"]
 
 [profile.release]
 # lto = "thin"

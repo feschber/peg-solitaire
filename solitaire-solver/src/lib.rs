@@ -1,3 +1,4 @@
+#![feature(slice_partition_dedup)]
 mod board;
 mod calc_first;
 mod calc_naive;
@@ -15,7 +16,6 @@ pub use solution::print_solution;
 
 use std::{
     cmp::Ordering,
-    hash::Hash,
     num::NonZero,
     thread,
     time::{Duration, Instant},
@@ -33,69 +33,87 @@ fn num_threads() -> NonZero<usize> {
     std::thread::available_parallelism().unwrap_or(NonZero::new(4).unwrap())
 }
 
-fn parallel<F, T, R>(states: &[T], num_threads: usize, f: F) -> Vec<R>
+/// maps n chunks of a slice `&[T]` into `R` in parallel using F
+fn par_map_chunks<F, T, R>(t: impl AsRef<[T]>, nthreads: usize, f: F) -> Vec<R>
+where
+    T: Send + Sync,
+    F: Fn(&[T]) -> R + Send + Sync,
+    R: Default + Send + Sync,
+{
+    if nthreads == 1 || t.as_ref().len() < 100 * nthreads {
+        vec![f(t.as_ref())]
+    } else {
+        let mut chunks = t.as_ref().chunks(t.as_ref().len().div_ceil(nthreads));
+        thread::scope(|s| {
+            let first_chunk = chunks.next().unwrap();
+            let threads: Vec<_> = chunks.map(|c| s.spawn(|| f(c))).collect();
+
+            // execute on current thread
+            let mut results = vec![f(first_chunk)];
+            results.extend(threads.into_iter().map(|t| t.join().unwrap()));
+            results
+        })
+    }
+}
+
+/// maps n chunks of a slice `&[T]` into `R` in parallel using F
+fn par_map_chunks_mut<F, T, R>(mut t: impl AsMut<[T]>, nthreads: usize, f: F) -> Vec<R>
+where
+    T: Send + Sync,
+    F: Fn(&mut [T]) -> R + Send + Sync,
+    R: Default + Send + Sync,
+{
+    if nthreads == 1 || t.as_mut().len() < 100 * nthreads {
+        vec![f(t.as_mut())]
+    } else {
+        let chunk_size = t.as_mut().len().div_ceil(nthreads);
+        let mut chunks = t.as_mut().chunks_mut(chunk_size);
+        thread::scope(|s| {
+            let first_chunk = chunks.next().unwrap();
+            let threads: Vec<_> = chunks.map(|c| s.spawn(|| f(c))).collect();
+
+            // execute on current thread
+            let mut results = vec![f(first_chunk)];
+            results.extend(threads.into_iter().map(|t| t.join().unwrap()));
+            results
+        })
+    }
+}
+
+/// slices `v` into multiple mutable slices according to `lens` lengths
+fn into_mut_slices<'a, T>(mut v: &'a mut [T], lens: &[usize]) -> Vec<&'a mut [T]> {
+    let mut slices = vec![];
+    assert_eq!(v.len(), lens.iter().sum());
+    for len in lens {
+        let (a, b) = v.split_at_mut(*len);
+        slices.push(a);
+        v = b;
+    }
+    slices
+}
+
+fn par_join<T: Copy + Send + Sync, VT: Send + Sync + AsRef<[T]>>(slices: &[VT]) -> Vec<T> {
+    let lens = slices.iter().map(|r| r.as_ref().len()).collect::<Vec<_>>();
+    let total = lens.iter().sum();
+    let mut result = Vec::with_capacity(total);
+    unsafe { result.set_len(total) };
+    let dsts = into_mut_slices(&mut result, &lens);
+    thread::scope(|s| {
+        dsts.into_iter()
+            .zip(slices)
+            .map(|(dst, src)| s.spawn(|| dst.copy_from_slice(src.as_ref())))
+            .for_each(|_| {});
+    });
+    result
+}
+
+fn parallel<F, T, R>(states: &[T], nthreads: usize, f: F) -> Vec<R>
 where
     T: Send + Sync,
     F: Fn(&[T]) -> Vec<R> + Send + Sync,
-    R: Copy + Default + Send + Sync + Eq + Hash + nohash_hasher::IsEnabled,
+    R: Copy + Default + Send + Sync,
 {
-    #[cfg(target_family = "wasm")]
-    {
-        let _ = num_threads;
-        return f(states);
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        if num_threads == 1 || states.len() < 100 * num_threads {
-            return f(states);
-        } else {
-            println!("processing with {num_threads} threads");
-            let start = Instant::now();
-            let mut chunks = states.chunks(states.len().div_ceil(num_threads));
-            let mut results: Vec<Vec<R>> = thread::scope(|s| {
-                let mut threads = Vec::with_capacity(num_threads - 1);
-                let first_chunk = chunks.next().unwrap();
-                for chunk in chunks {
-                    threads.push(s.spawn(|| f(chunk)));
-                }
-                // execute on current thread
-                let mut results = vec![f(first_chunk)];
-                results.extend(threads.into_iter().map(|t| t.join().unwrap()));
-                results
-            });
-            let t_done = Instant::now();
-            let mut total_len = results.iter().map(|r| r.len()).sum();
-            // take first result slice as final vector
-            let mut result = std::mem::take(&mut results[0]);
-            let first_len = result.len();
-            result.reserve(total_len - first_len);
-            unsafe {
-                result.set_len(total_len);
-            }
-
-            let mut result_slices = vec![];
-            let mut remaining = &mut result[first_len..];
-            for len in results.iter().map(|r| r.len()) {
-                let (a, b) = remaining.split_at_mut(len);
-                result_slices.push(a);
-                remaining = b;
-                total_len += len;
-            }
-            thread::scope(|s| {
-                let mut collect_threads = vec![];
-                for (slice, result) in result_slices.into_iter().zip(results) {
-                    collect_threads.push(s.spawn(move || {
-                        slice.copy_from_slice(&result);
-                    }));
-                }
-            });
-            let t_collect = Instant::now();
-            let t_processing = t_done.duration_since(start);
-            let t_collect = t_collect.duration_since(t_done);
-            println!("processing: {t_processing:?}, collecting: {t_collect:?}");
-            result
-        }
-    }
+    par_join(&par_map_chunks(states, nthreads, f))
 }
 
 // somewhat effective
@@ -142,14 +160,13 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
                 let idx = copy.0.trailing_zeros();
                 copy &= Board(!(1 << idx));
                 if board.movable_at_no_bounds_check(idx as usize, dir) {
-                    legal_moves.push(
-                        board
-                            .toggle_mov_idx_unchecked(idx as usize, dir)
-                            .normalize(),
-                    );
+                    legal_moves.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
                 }
             }
         }
+    }
+    for board in legal_moves.iter_mut() {
+        *board = board.normalize();
     }
     legal_moves
 }
@@ -167,14 +184,13 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
                 let idx = copy.0.trailing_zeros();
                 copy &= Board(!(1 << idx));
                 if board.reverse_movable_at_no_bounds_check(idx as usize, dir) {
-                    constellations.push(
-                        board
-                            .toggle_mov_idx_unchecked(idx as usize, dir)
-                            .normalize(),
-                    );
+                    constellations.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
                 }
             }
         }
+    }
+    for board in constellations.iter_mut() {
+        *board = board.normalize();
     }
     // prune_pagoda_inverse(&mut constellations);
     constellations
@@ -196,7 +212,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
         time_sort += start.elapsed();
-        constellations.dedup();
+        let constellations = constellations.par_dedup(threads);
         visited.push(constellations);
     }
     let reverse_step = Instant::now();
@@ -263,4 +279,24 @@ where
         }
     }
     res
+}
+
+trait ParDedup {
+    fn par_dedup(&mut self, n_threads: usize) -> Self;
+}
+
+impl<T: Copy + std::fmt::Debug + Send + Sync + PartialEq> ParDedup for Vec<T> {
+    fn par_dedup(&mut self, nthreads: usize) -> Self {
+        let mut chunks: Vec<Vec<T>> = par_map_chunks_mut(self, nthreads, |c| {
+            let mut v = Vec::from(c);
+            v.dedup();
+            v
+        });
+        for i in 0..chunks.len() - 1 {
+            if chunks[i][chunks[i].len() - 1] == chunks[i + 1][0] {
+                chunks[i].pop();
+            }
+        }
+        par_join(&chunks)
+    }
 }
