@@ -88,11 +88,11 @@ where
                         slice.copy_from_slice(&result);
                     }));
                 }
-                let t_collect = Instant::now();
-                let t_processing = t_done.duration_since(start);
-                let t_collect = t_collect.duration_since(t_done);
-                println!("processing: {t_processing:?}, collecting: {t_collect:?}");
             });
+            let t_collect = Instant::now();
+            let t_processing = t_done.duration_since(start);
+            let t_collect = t_collect.duration_since(t_done);
+            println!("processing: {t_processing:?}, collecting: {t_collect:?}");
             result
         }
     }
