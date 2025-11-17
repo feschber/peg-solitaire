@@ -206,7 +206,14 @@ impl Board {
     }
 
     pub fn normalize(&self) -> Self {
-        Board(self.symmetries().map(|s| s.0).into_iter().min().unwrap())
+        let mut symmetries = self.symmetries().into_iter();
+        let mut min = symmetries.next().unwrap();
+        for b in symmetries {
+            if b < min {
+                min = b;
+            }
+        }
+        min
     }
 
     pub const fn empty() -> Self {
