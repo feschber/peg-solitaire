@@ -12,6 +12,7 @@ pub use calc_first::calculate_first_solution;
 pub use calc_naive::calculate_all_solutions_naive;
 pub use calc_success::calculate_p_random_chance_success;
 pub use solution::print_solution;
+use voracious_radix_sort::RadixSort;
 
 use std::{
     cmp::Ordering,
@@ -143,7 +144,7 @@ fn pagoda(board: Board) -> usize {
 fn prune_pagoda_inverse(constellations: &mut Vec<Board>) {
     let len = constellations.len();
     constellations.retain(|&b| pagoda(b.inverse()) >= pagoda(Board::solved()));
-    println!(
+    eprintln!(
         "pruned {} configurations ({}%)",
         len - constellations.len(),
         (len - constellations.len()) as f32 / len as f32
@@ -151,23 +152,51 @@ fn prune_pagoda_inverse(constellations: &mut Vec<Board>) {
 }
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
-    let mut legal_moves = Vec::default();
+    assert!(states.is_sorted());
+    let mut parts = Vec::default();
     for dir in Dir::enumerate() {
-        for board in states {
-            let mut copy = *board & board.movable_positions(dir);
-            while copy != Board::empty() {
-                let idx = copy.0.trailing_zeros();
-                copy &= Board(!(1 << idx));
-                if board.movable_at_no_bounds_check(idx as usize, dir) {
-                    legal_moves.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
+        let mask = Board::full().movable_positions(dir);
+        for idx in 0..64usize {
+            if (1 << idx) & mask.0 == 0 {
+                continue;
+            }
+            let mut moves = Vec::default();
+            for board in states {
+                if board.movable_at_no_bounds_check(idx, dir) {
+                    moves.push(board.toggle_mov_idx_unchecked(idx, dir));
                 }
             }
+            parts.push(moves);
         }
     }
-    for board in legal_moves.iter_mut() {
-        *board = board.normalize();
-    }
-    legal_moves
+    let mut legal_moves = merge_sorted_vecs(&mut parts);
+    // assert!(legal_moves.is_sorted());
+    // if legal_moves.len() < 400000 {
+    //     let lm = legal_moves.iter().map(|b| b.0).collect::<Vec<_>>();
+    //     println!("a{} = {lm:?}", states.len());
+    // }
+    let normalized = legal_moves.iter().filter(|&b| *b == b.normalize()).count();
+    let total = legal_moves.len();
+    println!(
+        "normalized: {normalized} / {total} ({:.2}%)",
+        normalized as f64 / total as f64 * 100.0
+    );
+    let mut renormalized = vec![];
+    legal_moves.retain(|&b| {
+        let normalized = b.normalize();
+        if normalized != b {
+            renormalized.push(normalized);
+            false
+        } else {
+            true
+        }
+    });
+    renormalized.voracious_sort();
+    merge_sorted_vecs(&mut [renormalized, legal_moves])
+    // if legal_moves.len() < 400000 {
+    //     let lm = legal_moves.iter().map(|b| b.0).collect::<Vec<_>>();
+    //     println!("an{} = {lm:?}", states.len());
+    // }
 }
 
 fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
@@ -207,7 +236,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
     for i in 1..(Board::SLOTS - 1) / 2 {
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
-        println!("{}", constellations.len());
+        eprintln!("{}", constellations.len());
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
         time_sort += start.elapsed();
@@ -219,17 +248,18 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     visited.push(
         visited[(Board::SLOTS - 1) / 2]
             .iter()
-            .map(|b| b.inverse())
+            .map(|b| b.inverse().normalize())
             .collect(),
     );
+    visited[(Board::SLOTS - 1) / 2 + 1].fast_sort_unstable_mt(threads);
     let invert_step = Instant::now();
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let mut legal_moves = possible_moves_par(&visited[remaining], threads);
-        println!("{}", legal_moves.len());
-        let start = Instant::now();
-        legal_moves.fast_sort_unstable_mt(threads);
-        time_sort += start.elapsed();
+        let legal_moves = possible_moves_par(&visited[remaining], threads);
+        eprintln!("{}", legal_moves.len());
+        // let start = Instant::now();
+        // legal_moves.fast_sort_unstable_mt(threads);
+        // time_sort += start.elapsed();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
     }
     let forward_step = Instant::now();
@@ -241,21 +271,21 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         .collect();
     let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
-    println!("reverse step: {:?}", reverse_step.duration_since(start));
-    println!(
+    eprintln!("reverse step: {:?}", reverse_step.duration_since(start));
+    eprintln!(
         " invert step: {:?}",
         invert_step.duration_since(reverse_step)
     );
-    println!(
+    eprintln!(
         "forward step: {:?}",
         forward_step.duration_since(invert_step)
     );
-    println!(
+    eprintln!(
         "collect step: {:?}",
         collect_step.duration_since(forward_step)
     );
-    println!("       total: {:?}", collect_step.duration_since(start));
-    println!("     sorting: {time_sort:?}");
+    eprintln!("       total: {:?}", collect_step.duration_since(start));
+    eprintln!("     sorting: {time_sort:?}");
     solvable
 }
 
@@ -278,6 +308,49 @@ where
         }
     }
     res
+}
+
+fn merge_sorted_vecs(parts: &mut [Vec<Board>]) -> Vec<Board> {
+    if parts.len() == 1 {
+        std::mem::take(&mut parts[0])
+    } else if parts.len() == 2 {
+        let a = std::mem::take(&mut parts[0]);
+        let b = std::mem::take(&mut parts[1]);
+        let mut ia = 0;
+        let mut ib = 0;
+        let mut res = vec![];
+        while ia < a.len() || ib < b.len() {
+            if ib >= b.len() {
+                res.extend_from_slice(&a[ia..]);
+                break;
+            }
+            if ia >= a.len() {
+                res.extend_from_slice(&b[ib..]);
+                break;
+            }
+            match a[ia].cmp(&b[ib]) {
+                Ordering::Equal => {
+                    res.push(a[ia]);
+                    ia += 1;
+                    ib += 1;
+                }
+                Ordering::Less => {
+                    res.push(a[ia]);
+                    ia += 1;
+                }
+                Ordering::Greater => {
+                    res.push(b[ib]);
+                    ib += 1;
+                }
+            }
+        }
+        res
+    } else {
+        let (a, b) = parts.split_at_mut(parts.len() / 2);
+        let a = merge_sorted_vecs(a);
+        let b = merge_sorted_vecs(b);
+        merge_sorted_vecs(&mut [a, b])
+    }
 }
 
 trait ParDedup {

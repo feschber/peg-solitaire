@@ -2,7 +2,7 @@ use std::fmt::{Display, Error, Formatter};
 
 use crate::board::Idx;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
     North,
     East,
@@ -33,6 +33,6 @@ impl Dir {
     }
 
     pub(crate) fn enumerate() -> [Self; 4] {
-        [Dir::North, Dir::East, Dir::South, Dir::West]
+        [Dir::North, Dir::East, Dir::West, Dir::South]
     }
 }
