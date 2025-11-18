@@ -468,7 +468,7 @@ impl Board {
 
     /// Toggles the state of a move at a given index and direction.
     pub fn toggle_mov_idx_unchecked(self, idx: usize, dir: Dir) -> Board {
-        let mask = Self::DIR_LUT[dir as usize][idx];
+        let mask = Self::direction_mask(idx, dir);
         self ^ mask
     }
 
