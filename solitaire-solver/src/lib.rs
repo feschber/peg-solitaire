@@ -151,23 +151,27 @@ fn prune_pagoda_inverse(constellations: &mut Vec<Board>) {
 }
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
-    let mut legal_moves = Vec::default();
+    let mut constellations = Vec::default();
     for dir in Dir::enumerate() {
         for board in states {
-            let mut copy = *board & board.movable_positions(dir);
-            while copy != Board::empty() {
-                let idx = copy.0.trailing_zeros();
-                copy &= Board(!(1 << idx));
+            let mut mask = *board & board.movable_positions(dir);
+            while mask != Board::empty() {
+                let idx = mask.0.trailing_zeros();
+                mask &= Board(mask.0 - 1);
                 if board.movable_at_no_bounds_check(idx as usize, dir) {
-                    legal_moves.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
+                    constellations.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
                 }
             }
         }
     }
-    for board in legal_moves.iter_mut() {
+    normalize(&mut constellations);
+    constellations
+}
+
+fn normalize(constellations: &mut [Board]) {
+    for board in constellations {
         *board = board.normalize();
     }
-    legal_moves
 }
 
 fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
@@ -178,20 +182,17 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
     for dir in Dir::enumerate() {
         for board in states {
-            let mut copy = *board & board.movable_positions(dir);
-            while copy != Board::empty() {
-                let idx = copy.0.trailing_zeros();
-                copy &= Board(!(1 << idx));
+            let mut mask = *board & board.movable_positions(dir);
+            while mask != Board::empty() {
+                let idx = mask.0.trailing_zeros();
+                mask &= Board(mask.0 - 1);
                 if board.reverse_movable_at_no_bounds_check(idx as usize, dir) {
                     constellations.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
                 }
             }
         }
     }
-    for board in constellations.iter_mut() {
-        *board = board.normalize();
-    }
-    // prune_pagoda_inverse(&mut constellations);
+    normalize(&mut constellations);
     constellations
 }
 

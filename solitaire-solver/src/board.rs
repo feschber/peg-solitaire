@@ -5,10 +5,14 @@ use std::{
 };
 
 use crate::{Dir, Move};
-use voracious_radix_sort::{Dispatcher, RadixKey, Radixable, dlsd_radixsort, lsd_stable_radixsort, msd_stable_radixsort, peeka_sort};
+use voracious_radix_sort::{
+    Dispatcher, RadixKey, Radixable, dlsd_radixsort, lsd_stable_radixsort, msd_stable_radixsort,
+    peeka_sort,
+};
 
 pub(crate) type Idx = i64;
 
+#[repr(transparent)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Board(pub u64);
 
@@ -17,17 +21,29 @@ pub struct U33(u64);
 impl RadixKey for U33 {
     type Key = u64;
     #[inline]
-    fn into_keytype(&self) -> Self::Key { self.0 }
+    fn into_keytype(&self) -> Self::Key {
+        self.0
+    }
     #[inline]
-    fn type_size(&self) -> usize { 33 }
+    fn type_size(&self) -> usize {
+        33
+    }
     #[inline]
-    fn usize_to_keytype(&self, item: usize) -> Self::Key { item as u64 }
+    fn usize_to_keytype(&self, item: usize) -> Self::Key {
+        item as u64
+    }
     #[inline]
-    fn keytype_to_usize(&self, item: Self::Key) -> usize { item as usize }
+    fn keytype_to_usize(&self, item: Self::Key) -> usize {
+        item as usize
+    }
     #[inline]
-    fn default_key(&self) -> Self::Key { 0 }
+    fn default_key(&self) -> Self::Key {
+        0
+    }
     #[inline]
-    fn one(&self) -> Self::Key { 1 }
+    fn one(&self) -> Self::Key {
+        1
+    }
 }
 
 impl<T: Radixable<U33>> Dispatcher<T, U33> for U33 {
