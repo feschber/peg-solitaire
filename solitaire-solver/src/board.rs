@@ -346,18 +346,12 @@ impl Board {
 
     pub fn mov_pattern_mask(self, dir: Dir) -> Self {
         // mask 110 patterns in a row
-        self.movable_positions(dir)
-            & self
-            & self.dir_shift(dir)
-            & !self.dir_shift(dir).dir_shift(dir)
+        self.movable_positions(dir) & self & self.dir_shift(dir, 1) & !self.dir_shift(dir, 2)
     }
 
     pub fn rev_mov_pattern_mask(self, dir: Dir) -> Self {
         // mask 110 patterns in a row
-        self.movable_positions(dir)
-            & self
-            & !self.dir_shift(dir)
-            & !self.dir_shift(dir).dir_shift(dir)
+        self.movable_positions(dir) & self & !self.dir_shift(dir, 1) & !self.dir_shift(dir, 2)
     }
 
     pub const fn count_balls(&self) -> u64 {
@@ -488,12 +482,12 @@ impl Board {
         self ^ mask
     }
 
-    pub fn dir_shift(self, dir: Dir) -> Board {
+    pub fn dir_shift(self, dir: Dir, count: usize) -> Board {
         match dir {
-            Dir::East => Board(self.0 >> 1),
-            Dir::West => Board(self.0 << 1),
-            Dir::South => Board(self.0 >> Self::REPR),
-            Dir::North => Board(self.0 << Self::REPR),
+            Dir::East => Board(self.0 >> count),
+            Dir::West => Board(self.0 << count),
+            Dir::South => Board(self.0 >> count * Self::REPR as usize),
+            Dir::North => Board(self.0 << count * Self::REPR as usize),
         }
     }
 

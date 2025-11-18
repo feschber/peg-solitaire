@@ -241,7 +241,6 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let len = constellations.len();
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
-        constellations.dedup();
         let deduped = constellations.len();
         time_sort += start.elapsed();
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
