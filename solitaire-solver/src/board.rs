@@ -5,18 +5,67 @@ use std::{
 };
 
 use crate::{Dir, Move};
-use voracious_radix_sort::Radixable;
+use voracious_radix_sort::{Dispatcher, RadixKey, Radixable, dlsd_radixsort, lsd_stable_radixsort, msd_stable_radixsort, peeka_sort};
 
 pub(crate) type Idx = i64;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Board(pub u64);
 
-impl Radixable<u64> for Board {
+pub struct U33(u64);
+
+impl RadixKey for U33 {
     type Key = u64;
     #[inline]
+    fn into_keytype(&self) -> Self::Key { self.0 }
+    #[inline]
+    fn type_size(&self) -> usize { 33 }
+    #[inline]
+    fn usize_to_keytype(&self, item: usize) -> Self::Key { item as u64 }
+    #[inline]
+    fn keytype_to_usize(&self, item: Self::Key) -> usize { item as usize }
+    #[inline]
+    fn default_key(&self) -> Self::Key { 0 }
+    #[inline]
+    fn one(&self) -> Self::Key { 1 }
+}
+
+impl<T: Radixable<U33>> Dispatcher<T, U33> for U33 {
+    fn voracious_sort(&self, arr: &mut [T]) {
+        if arr.len() <= 300 {
+            arr.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        } else {
+            dlsd_radixsort(arr, 8);
+        }
+    }
+    fn voracious_stable_sort(&self, arr: &mut [T]) {
+        if arr.len() <= 200 {
+            arr.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        } else if arr.len() <= 8000 {
+            msd_stable_radixsort(arr, 8);
+        } else if arr.len() <= 100_000 {
+            lsd_stable_radixsort(arr, 8);
+        } else {
+            msd_stable_radixsort(arr, 8);
+        }
+    }
+    fn voracious_mt_sort(&self, arr: &mut [T], thread_n: usize) {
+        if arr.len() <= 256 {
+            arr.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        } else if arr.len() < 5_000_000_000 {
+            peeka_sort(arr, 8, 650_000, thread_n);
+        } else {
+            // Switch to regions sort algo
+            peeka_sort(arr, 8, 5_000, thread_n);
+        }
+    }
+}
+
+impl Radixable<U33> for Board {
+    type Key = U33;
+    #[inline]
     fn key(&self) -> Self::Key {
-        self.to_compressed_repr() as u64
+        U33(self.to_compressed_repr())
     }
 }
 
