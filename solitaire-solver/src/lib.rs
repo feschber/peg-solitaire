@@ -152,14 +152,14 @@ fn prune_pagoda_inverse(constellations: &mut Vec<Board>) {
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
-    for dir in Dir::enumerate() {
-        for board in states {
+    for board in states {
+        for dir in Dir::enumerate() {
             let mut mask = *board & board.movable_positions(dir);
             while mask != Board::empty() {
-                let idx = mask.0.trailing_zeros();
+                let idx = mask.0.trailing_zeros() as usize;
                 mask &= Board(mask.0 - 1);
-                if board.movable_at_no_bounds_check(idx as usize, dir) {
-                    constellations.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
+                if board.movable_at_no_bounds_check(idx, dir) {
+                    constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
                 }
             }
         }
@@ -180,14 +180,14 @@ fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
 
 fn reverse_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
-    for dir in Dir::enumerate() {
-        for board in states {
+    for board in states {
+        for dir in Dir::enumerate() {
             let mut mask = *board & board.movable_positions(dir);
             while mask != Board::empty() {
-                let idx = mask.0.trailing_zeros();
+                let idx = mask.0.trailing_zeros() as usize;
                 mask &= Board(mask.0 - 1);
-                if board.reverse_movable_at_no_bounds_check(idx as usize, dir) {
-                    constellations.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
+                if board.reverse_movable_at_no_bounds_check(idx, dir) {
+                    constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
                 }
             }
         }
