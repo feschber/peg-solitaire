@@ -156,16 +156,13 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
         for board in states {
             let mut copy = *board & board.movable_positions(dir);
             while copy != Board::empty() {
-                let idx = copy.0.trailing_zeros();
+                let idx = copy.0.trailing_zeros() as usize;
                 copy &= Board(!(1 << idx));
-                if board.movable_at_no_bounds_check(idx as usize, dir) {
-                    legal_moves.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
+                if board.movable_at_no_bounds_check(idx, dir) {
+                    legal_moves.push(board.toggle_mov_idx_unchecked(idx, dir).normalize());
                 }
             }
         }
-    }
-    for board in legal_moves.iter_mut() {
-        *board = board.normalize();
     }
     legal_moves
 }
@@ -180,16 +177,13 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
         for board in states {
             let mut copy = *board & board.movable_positions(dir);
             while copy != Board::empty() {
-                let idx = copy.0.trailing_zeros();
+                let idx = copy.0.trailing_zeros() as usize;
                 copy &= Board(!(1 << idx));
-                if board.reverse_movable_at_no_bounds_check(idx as usize, dir) {
-                    constellations.push(board.toggle_mov_idx_unchecked(idx as usize, dir));
+                if board.reverse_movable_at_no_bounds_check(idx, dir) {
+                    constellations.push(board.toggle_mov_idx_unchecked(idx, dir).normalize());
                 }
             }
         }
-    }
-    for board in constellations.iter_mut() {
-        *board = board.normalize();
     }
     // prune_pagoda_inverse(&mut constellations);
     constellations
