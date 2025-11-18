@@ -11,7 +11,6 @@ mod sort;
 pub use calc_first::calculate_first_solution;
 pub use calc_naive::calculate_all_solutions_naive;
 pub use calc_success::calculate_p_random_chance_success;
-use rayon::slice::ParallelSliceMut;
 pub use solution::print_solution;
 
 use std::{

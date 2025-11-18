@@ -462,8 +462,11 @@ impl Board {
         (dir_lut, exp_mov_lut, exp_rev_lut)
     }
 
+    #[allow(unused)]
     const DIR_LUT: [[Board; 64]; 4] = Self::gen_luts().0;
+    #[allow(unused)]
     const EXP_MOV_LUT: [[Board; 64]; 4] = Self::gen_luts().1;
+    #[allow(unused)]
     const EXP_REV_LUT: [[Board; 64]; 4] = Self::gen_luts().2;
 
     pub fn movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
@@ -472,14 +475,12 @@ impl Board {
     }
 
     pub fn reverse_movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
-        let mask = Self::direction_mask(idx, dir);
-        self & mask == Self::expected_revmov_pattern(idx, dir)
+        self & Self::direction_mask(idx, dir) == Self::expected_revmov_pattern(idx, dir)
     }
 
     /// Toggles the state of a move at a given index and direction.
     pub fn toggle_mov_idx_unchecked(self, idx: usize, dir: Dir) -> Board {
-        let mask = Self::direction_mask(idx, dir);
-        self ^ mask
+        self ^ Self::direction_mask(idx, dir)
     }
 
     pub fn dir_shift(self, dir: Dir, count: usize) -> Board {
