@@ -11,6 +11,7 @@ mod sort;
 pub use calc_first::calculate_first_solution;
 pub use calc_naive::calculate_all_solutions_naive;
 pub use calc_success::calculate_p_random_chance_success;
+use rayon::slice::ParallelSliceMut;
 pub use solution::print_solution;
 
 use std::{
@@ -154,13 +155,11 @@ fn possible_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
     for dir in Dir::enumerate() {
         for board in states {
-            let mut mask = *board & board.movable_positions(dir);
+            let mut mask = board.mov_pattern_mask(dir);
             while mask != Board::empty() {
                 let idx = mask.0.trailing_zeros() as usize;
                 mask &= Board(mask.0 - 1);
-                if board.movable_at_no_bounds_check(idx, dir) {
-                    constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
-                }
+                constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
             }
         }
     }
@@ -182,13 +181,11 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Vec::default();
     for dir in Dir::enumerate() {
         for board in states {
-            let mut mask = *board & board.movable_positions(dir);
+            let mut mask = board.rev_mov_pattern_mask(dir);
             while mask != Board::empty() {
                 let idx = mask.0.trailing_zeros() as usize;
                 mask &= Board(mask.0 - 1);
-                if board.reverse_movable_at_no_bounds_check(idx, dir) {
-                    constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
-                }
+                constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
             }
         }
     }
@@ -305,11 +302,15 @@ where
 }
 
 trait ParDedup {
-    fn par_dedup(&mut self, n_threads: usize) -> Self;
+    fn par_dedup(self, n_threads: usize) -> Self;
 }
 
 impl<T: Copy + std::fmt::Debug + Send + Sync + PartialEq> ParDedup for Vec<T> {
-    fn par_dedup(&mut self, nthreads: usize) -> Self {
+    fn par_dedup(mut self, nthreads: usize) -> Self {
+        if nthreads == 1 {
+            self.dedup();
+            return self;
+        }
         let mut chunks: Vec<Vec<T>> = par_map_chunks_mut(self, nthreads, |c| {
             let mut v = Vec::from(c);
             v.dedup();

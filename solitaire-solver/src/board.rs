@@ -344,6 +344,22 @@ impl Board {
         }
     }
 
+    pub fn mov_pattern_mask(self, dir: Dir) -> Self {
+        // mask 110 patterns in a row
+        self.movable_positions(dir)
+            & self
+            & self.dir_shift(dir)
+            & !self.dir_shift(dir).dir_shift(dir)
+    }
+
+    pub fn rev_mov_pattern_mask(self, dir: Dir) -> Self {
+        // mask 110 patterns in a row
+        self.movable_positions(dir)
+            & self
+            & !self.dir_shift(dir)
+            & !self.dir_shift(dir).dir_shift(dir)
+    }
+
     pub const fn count_balls(&self) -> u64 {
         self.0.count_ones() as u64
     }
@@ -470,6 +486,15 @@ impl Board {
     pub fn toggle_mov_idx_unchecked(self, idx: usize, dir: Dir) -> Board {
         let mask = Self::direction_mask(idx, dir);
         self ^ mask
+    }
+
+    pub fn dir_shift(self, dir: Dir) -> Board {
+        match dir {
+            Dir::East => Board(self.0 >> 1),
+            Dir::West => Board(self.0 << 1),
+            Dir::South => Board(self.0 >> Self::REPR),
+            Dir::North => Board(self.0 << Self::REPR),
+        }
     }
 
     #[inline(always)]
