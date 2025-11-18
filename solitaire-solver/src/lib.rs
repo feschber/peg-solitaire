@@ -206,14 +206,28 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let threads = threads.unwrap_or(num_threads()).get();
     let mut visited = vec![vec![], vec![Board::solved()]];
 
+    let mut total_constellations = 0;
+    let mut total_moves = 0;
+    eprintln!(
+        "{:>10} {:>10}         {:>10}",
+        "original", "deduped", "intersection"
+    );
+    eprintln!("----------------------------------------");
     for i in 1..(Board::SLOTS - 1) / 2 {
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
-        println!("{}", constellations.len());
+        let len = constellations.len();
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
         time_sort += start.elapsed();
         let constellations = constellations.par_dedup(threads);
+        let deduped = constellations.len();
+        eprintln!(
+            "{len:>10} {deduped:>10} ({:.1}%)",
+            deduped as f64 / len as f64 * 100.
+        );
         visited.push(constellations);
+        total_moves += len;
+        total_constellations += deduped;
     }
     let reverse_step = Instant::now();
 
@@ -226,12 +240,20 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let invert_step = Instant::now();
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
-        let mut legal_moves = possible_moves_par(&visited[remaining], threads);
-        println!("{}", legal_moves.len());
+        let mut constellations = possible_moves_par(&visited[remaining], threads);
+        let len = constellations.len();
         let start = Instant::now();
-        legal_moves.fast_sort_unstable_mt(threads);
+        constellations.fast_sort_unstable_mt(threads);
+        constellations.dedup();
+        let deduped = constellations.len();
         time_sort += start.elapsed();
-        visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &legal_moves);
+        visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
+        let intersection = visited[remaining - 1].len();
+        eprintln!(
+            "{len:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)",
+            deduped as f64 / len as f64 * 100.,
+            intersection as f64 / deduped as f64 * 100.,
+        );
     }
     let forward_step = Instant::now();
 
@@ -242,21 +264,22 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         .collect();
     let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
-    println!("reverse step: {:?}", reverse_step.duration_since(start));
-    println!(
+    eprintln!("analyzed {total_moves} moves and {total_constellations} different constellations");
+    eprintln!("reverse step: {:?}", reverse_step.duration_since(start));
+    eprintln!(
         " invert step: {:?}",
         invert_step.duration_since(reverse_step)
     );
-    println!(
+    eprintln!(
         "forward step: {:?}",
         forward_step.duration_since(invert_step)
     );
-    println!(
+    eprintln!(
         "collect step: {:?}",
         collect_step.duration_since(forward_step)
     );
-    println!("       total: {:?}", collect_step.duration_since(start));
-    println!("     sorting: {time_sort:?}");
+    eprintln!("       total: {:?}", collect_step.duration_since(start));
+    eprintln!("     sorting: {time_sort:?}");
     solvable
 }
 
