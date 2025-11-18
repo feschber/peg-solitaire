@@ -153,6 +153,22 @@ impl Shr<u32> for Board {
     }
 }
 
+impl Shl<usize> for Board {
+    type Output = Self;
+
+    fn shl(self, rhs: usize) -> Self::Output {
+        Self(self.0 << rhs)
+    }
+}
+
+impl Shr<usize> for Board {
+    type Output = Self;
+
+    fn shr(self, rhs: usize) -> Self::Output {
+        Self(self.0 >> rhs)
+    }
+}
+
 impl nohash_hasher::IsEnabled for Board {}
 
 impl Hash for Board {
@@ -385,38 +401,75 @@ impl Board {
         self.set(mov.pos).set(mov.skip).unset(mov.target)
     }
 
-    pub fn reverse_movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
+    const fn direction_mask(idx: usize, dir: Dir) -> Self {
         match dir {
-            Dir::East => self & Board(7 << idx) == Board(1 << idx),
-            Dir::West => self & Board(7 << (idx - 2)) == Board(4 << (idx - 2)),
-            Dir::South => self & Board(0x010101 << idx) == Board(0x000001 << idx),
-            Dir::North => {
-                self & Board(0x010101 << idx - 2 * Board::REPR as usize)
-                    == Board(0x010000 << idx - 2 * Board::REPR as usize)
-            }
+            Dir::East => Self(0b111 << idx),
+            Dir::West => Self(0b111 << (idx - 2)),
+            Dir::South => Self(0x010101 << idx),
+            Dir::North => Self(0x010101 << idx - 2 * Self::REPR as usize),
         }
     }
 
-    pub fn movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
+    const fn expected_mov_pattern(idx: usize, dir: Dir) -> Self {
         match dir {
-            Dir::East => self & Board(7 << idx) == Board(3 << idx),
-            Dir::West => self & Board(7 << (idx - 2)) == Board(6 << (idx - 2)),
-            Dir::South => self & Board(0x010101 << idx) == Board(0x000101 << idx),
-            Dir::North => {
-                self & Board(0x010101 << idx - 2 * Board::REPR as usize)
-                    == Board(0x010100 << idx - 2 * Board::REPR as usize)
-            }
+            Dir::East => Self(0b011 << idx),
+            Dir::West => Self(0b110 << (idx - 2)),
+            Dir::South => Self(0x000101 << idx),
+            Dir::North => Self(0x010100 << (idx - 2 * Board::REPR as usize)),
         }
+    }
+
+    const fn expected_revmov_pattern(idx: usize, dir: Dir) -> Self {
+        match dir {
+            Dir::East => Self(0b001 << idx),
+            Dir::West => Self(0b100 << (idx - 2)),
+            Dir::South => Self(0x000001 << idx),
+            Dir::North => Self(0x010000 << (idx - 2 * Board::REPR as usize)),
+        }
+    }
+
+    const fn gen_luts() -> ([[Board; 64]; 4], [[Board; 64]; 4], [[Board; 64]; 4]) {
+        let mut dir_lut = [[Board(0u64); 64]; 4];
+        let mut exp_mov_lut = [[Board(0u64); 64]; 4];
+        let mut exp_rev_lut = [[Board(0u64); 64]; 4];
+        let mut d = 0;
+        while d < 4 {
+            let dir = match d {
+                0 => Dir::East,
+                1 => Dir::West,
+                2 => Dir::South,
+                _ => Dir::North,
+            };
+            let mut i = 0;
+            while i < 64 {
+                dir_lut[d][i] = Self::direction_mask(i, dir);
+                exp_mov_lut[d][i] = Self::expected_mov_pattern(i, dir);
+                exp_rev_lut[d][i] = Self::expected_revmov_pattern(i, dir);
+                i += 1;
+            }
+            d += 1;
+        }
+        (dir_lut, exp_mov_lut, exp_rev_lut)
+    }
+
+    const DIR_LUT: [[Board; 64]; 4] = Self::gen_luts().0;
+    const EXP_MOV_LUT: [[Board; 64]; 4] = Self::gen_luts().1;
+    const EXP_REV_LUT: [[Board; 64]; 4] = Self::gen_luts().2;
+
+    pub fn movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
+        let mask = Self::DIR_LUT[dir as usize][idx];
+        self & mask == Self::EXP_MOV_LUT[dir as usize][idx]
+    }
+
+    pub fn reverse_movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
+        let mask = Self::DIR_LUT[dir as usize][idx];
+        self & mask == Self::EXP_REV_LUT[dir as usize][idx]
     }
 
     /// Toggles the state of a move at a given index and direction.
     pub fn toggle_mov_idx_unchecked(self, idx: usize, dir: Dir) -> Board {
-        match dir {
-            Dir::East => self ^ Board(7 << idx),
-            Dir::West => self ^ Board(7 << (idx - 2)),
-            Dir::North => self ^ Board(0x010101 << idx - 2 * Board::REPR as usize),
-            Dir::South => self ^ Board(0x010101 << idx),
-        }
+        let mask = Self::DIR_LUT[dir as usize][idx];
+        self ^ mask
     }
 
     #[inline(always)]

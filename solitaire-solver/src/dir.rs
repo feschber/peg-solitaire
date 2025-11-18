@@ -4,10 +4,10 @@ use crate::board::Idx;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Dir {
-    North,
     East,
-    South,
     West,
+    South,
+    North,
 }
 
 impl Display for Dir {
