@@ -12,6 +12,7 @@ pub use calc_first::calculate_first_solution;
 pub use calc_naive::calculate_all_solutions_naive;
 pub use calc_success::calculate_p_random_chance_success;
 pub use solution::print_solution;
+use voracious_radix_sort::RadixSort;
 
 use std::{
     cmp::Ordering,
@@ -172,6 +173,46 @@ fn normalize(constellations: &mut [Board]) {
     }
 }
 
+fn normalize_dedup(mut constellations: Vec<Vec<Vec<Board>>>) -> Vec<Board> {
+    let res = vec![];
+    for dir in Dir::enumerate() {
+        for idx in 0..(Board::REPR as usize * Board::REPR as usize) {
+            let constellations = &mut constellations[dir as usize][idx];
+            let (unchanged, normalized) = partition_normalize(constellations);
+            assert!(unchanged.is_sorted());
+            normalized.voracious_sort();
+            let (unchanged, normalized) = (partition_dedup(unchanged), partition_dedup(normalized));
+        }
+    }
+    res
+}
+
+fn partition_dedup(constellations: &mut [Board]) -> (&mut [Board], &mut [Board]) {
+    let mut last = 0;
+    for i in 0..constellations.len() {
+        let c = constellations[i];
+        let n = c.normalize();
+        if n == c {
+            constellations.swap(last, i);
+            last = i + 1;
+        }
+    }
+    constellations.split_at_mut(last)
+}
+
+fn partition_normalize(constellations: &mut [Board]) -> (&mut [Board], &mut [Board]) {
+    let mut last = 0;
+    for i in 0..constellations.len() {
+        let c = constellations[i];
+        let n = c.normalize();
+        if n == c {
+            constellations.swap(last, i);
+            last = i + 1;
+        }
+    }
+    constellations.split_at_mut(last)
+}
+
 fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     parallel(states, num_threads, possible_moves)
 }
@@ -205,39 +246,43 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let mut total_constellations = 0;
     let mut total_moves = 0;
     eprintln!(
-        "{:>10} {:>10}         {:>10}",
-        "original", "deduped", "intersection"
+        "{:>10} {:>10} {:>10}         {:>10}",
+        "boards", "moves", "deduped", "intersection"
     );
-    eprintln!("----------------------------------------");
+    eprintln!("-----------------------------------------------------");
     for i in 1..(Board::SLOTS - 1) / 2 {
+        let num_constellations = visited[i].len();
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
-        let len = constellations.len();
+        let num_moves = constellations.len();
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
         time_sort += start.elapsed();
         let constellations = constellations.par_dedup(threads);
         let deduped = constellations.len();
         eprintln!(
-            "{len:>10} {deduped:>10} ({:.1}%)",
-            deduped as f64 / len as f64 * 100.
+            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%)",
+            deduped as f64 / num_moves as f64 * 100.
         );
         visited.push(constellations);
-        total_moves += len;
+        total_moves += num_moves;
         total_constellations += deduped;
     }
     let reverse_step = Instant::now();
 
-    visited.push(
-        visited[(Board::SLOTS - 1) / 2]
-            .iter()
-            .map(|b| b.inverse())
-            .collect(),
-    );
+    let mut inverted: Vec<_> = visited[(Board::SLOTS - 1) / 2]
+        .iter()
+        .map(|b| b.inverse())
+        .collect();
+    normalize(&mut inverted);
+    inverted.fast_sort_unstable_mt(threads);
+    visited.push(inverted);
     let invert_step = Instant::now();
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
+        let num_constellations = visited[remaining].len();
         let mut constellations = possible_moves_par(&visited[remaining], threads);
-        let len = constellations.len();
+        let num_moves = constellations.len();
+        total_moves += num_moves;
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
         let deduped = constellations.len();
@@ -245,8 +290,8 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
         let intersection = visited[remaining - 1].len();
         eprintln!(
-            "{len:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)",
-            deduped as f64 / len as f64 * 100.,
+            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)",
+            deduped as f64 / num_moves as f64 * 100.,
             intersection as f64 / deduped as f64 * 100.,
         );
     }
