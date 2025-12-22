@@ -40,6 +40,7 @@ WASMBR = $(DIST)/$(TARGET_NAME)_bg_opt.wasm.br
 .PHONY: wasm
 wasm: $(BINDGEN_FILES) $(WASMBR)
 	mv $(DIST)/peg-solitaire_bg_opt.wasm $(DIST)/peg-solitaire_bg.wasm || true
+	mv $(DIST)/peg-solitaire_bg_opt.wasm.br $(DIST)/peg-solitaire_bg.wasm.br || true
 	cp index.html $(DIST)
 	cp -r assets/ $(DIST)/assets/
 
