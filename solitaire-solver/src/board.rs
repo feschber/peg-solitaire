@@ -5,9 +5,10 @@ use std::{
 };
 
 use crate::{Dir, Move};
+#[cfg(not(target_arch = "wasm32"))]
+use voracious_radix_sort::peeka_sort;
 use voracious_radix_sort::{
     Dispatcher, RadixKey, Radixable, dlsd_radixsort, lsd_stable_radixsort, msd_stable_radixsort,
-    peeka_sort,
 };
 
 pub(crate) type Idx = i64;
@@ -65,6 +66,7 @@ impl<T: Radixable<U33>> Dispatcher<T, U33> for U33 {
             msd_stable_radixsort(arr, 8);
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     fn voracious_mt_sort(&self, arr: &mut [T], thread_n: usize) {
         if arr.len() <= 256 {
             arr.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());

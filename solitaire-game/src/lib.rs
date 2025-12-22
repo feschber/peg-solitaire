@@ -32,11 +32,12 @@ fn main() {
 }
 
 pub fn run() {
-    App::new()
-        .add_plugins(MainWindow)
-        .add_plugins(FpsOverlay)
-        .add_plugins(PegSolitaire)
-        .run();
+    let mut app = App::new();
+    app.add_plugins(MainWindow);
+    app.add_plugins(PegSolitaire);
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(FpsOverlay);
+    app.run();
 }
 
 #[derive(Default, Resource)]

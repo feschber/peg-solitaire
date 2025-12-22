@@ -10,7 +10,7 @@ impl Plugin for FpsOverlay {
         app.add_plugins(FpsOverlayPlugin {
             config: FpsOverlayConfig {
                 frame_time_graph_config: FrameTimeGraphConfig {
-                    enabled: true,
+                    enabled: false,
                     min_fps: 0.0,
                     target_fps: 120.0,
                 },

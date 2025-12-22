@@ -4859,7 +4859,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "voracious_radix_sort"
 version = "1.2.0"
-source = "git+https://github.com/feschber/voracious_sort#e4c652db83ee7237e9715004aef729ad168e47f3"
+source = "git+https://github.com/lakwet/voracious_sort#3dbdd7f46006d4395626f18fda9c135b4ecd9bbb"
 dependencies = [
  "rayon",
 ]

@@ -12,6 +12,11 @@ impl<T: Radixable<K>, K: RadixKey> Sort<T, K> for [T] {
     fn fast_sort_unstable(&mut self) {
         self.voracious_sort()
     }
+    #[cfg(target_arch = "wasm32")]
+    fn fast_sort_unstable_mt(&mut self, threads: usize) {
+        self.voracious_sort()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     fn fast_sort_unstable_mt(&mut self, threads: usize) {
         if threads == 1 {
             self.voracious_sort()

@@ -14,12 +14,10 @@ pub use calc_success::calculate_p_random_chance_success;
 pub use solution::print_solution;
 use voracious_radix_sort::RadixSort;
 
-use std::{
-    cmp::Ordering,
-    num::NonZero,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{cmp::Ordering, num::NonZero, thread};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 pub use board::Board;
 pub use dir::Dir;
@@ -213,6 +211,12 @@ fn partition_normalize(constellations: &mut [Board]) -> (&mut [Board], &mut [Boa
     constellations.split_at_mut(last)
 }
 
+#[cfg(target_arch = "wasm32")]
+fn possible_moves_par(states: &[Board], _: usize) -> Vec<Board> {
+    possible_moves(states)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     parallel(states, num_threads, possible_moves)
 }
@@ -233,12 +237,20 @@ fn reverse_moves(states: &[Board]) -> Vec<Board> {
     constellations
 }
 
+#[cfg(target_arch = "wasm32")]
+fn reverse_moves_par(states: &[Board], _: usize) -> Vec<Board> {
+    reverse_moves(states)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     parallel(states, num_threads, reverse_moves)
 }
 
 pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
+    #[cfg(not(target_arch = "wasm32"))]
     let start = Instant::now();
+    #[cfg(not(target_arch = "wasm32"))]
     let mut time_sort = Duration::default();
     let threads = threads.unwrap_or(num_threads()).get();
     let mut visited = vec![vec![], vec![Board::solved()]];
@@ -254,9 +266,13 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let num_constellations = visited[i].len();
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
         let num_moves = constellations.len();
+        #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
-        time_sort += start.elapsed();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            time_sort += start.elapsed();
+        }
         let constellations = constellations.par_dedup(threads);
         let deduped = constellations.len();
         eprintln!(
@@ -267,6 +283,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         total_moves += num_moves;
         total_constellations += deduped;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let reverse_step = Instant::now();
 
     let mut inverted: Vec<_> = visited[(Board::SLOTS - 1) / 2]
@@ -276,6 +293,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     normalize(&mut inverted);
     inverted.fast_sort_unstable_mt(threads);
     visited.push(inverted);
+    #[cfg(not(target_arch = "wasm32"))]
     let invert_step = Instant::now();
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
@@ -283,10 +301,14 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let mut constellations = possible_moves_par(&visited[remaining], threads);
         let num_moves = constellations.len();
         total_moves += num_moves;
+        #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
         let deduped = constellations.len();
-        time_sort += start.elapsed();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            time_sort += start.elapsed();
+        }
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
         let intersection = visited[remaining - 1].len();
         eprintln!(
@@ -295,6 +317,7 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
             intersection as f64 / deduped as f64 * 100.,
         );
     }
+    #[cfg(not(target_arch = "wasm32"))]
     let forward_step = Instant::now();
 
     let solvable: Vec<Board> = visited
@@ -302,24 +325,28 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         .take((Board::SLOTS - 1) / 2 + 1)
         .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
         .collect();
+    #[cfg(not(target_arch = "wasm32"))]
     let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
     eprintln!("analyzed {total_moves} moves and {total_constellations} different constellations");
-    eprintln!("reverse step: {:?}", reverse_step.duration_since(start));
-    eprintln!(
-        " invert step: {:?}",
-        invert_step.duration_since(reverse_step)
-    );
-    eprintln!(
-        "forward step: {:?}",
-        forward_step.duration_since(invert_step)
-    );
-    eprintln!(
-        "collect step: {:?}",
-        collect_step.duration_since(forward_step)
-    );
-    eprintln!("       total: {:?}", collect_step.duration_since(start));
-    eprintln!("     sorting: {time_sort:?}");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        eprintln!("reverse step: {:?}", reverse_step.duration_since(start));
+        eprintln!(
+            " invert step: {:?}",
+            invert_step.duration_since(reverse_step)
+        );
+        eprintln!(
+            "forward step: {:?}",
+            forward_step.duration_since(invert_step)
+        );
+        eprintln!(
+            "collect step: {:?}",
+            collect_step.duration_since(forward_step)
+        );
+        eprintln!("       total: {:?}", collect_step.duration_since(start));
+        eprintln!("     sorting: {time_sort:?}");
+    }
     solvable
 }
 
@@ -348,6 +375,15 @@ trait ParDedup {
     fn par_dedup(self, n_threads: usize) -> Self;
 }
 
+#[cfg(target_arch = "wasm32")]
+impl<T: Copy + std::fmt::Debug + Send + Sync + PartialEq> ParDedup for Vec<T> {
+    fn par_dedup(mut self, nthreads: usize) -> Self {
+        self.dedup();
+        self
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl<T: Copy + std::fmt::Debug + Send + Sync + PartialEq> ParDedup for Vec<T> {
     fn par_dedup(mut self, nthreads: usize) -> Self {
         if nthreads == 1 {

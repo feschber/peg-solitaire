@@ -21,4 +21,5 @@ $(dist):
 
 install-deps:
 	rustup target add $(WASMTARGET)
-	cargo install -f wasm-bindgen-cli
+	cargo install wasm-bindgen-cli || true
+	cargo install wasm-server-runner || true
