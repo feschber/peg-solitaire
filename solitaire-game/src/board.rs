@@ -16,6 +16,7 @@ impl Plugin for BoardPlugin {
 }
 
 pub const BOARD_POS: f32 = 0.0;
+pub const HOLE_POS: f32 = 0.05;
 pub const MARKER_POS: f32 = 0.1;
 pub const PEG_POS: f32 = 0.2;
 pub const PEG_POS_RAISED: f32 = 1.0;
@@ -130,7 +131,7 @@ fn spawn_pegs(mut commands: Commands, board: Res<CurrentBoard>) {
                         radius: HOLE_RADIUS,
                         color: Color::WHITE.with_luminance(0.01),
                     },
-                    Transform::from_translation((world_pos, BOARD_POS).into()),
+                    Transform::from_translation((world_pos, HOLE_POS).into()),
                 ));
             }
 

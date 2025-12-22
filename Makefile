@@ -1,23 +1,51 @@
-WASMTARGET = wasm32-unknown-unknown
+TARGET_NAME := peg-solitaire
+WASMTARGET := wasm32-unknown-unknown
+BUILDTYPE ?= release
+TARGET := target/$(WASMTARGET)/$(BUILDTYPE)/$(TARGET_NAME).wasm
 
-proj_dir := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-dist := $(proj_dir)www
-release_target := target/$(WASMTARGET)/release/peg-solitaire.wasm
+PROJ_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
+DIST := $(PROJ_DIR)www
 
 .PHONY: all
-
 all: wasm
 
-wasm: | $(dist)
+# build wasm binary
+$(TARGET):
+ifeq ($(BUILDTYPE),release)
 	cargo build --target $(WASMTARGET) --release
-	wasm-bindgen --out-dir $(dist) --target web $(release_target)
-	wasm-opt -all $(dist)/peg-solitaire_bg.wasm -Os -o $(dist)/peg-solitaire_bg_opt.wasm
-	mv $(dist)/peg-solitaire_bg_opt.wasm $(dist)/peg-solitaire_bg.wasm
-	cp index.html $(dist)
-	cp -r assets/ www/
+else
+	cargo build --target $(WASMTARGET)
+endif
 
-$(dist):
+# generate javascript glue-code
+BINDGEN_FILES = $(addprefix $(DIST)/$(TARGET_NAME),.d.ts .js _bg.wasm _bg.wasm.d.ts)
+$(BINDGEN_FILES): $(TARGET) | $(DIST)
+	rm -rf $(DIST)
+	wasm-bindgen --out-dir $(DIST) --target web $(TARGET)
+
+$(DIST):
 	@mkdir -p $@
+
+# optimize wasm binary
+WASMOPT = $(DIST)/$(TARGET_NAME)_bg_opt.wasm
+%_opt.wasm: %.wasm
+	wasm-opt -all $< -Os -o $*_opt.wasm
+
+# compress using brotli
+WASMBR = $(DIST)/$(TARGET_NAME)_bg_opt.wasm.br
+%.wasm.br: %.wasm
+	brotli -9 -o $@ $<
+
+# copy files to destination
+.PHONY: wasm
+wasm: $(BINDGEN_FILES) $(WASMBR)
+	mv $(DIST)/peg-solitaire_bg_opt.wasm $(DIST)/peg-solitaire_bg.wasm || true
+	cp index.html $(DIST)
+	cp -r assets/ $(DIST)/assets/
+
+.PHONY: clean
+clean:
+	rm -rf $(DIST)
 
 install-deps:
 	rustup target add $(WASMTARGET)
