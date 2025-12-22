@@ -42,6 +42,7 @@ wasm: $(BINDGEN_FILES) $(WASMBR)
 	mv $(DIST)/peg-solitaire_bg_opt.wasm $(DIST)/peg-solitaire_bg.wasm || true
 	mv $(DIST)/peg-solitaire_bg_opt.wasm.br $(DIST)/peg-solitaire_bg.wasm.br || true
 	cp index.html $(DIST)
+	cp favicon.ico $(DIST)
 	cp -r assets/ $(DIST)/assets/
 
 .PHONY: clean
