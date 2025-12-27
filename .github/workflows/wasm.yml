@@ -1,0 +1,33 @@
+on:
+  push:
+    branches:
+      - main
+    pull_request:
+      branches:
+        - main
+
+name: Deploy WASM
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          target: wasm32-unknown-unknown
+          profile: minimal
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+      - name: Install Bindgen
+        run: cargo install wasm-bindgen-cli
+      - name: Install Binaryen
+        run: sudo apt install binaryen
+      - name: Install Brotli
+        run: sudo apt install brotli
+      - name: Build WASM dist
+        run: make
