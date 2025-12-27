@@ -9,7 +9,7 @@ on:
 name: Deploy WASM
 
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,10 +19,6 @@ jobs:
           target: wasm32-unknown-unknown
           profile: minimal
           toolchain: stable
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release
       - name: Install Bindgen
         run: cargo install wasm-bindgen-cli
       - name: Install Binaryen
