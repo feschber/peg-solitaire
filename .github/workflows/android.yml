@@ -1,0 +1,27 @@
+on:
+  push:
+    branches:
+      - main
+    pull_request:
+      branches:
+        - main
+
+name: Build APK
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          target: aarch64-linux-android
+          profile: minimal
+          toolchain: stable
+      - name: Install cargo-ndk
+        run: cargo install --locked cargo-ndk
+      - name: Build Native Library
+        run: cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --package solitaire-game --release
+      - name: Assemble Apk
+        run: ./gradlew assemble
