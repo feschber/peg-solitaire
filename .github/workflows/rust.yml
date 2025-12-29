@@ -19,7 +19,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt install libwayland-client0
+        run: sudo apt install libwayland-dev
       - uses: actions-rs/cargo@v1
         with:
           command: check
@@ -35,7 +35,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt install libwayland-client0
+        run: sudo apt install libwayland-dev
       - uses: actions-rs/cargo@v1
         with:
           command: test
@@ -51,7 +51,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt install libwayland-client0
+        run: sudo apt install libwayland-dev
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
@@ -67,7 +67,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt install libwayland-client0
+        run: sudo apt install libwayland-dev
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
