@@ -99,7 +99,7 @@ impl BitAnd<u64> for Board {
     type Output = Self;
 
     fn bitand(self, idx: u64) -> Self::Output {
-        Self(self.0 & idx as u64)
+        Self(self.0 & idx)
     }
 }
 
@@ -232,6 +232,7 @@ fn test_compression() {
     assert_eq!(decompressed, board);
 }
 
+type Lut = [[Board; 64]; 4];
 impl Board {
     pub const SLOTS: usize = 33;
     pub const SIZE: Idx = 7;
@@ -418,7 +419,7 @@ impl Board {
             Dir::East => Self(0b111 << idx),
             Dir::West => Self(0b111 << (idx - 2)),
             Dir::South => Self(0x010101 << idx),
-            Dir::North => Self(0x010101 << idx - 2 * Self::REPR as usize),
+            Dir::North => Self(0x010101 << (idx - 2 * Self::REPR as usize)),
         }
     }
 
@@ -440,7 +441,7 @@ impl Board {
         }
     }
 
-    const fn gen_luts() -> ([[Board; 64]; 4], [[Board; 64]; 4], [[Board; 64]; 4]) {
+    const fn gen_luts() -> (Lut, Lut, Lut) {
         let mut dir_lut = [[Board(0u64); 64]; 4];
         let mut exp_mov_lut = [[Board(0u64); 64]; 4];
         let mut exp_rev_lut = [[Board(0u64); 64]; 4];
@@ -489,8 +490,8 @@ impl Board {
         match dir {
             Dir::East => Board(self.0 >> count),
             Dir::West => Board(self.0 << count),
-            Dir::South => Board(self.0 >> count * Self::REPR as usize),
-            Dir::North => Board(self.0 << count * Self::REPR as usize),
+            Dir::South => Board(self.0 >> (count * Self::REPR as usize)),
+            Dir::North => Board(self.0 << (count * Self::REPR as usize)),
         }
     }
 

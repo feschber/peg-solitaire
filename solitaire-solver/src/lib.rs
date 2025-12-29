@@ -94,14 +94,18 @@ fn par_join<T: Copy + Send + Sync, VT: Send + Sync + AsRef<[T]>>(slices: &[VT]) 
     let lens = slices.iter().map(|r| r.as_ref().len()).collect::<Vec<_>>();
     let total = lens.iter().sum();
     let mut result = Vec::with_capacity(total);
-    unsafe { result.set_len(total) };
-    let dsts = into_mut_slices(&mut result, &lens);
+    let uninit = result.spare_capacity_mut();
+    let dsts = into_mut_slices(uninit, &lens);
     thread::scope(|s| {
         dsts.into_iter()
             .zip(slices)
-            .map(|(dst, src)| s.spawn(|| dst.copy_from_slice(src.as_ref())))
+            .map(|(dst, src)| {
+                let dst: &mut [T] = unsafe { std::mem::transmute(dst) };
+                s.spawn(|| dst.copy_from_slice(src.as_ref()))
+            })
             .for_each(|_| {});
     });
+    unsafe { result.set_len(total) };
     result
 }
 
@@ -171,6 +175,7 @@ fn normalize(constellations: &mut [Board]) {
     }
 }
 
+#[allow(unused)]
 fn normalize_dedup(mut constellations: Vec<Vec<Vec<Board>>>) -> Vec<Board> {
     let res = vec![];
     for dir in Dir::enumerate() {

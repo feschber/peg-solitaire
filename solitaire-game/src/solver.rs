@@ -40,9 +40,6 @@ fn create_solution_dag(mut commands: Commands, wake: Res<EventLoopProxyWrapper<W
     let entity = commands.spawn_empty().id();
     let wake = wake.clone();
     let task = thread_pool.spawn(async move {
-        #[cfg(feature = "solution_cache")]
-        let feasible = solution_cache::load_solutions();
-        #[cfg(not(feature = "solution_cache"))]
         let feasible = solitaire_solver::calculate_all_solutions(None);
 
         let feasible_hashset = HashSet::from_iter(feasible.iter().copied());
