@@ -18,6 +18,8 @@ jobs:
           override: true
           profile: minimal
           toolchain: stable
+      - name: install dependencies
+        run: sudo apt install libwayland-client0
       - uses: actions-rs/cargo@v1
         with:
           command: check
@@ -32,6 +34,8 @@ jobs:
           override: true
           profile: minimal
           toolchain: stable
+      - name: install dependencies
+        run: sudo apt install libwayland-client0
       - uses: actions-rs/cargo@v1
         with:
           command: test
@@ -46,6 +50,8 @@ jobs:
           override: true
           profile: minimal
           toolchain: stable
+      - name: install dependencies
+        run: sudo apt install libwayland-client0
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
@@ -60,7 +66,9 @@ jobs:
           override: true
           profile: minimal
           toolchain: stable
+      - name: install dependencies
+        run: sudo apt install libwayland-client0
       - uses: actions-rs/cargo@v1
         with:
-          command: fmt
-          args: --all -- --check
+          command: clippy
+          args: --all-features
