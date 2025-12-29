@@ -19,7 +19,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev
       - uses: actions-rs/cargo@v1
         with:
           command: check
@@ -35,7 +35,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev
       - uses: actions-rs/cargo@v1
         with:
           command: test
@@ -51,7 +51,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
@@ -67,7 +67,7 @@ jobs:
           profile: minimal
           toolchain: stable
       - name: install dependencies
-        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0
+        run: sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
