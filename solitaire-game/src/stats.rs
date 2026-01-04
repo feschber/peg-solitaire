@@ -3,6 +3,7 @@ use bevy::{prelude::*, sprite::Anchor, text::TextBounds, window::RequestRedraw};
 use crate::{
     BoardPosition, CurrentBoard,
     solver::{FeasibleConstellations, RandomMoveChances},
+    total_progress::TotalProgress,
 };
 
 pub struct StatsPlugin;
@@ -20,6 +21,7 @@ impl Plugin for StatsPlugin {
         );
         app.add_observer(update_next_move_chance);
         app.add_observer(update_overall_success);
+        app.add_observer(update_total_progress);
     }
 }
 
@@ -28,6 +30,9 @@ struct UpdateStats;
 
 #[derive(Component)]
 struct NextMoveChanceText;
+
+#[derive(Component)]
+struct TotalProgressText;
 
 #[derive(Component)]
 struct OverallSuccessRatio;
@@ -57,6 +62,8 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         Vec3::from((BoardPosition { x: 4, y: 4 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let title_pos_1 =
         Vec3::from((BoardPosition { x: 1, y: 4 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
+    let title_pos_2 =
+        Vec3::from((BoardPosition { x: 4, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let text_pos = title_pos - 1.0 * Vec3::Y;
     commands
         .spawn((
@@ -88,6 +95,21 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         .with_child((TextSpan("? / ?\n".into()), large_font.clone()))
         .with_child((
             TextSpan("moves lead to feasible\nconstellations".into()),
+            small_font.clone(),
+        ));
+    commands
+        .spawn((
+            Text2d::new("you have seen "),
+            Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(title_pos_2),
+            small_font.clone(),
+            TextLayout::new(Justify::Center, LineBreak::WordBoundary),
+            TextBounds::from(Vec2::new(600.0, 300.0)),
+            Anchor::BOTTOM_LEFT,
+            TotalProgressText,
+        ))
+        .with_child((TextSpan("?%".into()), large_font.clone()))
+        .with_child((
+            TextSpan(" of feasible constellations".into()),
             small_font.clone(),
         ));
 }
@@ -146,6 +168,25 @@ fn update_next_move_chance(
     let correct_moves = correct_moves.len();
     for text in next_move_text {
         *writer.text(text, 1) = format!("{correct_moves} / {possible_moves}\n");
+    }
+    request_redraw.write(RequestRedraw);
+}
+
+fn update_total_progress(
+    _: On<UpdateStats>,
+    total_progress: Res<TotalProgress>,
+    total_progress_text: Query<Entity, With<TotalProgressText>>,
+    feasible_constellations: Option<Res<FeasibleConstellations>>,
+    mut writer: TextUiWriter,
+    mut request_redraw: MessageWriter<RequestRedraw>,
+) {
+    if let Some(feasible_constellations) = feasible_constellations {
+        let explored =
+            total_progress.explored_states.len() as f64 / feasible_constellations.0.len() as f64;
+        let explored_perc = explored * 100.0;
+        for text in total_progress_text {
+            *writer.text(text, 1) = format!("{explored_perc:.3}%")
+        }
     }
     request_redraw.write(RequestRedraw);
 }

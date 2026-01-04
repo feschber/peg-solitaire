@@ -11,6 +11,7 @@ use crate::{
     solver::Solver,
     stats::StatsPlugin,
     status::StatusPlugin,
+    total_progress::TotalProgressPlugin,
     undo::Buttons,
     window::MainWindow,
 };
@@ -23,6 +24,7 @@ mod input;
 mod solver;
 mod stats;
 mod status;
+mod total_progress;
 mod undo;
 mod window;
 
@@ -37,6 +39,7 @@ pub fn run() {
     app.add_plugins(PegSolitaire);
     #[cfg(not(target_arch = "wasm32"))]
     app.add_plugins(FpsOverlay);
+    app.add_plugins(TotalProgressPlugin);
     app.run();
 }
 
