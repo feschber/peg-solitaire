@@ -1,7 +1,7 @@
 use bevy::{prelude::*, sprite::Anchor, text::TextBounds, window::RequestRedraw};
 
 use crate::{
-    BoardPosition, CurrentBoard,
+    BoardPosition, CurrentBoard, SolutionEvent,
     solver::{FeasibleConstellations, RandomMoveChances},
     total_progress::TotalProgress,
 };
@@ -22,6 +22,7 @@ impl Plugin for StatsPlugin {
         app.add_observer(update_next_move_chance);
         app.add_observer(update_overall_success);
         app.add_observer(update_total_progress);
+        app.add_observer(update_solution_count);
     }
 }
 
@@ -33,6 +34,9 @@ struct NextMoveChanceText;
 
 #[derive(Component)]
 struct TotalProgressText;
+
+#[derive(Component)]
+struct SolutionText;
 
 #[derive(Component)]
 struct OverallSuccessRatio;
@@ -64,6 +68,8 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         Vec3::from((BoardPosition { x: 1, y: 4 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let title_pos_2 =
         Vec3::from((BoardPosition { x: 4, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
+    let title_pos_3 =
+        Vec3::from((BoardPosition { x: 1, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let text_pos = title_pos - 1.0 * Vec3::Y;
     commands
         .spawn((
@@ -113,6 +119,20 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             small_font.clone(),
         ))
         .with_child((TextSpan("".into()), small_font.clone()));
+    commands
+        .spawn((
+            Text2d::new("you have found "),
+            Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(title_pos_3),
+            small_font.clone(),
+            TextLayout::new(Justify::Center, LineBreak::WordBoundary),
+            TextBounds::from(Vec2::new(600.0, 300.0)),
+            Anchor::BOTTOM_RIGHT,
+            SolutionText,
+        ))
+        .with_child((TextSpan(" ? ".into()), large_font.clone()))
+        .with_child((TextSpan(" solutions, ".into()), small_font.clone()))
+        .with_child((TextSpan(" ? ".into()), large_font.clone()))
+        .with_child((TextSpan(" of which are unique!".into()), small_font.clone()));
 }
 
 fn update_overall_success(
@@ -190,6 +210,22 @@ fn update_total_progress(
             *writer.text(text, 1) = format!("{explored_perc:.3}%");
             *writer.text(text, 3) = format!(" ({progressed}/{feasible})");
         }
+    }
+    request_redraw.write(RequestRedraw);
+}
+
+fn update_solution_count(
+    _: On<UpdateStats>,
+    total_progress: Res<TotalProgress>,
+    solution_text: Query<Entity, With<SolutionText>>,
+    mut writer: TextUiWriter,
+    mut request_redraw: MessageWriter<RequestRedraw>,
+) {
+    let num_solutions = total_progress.num_solutions;
+    let num_unique_solutions = total_progress.unique_solutions.len();
+    for text in solution_text {
+        *writer.text(text, 1) = format!("{num_solutions}");
+        *writer.text(text, 3) = format!("{num_unique_solutions}");
     }
     request_redraw.write(RequestRedraw);
 }

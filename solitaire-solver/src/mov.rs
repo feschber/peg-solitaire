@@ -3,7 +3,7 @@ use std::fmt::{Display, Error, Formatter};
 
 use crate::{Dir, board};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Move {
     pub pos: (Idx, Idx),
     pub skip: (Idx, Idx),

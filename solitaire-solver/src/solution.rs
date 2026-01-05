@@ -2,7 +2,7 @@ use std::fmt::{Display, Formatter, Result};
 
 use crate::{Board, Move};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
 pub struct Solution {
     steps: [Move; 31],
     count: usize,

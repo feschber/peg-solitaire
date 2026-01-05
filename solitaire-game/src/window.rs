@@ -9,7 +9,7 @@ pub struct MainWindow;
 
 impl Plugin for MainWindow {
     fn build(&self, app: &mut App) {
-        // app.insert_resource(WinitSettings::desktop_app());
+        app.insert_resource(WinitSettings::desktop_app());
 
         let default_plugins = DefaultPlugins
             .set(LogPlugin {
@@ -24,7 +24,7 @@ impl Plugin for MainWindow {
                     fit_canvas_to_parent: true,
                     prevent_default_event_handling: false,
                     desired_maximum_frame_latency: core::num::NonZero::new(1u32),
-                    present_mode: bevy::window::PresentMode::AutoNoVsync,
+                    present_mode: bevy::window::PresentMode::AutoVsync,
                     #[cfg(not(target_os = "android"))]
                     mode: WindowMode::Windowed,
                     #[cfg(target_os = "android")]

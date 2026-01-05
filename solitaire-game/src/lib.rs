@@ -1,6 +1,6 @@
 use bevy::{camera::ScalingMode, prelude::*};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
-use solitaire_solver::Board;
+use solitaire_solver::{Board, Solution};
 
 use crate::{
     animation::PegAnimation,
@@ -71,6 +71,20 @@ fn update_solution(move_event: On<MoveEvent>, mut solution: ResMut<CurrentSoluti
     solution.1.push(*move_event);
 }
 
+fn trigger_solution(
+    _: On<MoveEvent>,
+    board: Res<CurrentBoard>,
+    solution: Res<CurrentSolution>,
+    mut commands: Commands,
+) {
+    if board.0.is_solved() {
+        commands.trigger(SolutionEvent(solution.0.clone()));
+    }
+}
+
+#[derive(Event)]
+pub struct SolutionEvent(solitaire_solver::Solution);
+
 #[derive(Default, Resource)]
 struct CurrentSolution(solitaire_solver::Solution, Vec<MoveEvent>);
 
@@ -103,6 +117,7 @@ impl Plugin for PegSolitaire {
         app.add_plugins(Buttons);
 
         app.add_observer(update_solution);
+        app.add_observer(trigger_solution);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
         app.add_systems(PostUpdate, highlight_selected);
         app.add_systems(PreUpdate, calc_view_port);
