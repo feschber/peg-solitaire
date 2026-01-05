@@ -111,7 +111,8 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         .with_child((
             TextSpan(" of feasible constellations".into()),
             small_font.clone(),
-        ));
+        ))
+        .with_child((TextSpan("".into()), small_font.clone()));
 }
 
 fn update_overall_success(
@@ -181,11 +182,13 @@ fn update_total_progress(
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     if let Some(feasible_constellations) = feasible_constellations {
-        let explored =
-            total_progress.explored_states.len() as f64 / feasible_constellations.0.len() as f64;
+        let progressed = total_progress.explored_states.len();
+        let feasible = feasible_constellations.0.len();
+        let explored = progressed as f64 / feasible as f64;
         let explored_perc = explored * 100.0;
         for text in total_progress_text {
-            *writer.text(text, 1) = format!("{explored_perc:.3}%")
+            *writer.text(text, 1) = format!("{explored_perc:.3}%");
+            *writer.text(text, 3) = format!(" ({progressed}/{feasible})");
         }
     }
     request_redraw.write(RequestRedraw);

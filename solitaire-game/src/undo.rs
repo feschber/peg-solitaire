@@ -7,8 +7,8 @@ use bevy::{
 use bevy_vector_shapes::prelude::*;
 
 use crate::{
-    CurrentBoard, CurrentSolution, PegMoved, board::BoardPosition, hints::ToggleHints,
-    viewport_to_world,
+    CurrentBoard, CurrentSolution, PegMoved, WorldSpaceViewPort, board::BoardPosition,
+    hints::ToggleHints, viewport_to_world,
 };
 
 pub struct Buttons;
@@ -57,23 +57,14 @@ struct Reset;
 #[derive(Component)]
 struct Hints;
 
-fn viewport_topleft_world_space(camera: &Camera, transform: &GlobalTransform) -> Option<Vec3> {
-    camera.logical_viewport_rect().and_then(|view_port| {
-        let top_left = view_port.min;
-        viewport_to_world(top_left, camera, transform)
-    })
-}
-
 fn update_button_pos(
     buttons: Query<(&ViewPortRelativeTranslation, &mut Transform), With<CircleButton>>,
-    camera: Single<(&Camera, &GlobalTransform)>,
+    world_space_view_port: Option<Res<WorldSpaceViewPort>>,
 ) {
-    let (camera, transform) = *camera;
-    let Some(viewport_topleft) = viewport_topleft_world_space(camera, transform) else {
-        return;
-    };
-    for (rt, mut transform) in buttons {
-        transform.translation = viewport_topleft + rt.0;
+    if let Some(vp) = world_space_view_port {
+        for (rt, mut transform) in buttons {
+            transform.translation = vp.top_left + rt.0;
+        }
     }
 }
 
@@ -122,6 +113,13 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
         TextColor(Color::BLACK),
         font_awesome.clone(),
         Hints,
+    ));
+    commands.spawn((
+        ViewPortRelativeTranslation(Vec3::new(3.5, 1.0, 0.0)),
+        Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
+        Text2d::new("\u{f5dc}".to_string()),
+        TextColor(Color::WHITE),
+        font_awesome.clone(),
     ));
 }
 

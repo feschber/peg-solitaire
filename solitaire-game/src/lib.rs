@@ -105,6 +105,7 @@ impl Plugin for PegSolitaire {
         app.add_observer(update_solution);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
         app.add_systems(PostUpdate, highlight_selected);
+        app.add_systems(PreUpdate, calc_view_port);
     }
 }
 
@@ -126,4 +127,40 @@ fn viewport_to_world(
     let distance = ray.intersect_plane(Vec3::ZERO, ground_plane)?;
     let point = ray.get_point(distance);
     Some(point)
+}
+
+#[derive(Resource)]
+pub struct WorldSpaceViewPort {
+    pub top_left: Vec3,
+    pub bottom_left: Vec3,
+    pub top_right: Vec3,
+    pub bottom_right: Vec3,
+}
+
+fn calc_view_port(mut commands: Commands, camera: Single<(&Camera, &GlobalTransform)>) {
+    let (camera, transform) = *camera;
+    if let Some(view_port) = camera.logical_viewport_rect() {
+        let top_left = view_port.min;
+        let bottom_right = view_port.max;
+        let top_right = top_left + Vec2::new(view_port.width(), 0.);
+        let bottom_left = top_left + Vec2::new(0., view_port.height());
+        let Some(top_left) = viewport_to_world(top_left, camera, transform) else {
+            return;
+        };
+        let Some(top_right) = viewport_to_world(top_right, camera, transform) else {
+            return;
+        };
+        let Some(bottom_left) = viewport_to_world(bottom_left, camera, transform) else {
+            return;
+        };
+        let Some(bottom_right) = viewport_to_world(bottom_right, camera, transform) else {
+            return;
+        };
+        commands.insert_resource(WorldSpaceViewPort {
+            top_left,
+            bottom_left,
+            top_right,
+            bottom_right,
+        });
+    }
 }
