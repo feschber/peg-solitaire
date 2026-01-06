@@ -10,7 +10,9 @@ use bevy::{
 };
 use solitaire_solver::{Board, Solution};
 
-use crate::{CurrentBoard, MoveEvent, SolutionEvent, stats::UpdateStats};
+use crate::{
+    CurrentBoard, MoveEvent, SolutionEvent, solver::FeasibleConstellations, stats::UpdateStats,
+};
 
 /// This module keeps track of the total progress of the game.
 /// We store statistics about which constellations have previously been
@@ -41,11 +43,16 @@ impl Plugin for TotalProgressPlugin {
 fn update_total_progress(
     _: On<MoveEvent>,
     mut total_progress: ResMut<TotalProgress>,
+    feasible: Option<Res<FeasibleConstellations>>,
     board: Res<CurrentBoard>,
 ) {
     let board = board.0;
-    total_progress.explored_states.insert(board);
-    total_progress.explored_states_by_pegs[board.count_balls() as usize - 1].insert(board);
+    if let Some(feasible) = feasible {
+        if feasible.0.contains(&board) {
+            total_progress.explored_states.insert(board);
+            total_progress.explored_states_by_pegs[board.count_balls() as usize - 1].insert(board);
+        }
+    }
 }
 
 fn update_solutions(
