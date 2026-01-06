@@ -52,6 +52,7 @@ fn toggle_stats(
             let mut e = commands.entity(e);
             e.remove::<Disabled>();
         }
+        commands.trigger(UpdateStats);
     }
 }
 
@@ -77,7 +78,7 @@ impl Plugin for StatsPlugin {
 }
 
 #[derive(Event)]
-struct UpdateStats;
+pub struct UpdateStats;
 
 #[derive(Component)]
 struct NextMoveChanceText;

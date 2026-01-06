@@ -66,18 +66,16 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
     }
 }
 
-fn update_solution(move_event: On<MoveEvent>, mut solution: ResMut<CurrentSolution>) {
-    solution.0.push(move_event.mov);
-    solution.1.push(*move_event);
-}
-
-fn trigger_solution(
-    _: On<MoveEvent>,
+fn update_solution(
+    move_event: On<MoveEvent>,
+    mut solution: ResMut<CurrentSolution>,
     board: Res<CurrentBoard>,
-    solution: Res<CurrentSolution>,
     mut commands: Commands,
 ) {
+    solution.0.push(move_event.mov);
+    solution.1.push(*move_event);
     if board.0.is_solved() {
+        assert!(solution.0.len() == Board::SLOTS - 1);
         commands.trigger(SolutionEvent(solution.0.clone()));
     }
 }
@@ -117,7 +115,6 @@ impl Plugin for PegSolitaire {
         app.add_plugins(Buttons);
 
         app.add_observer(update_solution);
-        app.add_observer(trigger_solution);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
         app.add_systems(PostUpdate, highlight_selected);
         app.add_systems(PreUpdate, calc_view_port);

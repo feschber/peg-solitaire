@@ -5,12 +5,12 @@ use bevy::{
     ecs::{
         observer::On,
         resource::Resource,
-        system::{Res, ResMut},
+        system::{Commands, Res, ResMut},
     },
 };
 use solitaire_solver::{Board, Solution};
 
-use crate::{CurrentBoard, MoveEvent, SolutionEvent};
+use crate::{CurrentBoard, MoveEvent, SolutionEvent, stats::UpdateStats};
 
 /// This module keeps track of the total progress of the game.
 /// We store statistics about which constellations have previously been
@@ -48,7 +48,12 @@ fn update_total_progress(
     total_progress.explored_states_by_pegs[board.count_balls() as usize - 1].insert(board);
 }
 
-fn update_solutions(solution: On<SolutionEvent>, mut total_progress: ResMut<TotalProgress>) {
+fn update_solutions(
+    solution: On<SolutionEvent>,
+    mut total_progress: ResMut<TotalProgress>,
+    mut commands: Commands,
+) {
     total_progress.unique_solutions.insert(solution.0.clone());
     total_progress.num_solutions += 1;
+    commands.trigger(UpdateStats);
 }
