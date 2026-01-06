@@ -48,7 +48,7 @@ fn update_total_progress(
 ) {
     let board = board.0;
     if let Some(feasible) = feasible {
-        if feasible.0.contains(&board) {
+        if feasible.0.contains(&board.normalize()) {
             total_progress.explored_states.insert(board);
             total_progress.explored_states_by_pegs[board.count_balls() as usize - 1].insert(board);
         }
