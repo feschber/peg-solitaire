@@ -75,7 +75,7 @@ fn update_solution(
     solution.0.push(move_event.mov);
     solution.1.push(*move_event);
     if board.0.is_solved() {
-        assert!(solution.0.len() == Board::SLOTS - 1);
+        assert!(solution.0.len() == Board::SLOTS - 2);
         commands.trigger(SolutionEvent(solution.0.clone()));
     }
 }
