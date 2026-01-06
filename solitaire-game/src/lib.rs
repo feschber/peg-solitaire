@@ -1,6 +1,6 @@
 use bevy::{camera::ScalingMode, prelude::*};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
-use solitaire_solver::{Board, Solution};
+use solitaire_solver::Board;
 
 use crate::{
     animation::PegAnimation,

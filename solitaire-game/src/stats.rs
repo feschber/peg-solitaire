@@ -1,10 +1,59 @@
-use bevy::{prelude::*, sprite::Anchor, text::TextBounds, window::RequestRedraw};
+use bevy::{
+    ecs::entity_disabling::Disabled, prelude::*, sprite::Anchor, text::TextBounds,
+    window::RequestRedraw,
+};
 
 use crate::{
-    BoardPosition, CurrentBoard, SolutionEvent,
+    BoardPosition, CurrentBoard,
     solver::{FeasibleConstellations, RandomMoveChances},
     total_progress::TotalProgress,
 };
+
+#[derive(Default, Event)]
+pub struct ToggleStats;
+
+#[derive(Resource)]
+struct ShowStats;
+
+fn toggle_stats(
+    _: On<ToggleStats>,
+    mut commands: Commands,
+    show_stats: Option<Res<ShowStats>>,
+    stats: Query<
+        Entity,
+        (
+            Or<(
+                With<SolutionText>,
+                With<OverallSuccessRatioText>,
+                With<TotalProgressText>,
+                With<NextMoveChanceText>,
+            )>,
+            Or<(With<Disabled>, Without<Disabled>)>,
+        ),
+    >,
+) {
+    if show_stats.is_none() {
+        info!("Hiding Stats");
+        commands.insert_resource(ShowStats);
+        let mut i = 0;
+        for e in &stats {
+            info!("Hiding Stats ({i})");
+            i += 1;
+            let mut e = commands.entity(e);
+            e.insert(Disabled);
+        }
+    } else {
+        info!("Showing Stats");
+        commands.remove_resource::<ShowStats>();
+        let mut i = 0;
+        for e in &stats {
+            info!("Showing Stats ({i})");
+            i += 1;
+            let mut e = commands.entity(e);
+            e.remove::<Disabled>();
+        }
+    }
+}
 
 pub struct StatsPlugin;
 
@@ -23,6 +72,7 @@ impl Plugin for StatsPlugin {
         app.add_observer(update_overall_success);
         app.add_observer(update_total_progress);
         app.add_observer(update_solution_count);
+        app.add_observer(toggle_stats);
     }
 }
 
@@ -39,7 +89,7 @@ struct TotalProgressText;
 struct SolutionText;
 
 #[derive(Component)]
-struct OverallSuccessRatio;
+struct OverallSuccessRatioText;
 
 fn update_stats(mut commands: Commands) {
     commands.trigger(UpdateStats);
@@ -70,7 +120,6 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         Vec3::from((BoardPosition { x: 4, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let title_pos_3 =
         Vec3::from((BoardPosition { x: 1, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
-    let text_pos = title_pos - 1.0 * Vec3::Y;
     commands
         .spawn((
             Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
@@ -78,17 +127,13 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             medium_font.clone(),
             TextLayout::new_with_justify(Justify::Left),
             Anchor::TOP_LEFT,
-            OverallSuccessRatio,
+            OverallSuccessRatioText,
         ))
-        .with_child((TextSpan(" ... ?".into()), medium_font.clone()));
-    commands.spawn((
-        Text2d::new("“chance of winning by chosing moves at random”"),
-        Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(text_pos),
-        small_font.clone(),
-        TextLayout::new(Justify::Center, LineBreak::WordBoundary),
-        TextBounds::from(Vec2::new(600.0, 300.0)),
-        Anchor::TOP_LEFT,
-    ));
+        .with_child((TextSpan(" ... ?".into()), medium_font.clone()))
+        .with_child((
+            TextSpan("\n“chance of winning by\nchosing moves at random”".into()),
+            small_font.clone(),
+        ));
     commands
         .spawn((
             Text2d::new(""),
@@ -137,7 +182,7 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 fn update_overall_success(
     _trigger: On<UpdateStats>,
-    overall_success_text: Query<Entity, With<OverallSuccessRatio>>,
+    overall_success_text: Query<Entity, With<OverallSuccessRatioText>>,
     board: Res<CurrentBoard>,
     p_success: Option<Res<RandomMoveChances>>,
     mut writer: TextUiWriter,

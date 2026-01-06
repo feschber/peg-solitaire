@@ -22,6 +22,8 @@ pub struct TotalProgressPlugin;
 pub struct TotalProgress {
     /// all states that have ever been seen
     pub explored_states: HashSet<Board>,
+    /// explored states by number of pegs
+    pub explored_states_by_pegs: [HashSet<Board>; Board::SLOTS - 1],
     /// all unique solutions that have been explored
     pub unique_solutions: HashSet<Solution>,
     /// number of times the boared has been solved
@@ -41,7 +43,9 @@ fn update_total_progress(
     mut total_progress: ResMut<TotalProgress>,
     board: Res<CurrentBoard>,
 ) {
-    total_progress.explored_states.insert(board.0);
+    let board = board.0;
+    total_progress.explored_states.insert(board);
+    total_progress.explored_states_by_pegs[board.count_balls() as usize - 1].insert(board);
 }
 
 fn update_solutions(solution: On<SolutionEvent>, mut total_progress: ResMut<TotalProgress>) {

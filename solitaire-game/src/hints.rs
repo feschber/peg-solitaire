@@ -8,7 +8,6 @@ pub struct HintsPlugin;
 
 impl Plugin for HintsPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(ShowHints);
         app.add_plugins(Shape2dPlugin::default());
         app.add_observer(update_hints);
         app.add_systems(

@@ -8,7 +8,7 @@ use bevy_vector_shapes::prelude::*;
 
 use crate::{
     CurrentBoard, CurrentSolution, PegMoved, WorldSpaceViewPort, board::BoardPosition,
-    hints::ToggleHints, viewport_to_world,
+    hints::ToggleHints, stats::ToggleStats, viewport_to_world,
 };
 
 pub struct Buttons;
@@ -21,20 +21,33 @@ impl Plugin for Buttons {
             (
                 handle_button::<Undo, UndoEvent>.run_if(input_just_pressed(MouseButton::Left)),
                 handle_button::<Reset, ResetEvent>.run_if(input_just_pressed(MouseButton::Left)),
-                handle_button::<Hints, ToggleHints>.run_if(input_just_pressed(MouseButton::Left)),
-                handle_touch::<Undo, UndoEvent>,
-                handle_touch::<Reset, ResetEvent>,
-                handle_touch::<Hints, ToggleHints>,
+                handle_toggle::<Hints, ToggleHints>.run_if(input_just_pressed(MouseButton::Left)),
+                handle_toggle::<Stats, ToggleStats>.run_if(input_just_pressed(MouseButton::Left)),
+                handle_touch_button::<Undo, UndoEvent>,
+                handle_touch_button::<Reset, ResetEvent>,
+                handle_touch_toggle::<Hints, ToggleHints>,
+                handle_touch_toggle::<Stats, ToggleStats>,
             ),
         );
-        app.add_systems(Update, (draw_buttons, update_button_pos, reset));
+        app.add_systems(Update, (draw_buttons, update_button_pos));
+        app.add_systems(Update, (draw_toggles, update_button_pos));
+        app.add_systems(FixedUpdate, reset);
         app.add_observer(do_undo);
         app.add_observer(do_reset);
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(unused)]
+enum Pos {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 #[derive(Component)]
-struct ViewPortRelativeTranslation(Vec3);
+struct ViewPortRelativeTranslation(Pos, Vec3);
 
 #[derive(Event, Default)]
 struct UndoEvent;
@@ -44,9 +57,16 @@ struct ResetEvent;
 
 #[derive(Component)]
 struct CircleButton {
-    color: Color,
+    fg_color: Color,
+    bg_color: Color,
     radius: f32,
 }
+
+#[derive(Component)]
+struct ButtonState(bool);
+
+#[derive(Component)]
+struct ToggleState(bool);
 
 #[derive(Component)]
 struct Undo;
@@ -57,13 +77,22 @@ struct Reset;
 #[derive(Component)]
 struct Hints;
 
+#[derive(Component)]
+struct Stats;
+
 fn update_button_pos(
     buttons: Query<(&ViewPortRelativeTranslation, &mut Transform), With<CircleButton>>,
     world_space_view_port: Option<Res<WorldSpaceViewPort>>,
 ) {
     if let Some(vp) = world_space_view_port {
         for (rt, mut transform) in buttons {
-            transform.translation = vp.top_left + rt.0;
+            let (pos, rt) = (rt.0, rt.1);
+            match pos {
+                Pos::TopLeft => transform.translation = vp.top_left + rt,
+                Pos::TopRight => transform.translation = vp.top_right + rt,
+                Pos::BottomLeft => transform.translation = vp.bottom_left + rt,
+                Pos::BottomRight => transform.translation = vp.bottom_right + rt,
+            }
         }
     }
 }
@@ -77,12 +106,14 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     };
     // reset button
     commands.spawn((
-        ViewPortRelativeTranslation(Vec3::new(1.5, -1.0, 0.0)),
+        ViewPortRelativeTranslation(Pos::TopLeft, Vec3::new(1.2, -1.0, 0.0)),
         Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
         CircleButton {
-            color: Color::WHITE,
+            fg_color: Color::WHITE,
+            bg_color: Color::BLACK,
             radius: 0.4,
         },
+        ButtonState(false),
         Text2d::new("\u{f2ea}".to_string()),
         TextColor(Color::BLACK),
         font_awesome.clone(),
@@ -90,12 +121,14 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
     // undo button
     commands.spawn((
-        ViewPortRelativeTranslation(Vec3::new(2.5, -1.0, 0.0)),
+        ViewPortRelativeTranslation(Pos::TopLeft, Vec3::new(1.2, -2.0, 0.0)),
         Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
         CircleButton {
-            color: Color::WHITE,
-            radius: 0.4,
+            fg_color: Color::WHITE,
+            bg_color: Color::BLACK,
+            radius: 0.3,
         },
+        ButtonState(false),
         Text2d::new("\u{f060}".to_string()),
         TextColor(Color::BLACK),
         font_awesome.clone(),
@@ -103,30 +136,39 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
     // hints button
     commands.spawn((
-        ViewPortRelativeTranslation(Vec3::new(3.5, -1.0, 0.0)),
+        ViewPortRelativeTranslation(Pos::TopRight, Vec3::new(-1., -1.0, 0.0)),
         Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
         CircleButton {
-            color: Color::WHITE,
+            fg_color: Color::WHITE,
+            bg_color: Color::BLACK,
             radius: 0.4,
         },
+        ToggleState(false),
         Text2d::new("\u{f0eb}".to_string()),
         TextColor(Color::BLACK),
         font_awesome.clone(),
         Hints,
     ));
     commands.spawn((
-        ViewPortRelativeTranslation(Vec3::new(3.5, 1.0, 0.0)),
+        ViewPortRelativeTranslation(Pos::TopRight, Vec3::new(-2., -1.0, 1.0)),
         Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
+        CircleButton {
+            fg_color: Color::WHITE,
+            bg_color: Color::BLACK,
+            radius: 0.4,
+        },
+        ToggleState(true),
         Text2d::new("\u{f5dc}".to_string()),
         TextColor(Color::WHITE),
         font_awesome.clone(),
+        Stats,
     ));
 }
 
 fn handle_button<'a, T, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform)>,
-    button: Query<(&CircleButton, &Transform), With<T>>,
+    mut button: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
     mut commands: Commands,
 ) where
     T: Component + Send + Sync,
@@ -137,17 +179,43 @@ fn handle_button<'a, T, U: Default + Event>(
         let Some(world_pos) = viewport_to_world(cursor_pos, camera, transform) else {
             return;
         };
-        for (button, transform) in button {
+        for (button, mut state, transform) in &mut button {
             if world_pos.xy().distance(transform.translation.xy()) < button.radius {
+                commands.trigger(U::default());
+                state.0 = true;
+            } else {
+                state.0 = false;
+            }
+        }
+    }
+}
+
+fn handle_toggle<'a, T, U: Default + Event>(
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera: Single<(&Camera, &GlobalTransform)>,
+    mut button: Query<(&CircleButton, &mut ToggleState, &Transform), With<T>>,
+    mut commands: Commands,
+) where
+    T: Component + Send + Sync,
+    <U as bevy::prelude::Event>::Trigger<'a>: std::default::Default,
+{
+    if let Some(cursor_pos) = window.cursor_position() {
+        let (camera, transform) = *camera;
+        let Some(world_pos) = viewport_to_world(cursor_pos, camera, transform) else {
+            return;
+        };
+        for (button, mut state, transform) in &mut button {
+            if world_pos.xy().distance(transform.translation.xy()) < button.radius {
+                state.0 = !state.0;
                 commands.trigger(U::default());
             }
         }
     }
 }
 
-fn handle_touch<'a, T, U: Default + Event>(
+fn handle_touch_button<'a, T, U: Default + Event>(
     camera: Single<(&Camera, &GlobalTransform)>,
-    button: Query<(&CircleButton, &Transform), With<T>>,
+    mut button: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
     mut commands: Commands,
     touches: Res<Touches>,
 ) where
@@ -159,9 +227,33 @@ fn handle_touch<'a, T, U: Default + Event>(
         let Some(world_pos) = viewport_to_world(pos, camera, transform) else {
             return;
         };
-        for (button, transform) in button {
+        for (button, mut state, transform) in &mut button {
             if world_pos.xy().distance(transform.translation.xy()) < button.radius {
                 commands.trigger(U::default());
+                state.0 = true;
+            }
+        }
+    }
+}
+
+fn handle_touch_toggle<'a, T, U: Default + Event>(
+    camera: Single<(&Camera, &GlobalTransform)>,
+    mut button: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
+    mut commands: Commands,
+    touches: Res<Touches>,
+) where
+    T: Component + Send + Sync,
+    <U as bevy::prelude::Event>::Trigger<'a>: std::default::Default,
+{
+    for pos in touches.iter_just_pressed().map(|t| t.position()) {
+        let (camera, transform) = *camera;
+        let Some(world_pos) = viewport_to_world(pos, camera, transform) else {
+            return;
+        };
+        for (button, mut state, transform) in &mut button {
+            if world_pos.xy().distance(transform.translation.xy()) < button.radius {
+                commands.trigger(U::default());
+                state.0 = !state.0;
             }
         }
     }
@@ -222,7 +314,7 @@ fn reset(
     let mut reset = reset.get_mut(entity).unwrap();
     let ticks = reset.elapsed;
     reset.elapsed += 1;
-    if ticks.is_multiple_of(3) {
+    if ticks.is_multiple_of(2) {
         if !solution.0.is_empty() {
             reverse_last_move(&mut solution, &mut board, &mut commands);
         } else {
@@ -232,10 +324,36 @@ fn reset(
     request_redraw.write(RequestRedraw);
 }
 
-fn draw_buttons(mut painter: ShapePainter, buttons: Query<(&CircleButton, &Transform)>) {
-    for (button, transform) in buttons {
+fn draw_buttons(
+    mut painter: ShapePainter,
+    mut buttons: Query<(&CircleButton, &ButtonState, &Transform, &mut TextColor)>,
+) {
+    for (button, state, transform, mut col) in &mut buttons {
         painter.set_translation(transform.translation - 0.1 * Vec3::Z);
-        painter.set_color(button.color);
+        if state.0 {
+            *col = TextColor(button.bg_color);
+            painter.set_color(button.fg_color);
+        } else {
+            *col = TextColor(button.fg_color);
+            painter.set_color(button.bg_color);
+        }
+        painter.circle(button.radius);
+    }
+}
+
+fn draw_toggles(
+    mut painter: ShapePainter,
+    mut buttons: Query<(&CircleButton, &ToggleState, &Transform, &mut TextColor)>,
+) {
+    for (button, state, transform, mut col) in &mut buttons {
+        painter.set_translation(transform.translation - 0.1 * Vec3::Z);
+        if state.0 {
+            *col = TextColor(button.bg_color);
+            painter.set_color(button.fg_color);
+        } else {
+            *col = TextColor(button.fg_color);
+            painter.set_color(button.bg_color);
+        }
         painter.circle(button.radius);
     }
 }
