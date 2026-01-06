@@ -5,6 +5,7 @@ use solitaire_solver::Board;
 use crate::{
     animation::PegAnimation,
     board::{BoardPlugin, BoardPosition, PEG_RADIUS},
+    buttons::Buttons,
     fps_overlay::FpsOverlay,
     hints::HintsPlugin,
     input::Input,
@@ -12,12 +13,12 @@ use crate::{
     stats::StatsPlugin,
     status::StatusPlugin,
     total_progress::TotalProgressPlugin,
-    undo::Buttons,
     window::MainWindow,
 };
 
 mod animation;
 mod board;
+mod buttons;
 mod fps_overlay;
 mod hints;
 mod input;
@@ -25,7 +26,6 @@ mod solver;
 mod stats;
 mod status;
 mod total_progress;
-mod undo;
 mod window;
 
 #[bevy_main]

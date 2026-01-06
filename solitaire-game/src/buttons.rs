@@ -1,6 +1,6 @@
 use bevy::{
     ecs::entity_disabling::Disabled,
-    input::common_conditions::input_just_pressed,
+    input::common_conditions::{input_just_pressed, input_just_released},
     prelude::*,
     window::{PrimaryWindow, RequestRedraw},
 };
@@ -19,12 +19,20 @@ impl Plugin for Buttons {
         app.add_systems(
             Update,
             (
-                handle_button::<Undo, UndoEvent>.run_if(input_just_pressed(MouseButton::Left)),
-                handle_button::<Reset, ResetEvent>.run_if(input_just_pressed(MouseButton::Left)),
-                handle_toggle::<Hints, ToggleHints>.run_if(input_just_pressed(MouseButton::Left)),
-                handle_toggle::<Stats, ToggleStats>.run_if(input_just_pressed(MouseButton::Left)),
-                handle_touch_button::<Undo, UndoEvent>,
-                handle_touch_button::<Reset, ResetEvent>,
+                handle_button_press::<Undo, UndoEvent>
+                    .run_if(input_just_pressed(MouseButton::Left)),
+                handle_button_press::<Reset, ResetEvent>
+                    .run_if(input_just_pressed(MouseButton::Left)),
+                handle_button_release::<Undo>.run_if(input_just_released(MouseButton::Left)),
+                handle_button_release::<Reset>.run_if(input_just_released(MouseButton::Left)),
+                handle_toggle_press::<Hints, ToggleHints>
+                    .run_if(input_just_pressed(MouseButton::Left)),
+                handle_toggle_press::<Stats, ToggleStats>
+                    .run_if(input_just_pressed(MouseButton::Left)),
+                handle_touch_press::<Undo, UndoEvent>,
+                handle_touch_press::<Reset, ResetEvent>,
+                handle_touch_release::<Undo>,
+                handle_touch_release::<Reset>,
                 handle_touch_toggle::<Hints, ToggleHints>,
                 handle_touch_toggle::<Stats, ToggleStats>,
             ),
@@ -63,7 +71,10 @@ struct CircleButton {
 }
 
 #[derive(Component)]
-struct ButtonState(bool);
+struct ButtonState {
+    clicked: bool,
+    touched: Option<u64>,
+}
 
 #[derive(Component)]
 struct ToggleState(bool);
@@ -113,7 +124,10 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
             bg_color: Color::BLACK,
             radius: 0.4,
         },
-        ButtonState(false),
+        ButtonState {
+            clicked: false,
+            touched: None,
+        },
         Text2d::new("\u{f2ea}".to_string()),
         TextColor(Color::BLACK),
         font_awesome.clone(),
@@ -128,7 +142,10 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
             bg_color: Color::BLACK,
             radius: 0.3,
         },
-        ButtonState(false),
+        ButtonState {
+            clicked: false,
+            touched: None,
+        },
         Text2d::new("\u{f060}".to_string()),
         TextColor(Color::BLACK),
         font_awesome.clone(),
@@ -165,7 +182,7 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
 }
 
-fn handle_button<'a, T, U: Default + Event>(
+fn handle_button_press<'a, T, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform)>,
     mut button: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
@@ -182,15 +199,22 @@ fn handle_button<'a, T, U: Default + Event>(
         for (button, mut state, transform) in &mut button {
             if world_pos.xy().distance(transform.translation.xy()) < button.radius {
                 commands.trigger(U::default());
-                state.0 = true;
-            } else {
-                state.0 = false;
+                state.clicked = true;
             }
         }
     }
 }
 
-fn handle_toggle<'a, T, U: Default + Event>(
+fn handle_button_release<T>(mut button: Query<&mut ButtonState, With<T>>)
+where
+    T: Component + Send + Sync,
+{
+    for mut state in &mut button {
+        state.clicked = false;
+    }
+}
+
+fn handle_toggle_press<'a, T, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform)>,
     mut button: Query<(&CircleButton, &mut ToggleState, &Transform), With<T>>,
@@ -213,24 +237,39 @@ fn handle_toggle<'a, T, U: Default + Event>(
     }
 }
 
-fn handle_touch_button<'a, T, U: Default + Event>(
+fn handle_touch_press<'a, T, U: Default + Event>(
     camera: Single<(&Camera, &GlobalTransform)>,
-    mut button: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
+    mut buttons: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
     mut commands: Commands,
     touches: Res<Touches>,
 ) where
     T: Component + Send + Sync,
     <U as bevy::prelude::Event>::Trigger<'a>: std::default::Default,
 {
-    for pos in touches.iter_just_pressed().map(|t| t.position()) {
+    for touch in touches.iter_just_pressed() {
         let (camera, transform) = *camera;
-        let Some(world_pos) = viewport_to_world(pos, camera, transform) else {
+        let Some(world_pos) = viewport_to_world(touch.position(), camera, transform) else {
             return;
         };
-        for (button, mut state, transform) in &mut button {
+        for (button, mut state, transform) in &mut buttons {
             if world_pos.xy().distance(transform.translation.xy()) < button.radius {
                 commands.trigger(U::default());
-                state.0 = true;
+                state.touched = Some(touch.id());
+            }
+        }
+    }
+}
+
+fn handle_touch_release<'a, T>(mut buttons: Query<&mut ButtonState, With<T>>, touches: Res<Touches>)
+where
+    T: Component + Send + Sync,
+{
+    for released_id in touches.iter_just_released().map(|t| t.id()) {
+        for mut state in &mut buttons {
+            if let Some(id) = state.touched {
+                if id == released_id {
+                    state.touched = None;
+                }
             }
         }
     }
@@ -238,7 +277,7 @@ fn handle_touch_button<'a, T, U: Default + Event>(
 
 fn handle_touch_toggle<'a, T, U: Default + Event>(
     camera: Single<(&Camera, &GlobalTransform)>,
-    mut button: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
+    mut button: Query<(&CircleButton, &mut ToggleState, &Transform), With<T>>,
     mut commands: Commands,
     touches: Res<Touches>,
 ) where
@@ -330,7 +369,7 @@ fn draw_buttons(
 ) {
     for (button, state, transform, mut col) in &mut buttons {
         painter.set_translation(transform.translation - 0.1 * Vec3::Z);
-        if state.0 {
+        if state.clicked || state.touched.is_some() {
             *col = TextColor(button.bg_color);
             painter.set_color(button.fg_color);
         } else {
