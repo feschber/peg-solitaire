@@ -5,6 +5,7 @@ mod calc_success;
 mod dir;
 mod hash;
 mod mov;
+mod radix_tree;
 mod solution;
 mod sort;
 
@@ -25,7 +26,7 @@ pub use hash::{CustomHashMap as HashMap, CustomHashSet as HashSet};
 pub use mov::Move;
 pub use solution::Solution;
 
-use crate::sort::Sort;
+use crate::{radix_tree::RadixTree, sort::Sort};
 
 fn num_threads() -> NonZero<usize> {
     std::thread::available_parallelism().unwrap_or(NonZero::new(4).unwrap())
@@ -153,19 +154,19 @@ fn prune_pagoda_inverse(constellations: &mut Vec<Board>) {
     );
 }
 
-fn possible_moves(states: &[Board]) -> Vec<Board> {
-    let mut constellations = Vec::default();
+fn possible_moves(states: &RadixTree) -> RadixTree {
+    let mut constellations = RadixTree::new();
     for dir in Dir::enumerate() {
         for board in states {
+            let board = Board(board);
             let mut mask = board.mov_pattern_mask(dir);
             while mask != Board::empty() {
                 let idx = mask.0.trailing_zeros() as usize;
                 mask &= Board(mask.0 - 1);
-                constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
+                constellations.insert(board.toggle_mov_idx_unchecked(idx, dir).normalize().0);
             }
         }
     }
-    normalize(&mut constellations);
     constellations
 }
 
@@ -216,41 +217,41 @@ fn partition_normalize(constellations: &mut [Board]) -> (&mut [Board], &mut [Boa
     constellations.split_at_mut(last)
 }
 
-#[cfg(target_arch = "wasm32")]
-fn possible_moves_par(states: &[Board], _: usize) -> Vec<Board> {
-    possible_moves(states)
-}
+// #[cfg(target_arch = "wasm32")]
+// fn possible_moves_par(states: &[Board], _: usize) -> Vec<Board> {
+//     possible_moves(states)
+// }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    parallel(states, num_threads, possible_moves)
-}
+// #[cfg(not(target_arch = "wasm32"))]
+// fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
+//     parallel(states, num_threads, possible_moves)
+// }
 
-fn reverse_moves(states: &[Board]) -> Vec<Board> {
-    let mut constellations = Vec::default();
+fn reverse_moves(states: &RadixTree) -> RadixTree {
+    let mut constellations = RadixTree::new();
     for dir in Dir::enumerate() {
         for board in states {
+            let board = Board(board);
             let mut mask = board.rev_mov_pattern_mask(dir);
             while mask != Board::empty() {
                 let idx = mask.0.trailing_zeros() as usize;
                 mask &= Board(mask.0 - 1);
-                constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
+                constellations.insert(board.toggle_mov_idx_unchecked(idx, dir).normalize().0);
             }
         }
     }
-    normalize(&mut constellations);
     constellations
 }
 
-#[cfg(target_arch = "wasm32")]
-fn reverse_moves_par(states: &[Board], _: usize) -> Vec<Board> {
-    reverse_moves(states)
-}
+// #[cfg(target_arch = "wasm32")]
+// fn reverse_moves_par(states: &[Board], _: usize) -> Vec<Board> {
+//     reverse_moves(states)
+// }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    parallel(states, num_threads, reverse_moves)
-}
+// #[cfg(not(target_arch = "wasm32"))]
+// fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
+//     parallel(states, num_threads, reverse_moves)
+// }
 
 pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -258,7 +259,9 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut time_sort = Duration::default();
     let threads = threads.unwrap_or(num_threads()).get();
-    let mut visited = vec![vec![], vec![Board::solved()]];
+    let mut tmp = RadixTree::new();
+    tmp.insert(Board::solved().0);
+    let mut visited = vec![RadixTree::new(), tmp];
 
     let mut total_constellations = 0;
     let mut total_moves = 0;
@@ -269,16 +272,9 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     eprintln!("-----------------------------------------------------");
     for i in 1..(Board::SLOTS - 1) / 2 {
         let num_constellations = visited[i].len();
-        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+        let mut constellations: RadixTree = reverse_moves(&visited[i]);
         let num_moves = constellations.len();
-        #[cfg(not(target_arch = "wasm32"))]
-        let start = Instant::now();
-        constellations.fast_sort_unstable_mt(threads);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            time_sort += start.elapsed();
-        }
-        let constellations = constellations.par_dedup(threads);
+
         let deduped = constellations.len();
         eprintln!(
             "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%)",
@@ -291,30 +287,28 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     #[cfg(not(target_arch = "wasm32"))]
     let reverse_step = Instant::now();
 
-    let mut inverted: Vec<_> = visited[(Board::SLOTS - 1) / 2]
-        .iter()
-        .map(|b| b.inverse())
-        .collect();
-    normalize(&mut inverted);
-    inverted.fast_sort_unstable_mt(threads);
+    let mut inverted: RadixTree = RadixTree::new();
+    for board in &visited[(Board::SLOTS - 1) / 2] {
+        inverted.insert(Board(board).inverse().0);
+    }
     visited.push(inverted);
     #[cfg(not(target_arch = "wasm32"))]
     let invert_step = Instant::now();
 
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let num_constellations = visited[remaining].len();
-        let mut constellations = possible_moves_par(&visited[remaining], threads);
+        let constellations = possible_moves(&visited[remaining]);
         let num_moves = constellations.len();
         total_moves += num_moves;
         #[cfg(not(target_arch = "wasm32"))]
-        let start = Instant::now();
-        constellations.fast_sort_unstable_mt(threads);
         let deduped = constellations.len();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            time_sort += start.elapsed();
+        let mut intersection = RadixTree::new();
+        for board in &constellations {
+            if visited[remaining - 1].contains(board) {
+                intersection.insert(board);
+            }
         }
-        visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
+        visited[remaining - 1] = intersection;
         let intersection = visited[remaining - 1].len();
         eprintln!(
             "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)",
@@ -325,11 +319,13 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     #[cfg(not(target_arch = "wasm32"))]
     let forward_step = Instant::now();
 
-    let solvable: Vec<Board> = visited
-        .into_iter()
-        .take((Board::SLOTS - 1) / 2 + 1)
-        .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
-        .collect();
+    let mut solvable: Vec<Board> = vec![];
+    for v in visited.into_iter().take((Board::SLOTS - 1) / 2 + 1) {
+        for b in &v {
+            solvable.push(Board(b));
+            solvable.push(Board(b).inverse().normalize());
+        }
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
