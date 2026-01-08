@@ -70,7 +70,7 @@ impl<T: Radixable<U33>> Dispatcher<T, U33> for U33 {
     fn voracious_mt_sort(&self, arr: &mut [T], thread_n: usize) {
         if arr.len() <= 256 {
             arr.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        } else if arr.len() < 5_000_000 {
+        } else if arr.len() < 5_000_000_000 {
             peeka_sort(arr, 8, 650_000, thread_n);
         } else {
             // Switch to regions sort algo
