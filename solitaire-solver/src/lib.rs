@@ -8,6 +8,8 @@ mod mov;
 mod solution;
 mod sort;
 
+use log::info;
+
 pub use calc_first::calculate_first_solution;
 pub use calc_naive::calculate_all_solutions_naive;
 pub use calc_success::calculate_p_random_chance_success;
@@ -262,31 +264,43 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
     let mut total_constellations = 0;
     let mut total_moves = 0;
-    eprintln!(
+    info!(
         "{:>10} {:>10} {:>10}         {:>10}",
         "boards", "moves", "deduped", "intersection"
     );
-    eprintln!("-----------------------------------------------------");
+    info!("-----------------------------------------------------");
+    let mut round = Instant::now();
     for i in 1..(Board::SLOTS - 1) / 2 {
         let num_constellations = visited[i].len();
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+        let rev_time = round.elapsed();
         let num_moves = constellations.len();
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
+        let sort = start.elapsed();
         #[cfg(not(target_arch = "wasm32"))]
         {
             time_sort += start.elapsed();
         }
+        let dd = Instant::now();
         let constellations = constellations.par_dedup(threads);
+        let dd = dd.elapsed();
         let deduped = constellations.len();
-        eprintln!(
-            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%)",
-            deduped as f64 / num_moves as f64 * 100.
-        );
         visited.push(constellations);
         total_moves += num_moves;
         total_constellations += deduped;
+        let now = Instant::now();
+        let rt = now - round;
+        round = now;
+        info!(
+            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%)                       {:>10?} (r: {:>10?}, s: {:>10?}, d: {:>10?})",
+            deduped as f64 / num_moves as f64 * 100.,
+            rt,
+            rev_time,
+            sort,
+            dd,
+        );
     }
     #[cfg(not(target_arch = "wasm32"))]
     let reverse_step = Instant::now();
@@ -301,25 +315,39 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     #[cfg(not(target_arch = "wasm32"))]
     let invert_step = Instant::now();
 
+    let mut round = Instant::now();
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let num_constellations = visited[remaining].len();
         let mut constellations = possible_moves_par(&visited[remaining], threads);
+        let t_moves = Instant::now();
+        let d_moves = t_moves.duration_since(round);
         let num_moves = constellations.len();
         total_moves += num_moves;
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
+        let t_sort = Instant::now();
+        let d_sort = t_sort.duration_since(t_moves);
         let deduped = constellations.len();
         #[cfg(not(target_arch = "wasm32"))]
         {
             time_sort += start.elapsed();
         }
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
+        let t_intersect = Instant::now();
+        let d_intersect = t_intersect.duration_since(t_sort);
         let intersection = visited[remaining - 1].len();
-        eprintln!(
-            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)",
+        let now = Instant::now();
+        let rt = now - round;
+        round = now;
+        info!(
+            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)    {:>10?} (m: {:>10?}, s: {:>10?}, i: {:>10?})",
             deduped as f64 / num_moves as f64 * 100.,
             intersection as f64 / deduped as f64 * 100.,
+            rt,
+            d_moves,
+            d_sort,
+            d_intersect,
         );
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -333,24 +361,24 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     #[cfg(not(target_arch = "wasm32"))]
     let collect_step = Instant::now();
     assert_eq!(solvable.len(), 1679072);
-    eprintln!("analyzed {total_moves} moves and {total_constellations} different constellations");
+    info!("analyzed {total_moves} moves and {total_constellations} different constellations");
     #[cfg(not(target_arch = "wasm32"))]
     {
-        eprintln!("reverse step: {:?}", reverse_step.duration_since(start));
-        eprintln!(
+        info!("reverse step: {:?}", reverse_step.duration_since(start));
+        info!(
             " invert step: {:?}",
             invert_step.duration_since(reverse_step)
         );
-        eprintln!(
+        info!(
             "forward step: {:?}",
             forward_step.duration_since(invert_step)
         );
-        eprintln!(
+        info!(
             "collect step: {:?}",
             collect_step.duration_since(forward_step)
         );
-        eprintln!("       total: {:?}", collect_step.duration_since(start));
-        eprintln!("     sorting: {time_sort:?}");
+        info!("       total: {:?}", collect_step.duration_since(start));
+        info!("     sorting: {time_sort:?}");
     }
     solvable
 }

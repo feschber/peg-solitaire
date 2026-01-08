@@ -4381,6 +4381,7 @@ dependencies = [
 name = "solitaire-solver"
 version = "0.0.1"
 dependencies = [
+ "log",
  "nohash-hasher",
  "rayon",
  "rustc-hash 2.1.1",
