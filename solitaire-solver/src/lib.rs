@@ -269,30 +269,50 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
         "boards", "moves", "deduped", "intersection"
     );
     info!("-----------------------------------------------------");
+    #[cfg(not(target_arch = "wasm32"))]
     let mut round = Instant::now();
     for i in 1..(Board::SLOTS - 1) / 2 {
         let num_constellations = visited[i].len();
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+        #[cfg(not(target_arch = "wasm32"))]
         let rev_time = round.elapsed();
         let num_moves = constellations.len();
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
+        #[cfg(not(target_arch = "wasm32"))]
         let sort = start.elapsed();
         #[cfg(not(target_arch = "wasm32"))]
         {
             time_sort += start.elapsed();
         }
+        #[cfg(not(target_arch = "wasm32"))]
         let dd = Instant::now();
         let constellations = constellations.par_dedup(threads);
+        #[cfg(not(target_arch = "wasm32"))]
         let dd = dd.elapsed();
         let deduped = constellations.len();
         visited.push(constellations);
         total_moves += num_moves;
         total_constellations += deduped;
+        #[cfg(not(target_arch = "wasm32"))]
         let now = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
         let rt = now - round;
-        round = now;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            round = now;
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        let rt = 0;
+        #[cfg(target_arch = "wasm32")]
+        let rev_time = 0;
+        #[cfg(target_arch = "wasm32")]
+        let sort = 0;
+        #[cfg(target_arch = "wasm32")]
+        let dd = 0;
+
         info!(
             "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%)                       {:>10?} (r: {:>10?}, s: {:>10?}, d: {:>10?})",
             deduped as f64 / num_moves as f64 * 100.,
@@ -315,18 +335,23 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
     #[cfg(not(target_arch = "wasm32"))]
     let invert_step = Instant::now();
 
+    #[cfg(not(target_arch = "wasm32"))]
     let mut round = Instant::now();
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
         let num_constellations = visited[remaining].len();
         let mut constellations = possible_moves_par(&visited[remaining], threads);
+        #[cfg(not(target_arch = "wasm32"))]
         let t_moves = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
         let d_moves = t_moves.duration_since(round);
         let num_moves = constellations.len();
         total_moves += num_moves;
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         constellations.fast_sort_unstable_mt(threads);
+        #[cfg(not(target_arch = "wasm32"))]
         let t_sort = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
         let d_sort = t_sort.duration_since(t_moves);
         let deduped = constellations.len();
         #[cfg(not(target_arch = "wasm32"))]
@@ -334,12 +359,27 @@ pub fn calculate_all_solutions(threads: Option<NonZero<usize>>) -> Vec<Board> {
             time_sort += start.elapsed();
         }
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
+        #[cfg(not(target_arch = "wasm32"))]
         let t_intersect = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
         let d_intersect = t_intersect.duration_since(t_sort);
         let intersection = visited[remaining - 1].len();
+        #[cfg(not(target_arch = "wasm32"))]
         let now = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
         let rt = now - round;
-        round = now;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            round = now;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let rt = 0;
+        #[cfg(target_arch = "wasm32")]
+        let d_moves = 0;
+        #[cfg(target_arch = "wasm32")]
+        let d_sort = 0;
+        #[cfg(target_arch = "wasm32")]
+        let d_intersect = 0;
         info!(
             "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)    {:>10?} (m: {:>10?}, s: {:>10?}, i: {:>10?})",
             deduped as f64 / num_moves as f64 * 100.,
