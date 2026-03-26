@@ -7,6 +7,7 @@ mod hash;
 mod mov;
 mod solution;
 mod sort;
+mod unique_solutions;
 
 use log::info;
 
@@ -26,6 +27,8 @@ pub use dir::Dir;
 pub use hash::{CustomHashMap as HashMap, CustomHashSet as HashSet};
 pub use mov::Move;
 pub use solution::Solution;
+
+pub use unique_solutions::all_unique_solutions;
 
 use crate::sort::Sort;
 

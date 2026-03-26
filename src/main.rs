@@ -28,10 +28,19 @@ enum Command {
     CompareSolutions,
     /// calculate success ratio when chosing moves at random
     CalculateRandomChanceSuccessRatio,
+    /// calculate unique solutions
+    UniqueSolutions,
 }
 
 fn main() {
     let args = Args::parse();
+    #[cfg(not(feature = "game"))]
+    {
+        use env_logger::Env;
+
+        let env = Env::default().filter_or("RUST_LOG", "info");
+        env_logger::init_from_env(env);
+    }
     match args.command {
         Some(command) => match command {
             Command::CalculateAll => {
@@ -68,6 +77,13 @@ fn main() {
                         .into_iter()
                         .collect();
                 assert_eq!(solutions, solutions_naive)
+            }
+            Command::UniqueSolutions => {
+                let feasible = solitaire_solver::calculate_all_solutions(None);
+                log::info!("feasible: {}", feasible.len());
+                let solutions =
+                    solitaire_solver::all_unique_solutions(Board::default(), feasible.into_iter());
+                log::info!("unique solutions: {}", solutions.len());
             }
         },
         None => {
