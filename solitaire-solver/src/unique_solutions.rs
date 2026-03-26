@@ -33,13 +33,7 @@ pub fn all_unique_solutions(
     let mut zobrist = ZobristTable::default();
     visited.insert((start, 0));
 
-    let mut counter = 0;
     while let Some((board, multiset, hash)) = stack.pop() {
-        let solutions = unique_solutions.len();
-        counter += 1;
-        if counter % 100 == 0 {
-            print!("\runique: {solutions}, remaining: {}", stack.len());
-        }
         if board.is_solved() {
             unique_solutions.insert(multiset);
             // Do NOT continue here if a goal board can still have outgoing

@@ -159,17 +159,7 @@ fn prune_pagoda_inverse(constellations: &mut Vec<Board>) {
 }
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
-    let mut constellations = Vec::default();
-    for dir in Dir::enumerate() {
-        for board in states {
-            let mut mask = board.mov_pattern_mask(dir);
-            while mask != Board::empty() {
-                let idx = mask.0.trailing_zeros() as usize;
-                mask &= Board(mask.0 - 1);
-                constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
-            }
-        }
-    }
+    let mut constellations = Board::possible_moves(states);
     normalize(&mut constellations);
     constellations
 }
@@ -232,17 +222,7 @@ fn possible_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
 }
 
 fn reverse_moves(states: &[Board]) -> Vec<Board> {
-    let mut constellations = Vec::default();
-    for dir in Dir::enumerate() {
-        for board in states {
-            let mut mask = board.rev_mov_pattern_mask(dir);
-            while mask != Board::empty() {
-                let idx = mask.0.trailing_zeros() as usize;
-                mask &= Board(mask.0 - 1);
-                constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
-            }
-        }
-    }
+    let mut constellations = Board::possible_reverse_moves(states);
     normalize(&mut constellations);
     constellations
 }

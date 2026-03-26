@@ -670,4 +670,34 @@ impl Board {
             transposed,
         ]
     }
+
+    pub fn possible_moves(states: &[Self]) -> Vec<Self> {
+        let mut constellations = Vec::default();
+        for dir in Dir::enumerate() {
+            for board in states {
+                let mut mask = board.mov_pattern_mask(dir);
+                while mask != Board::empty() {
+                    let idx = mask.0.trailing_zeros() as usize;
+                    mask &= Board(mask.0 - 1);
+                    constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
+                }
+            }
+        }
+        constellations
+    }
+
+    pub fn possible_reverse_moves(states: &[Self]) -> Vec<Self> {
+        let mut constellations = Vec::default();
+        for dir in Dir::enumerate() {
+            for board in states {
+                let mut mask = board.rev_mov_pattern_mask(dir);
+                while mask != Board::empty() {
+                    let idx = mask.0.trailing_zeros() as usize;
+                    mask &= Board(mask.0 - 1);
+                    constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
+                }
+            }
+        }
+        constellations
+    }
 }
