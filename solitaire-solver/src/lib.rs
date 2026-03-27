@@ -26,7 +26,7 @@ pub use board::Board;
 pub use dir::Dir;
 pub use hash::{CustomHashMap as HashMap, CustomHashSet as HashSet};
 pub use mov::Move;
-pub use solution::Solution;
+pub use solution::{Solution, SolutionMultiset};
 
 pub use unique_solutions::all_unique_solutions;
 

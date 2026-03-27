@@ -84,10 +84,6 @@ fn main() {
                 let solutions =
                     solitaire_solver::all_unique_solutions(Board::default(), feasible.into_iter());
                 log::info!("unique solutions: {}", solutions.len());
-                for board in solutions[0] {
-                    println!();
-                    println!("{board}");
-                }
             }
         },
         None => {

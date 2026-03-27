@@ -120,6 +120,7 @@ impl From<(SolutionMultiset, &HashSet<Board>)> for Solution {
             .into_iter()
             .flat_map(|(k, v)| std::iter::repeat(k).take(v))
             .collect();
+        assert_eq!(vec.len(), 31);
         // canonicalize by sorting
         vec.sort();
         vec.reverse();

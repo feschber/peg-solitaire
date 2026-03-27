@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 pub fn all_unique_solutions(
     start: Board,
     feasible: impl Iterator<Item = Board>,
-) -> Vec<[Board; 32]> {
+) -> std::collections::HashSet<SolutionMultiset> {
+    log::info!("calculating unique solutions ....");
     let feasible: HashSet<Board> = feasible.collect();
 
     // Work-stack entry: (current_board, accumulated_multiset, hash of multiset)
@@ -63,7 +64,21 @@ pub fn all_unique_solutions(
             }
         }
     }
+    unique_solutions
+}
 
+fn canonicalize(
+    unique_solutions: std::collections::HashSet<SolutionMultiset>,
+    feasible: HashSet<Board>,
+) -> Vec<[Board; 32]> {
+    for s in &unique_solutions {
+        for (s, c) in s {
+            for _ in 0..*c {
+                print!("{s} ");
+            }
+        }
+        println!();
+    }
     // canonicalize => sort multiset,
     // then always take first possible move on initial board.
     // Deduplicate by normalizing the boards and rehashing
@@ -75,6 +90,9 @@ pub fn all_unique_solutions(
         "unique solutions by move multiset: {}",
         unique_solutions.len()
     );
+    for s in &unique_solutions {
+        println!("{s}");
+    }
 
     let unique_solutions: std::collections::HashSet<[Board; 32]> = unique_solutions
         .into_iter()

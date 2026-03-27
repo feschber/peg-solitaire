@@ -11,7 +11,9 @@ use bevy::{
 use solitaire_solver::{Board, Solution};
 
 use crate::{
-    CurrentBoard, MoveEvent, SolutionEvent, solver::FeasibleConstellations, stats::UpdateStats,
+    CurrentBoard, MoveEvent, SolutionEvent,
+    solver::{FeasibleConstellations, UniqueSolutions},
+    stats::UpdateStats,
 };
 
 /// This module keeps track of the total progress of the game.
@@ -37,6 +39,7 @@ impl Plugin for TotalProgressPlugin {
         app.init_resource::<TotalProgress>();
         app.add_observer(update_total_progress);
         app.add_observer(update_solutions);
+        app.add_observer(update_unique_solutions);
     }
 }
 
@@ -53,6 +56,29 @@ fn update_total_progress(
             total_progress.explored_states_by_pegs[board.count_balls() as usize - 1].insert(board);
         }
     }
+}
+
+fn update_unique_solutions(
+    mov: On<MoveEvent>,
+    mut unique_solutions: Option<ResMut<UniqueSolutions>>,
+    feasible: Option<Res<FeasibleConstellations>>,
+    board: Res<CurrentBoard>,
+    mut commands: Commands,
+) {
+    if let Some(mut unique_solutions) = unique_solutions {
+        let mut unique_solutions = unique_solutions.as_mut();
+        unique_solutions.0.retain_mut(|e| {
+            if let Some(count) = e.get_mut(&mov.event().mov) {
+                let ret = *count > 0;
+                *count -= 1;
+                ret
+            } else {
+                false
+            }
+        });
+        mov.event().mov;
+    }
+    commands.trigger(UpdateStats);
 }
 
 fn update_solutions(

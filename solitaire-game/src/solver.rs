@@ -1,5 +1,5 @@
 use futures_lite::future::{self, block_on};
-use solitaire_solver::{HashMap, HashSet};
+use solitaire_solver::{HashMap, HashSet, SolutionMultiset};
 
 use bevy::{
     ecs::world::CommandQueue,
@@ -19,6 +19,10 @@ impl Plugin for Solver {
             Update,
             calculate_random_move_chances.run_if(resource_added::<FeasibleConstellations>),
         );
+        app.add_systems(
+            Update,
+            calculate_unique_solutions.run_if(resource_added::<FeasibleConstellations>),
+        );
         app.add_systems(Update, poll_task);
     }
 }
@@ -28,6 +32,9 @@ pub struct FeasibleConstellations(pub HashSet<Board>);
 
 #[derive(Resource)]
 pub struct RandomMoveChances(pub HashMap<Board, f64>);
+
+#[derive(Resource)]
+pub struct UniqueSolutions(pub Vec<SolutionMultiset>);
 
 #[derive(Component)]
 struct BackgroundTask {
@@ -85,18 +92,19 @@ fn calculate_unique_solutions(
     feasible: Res<FeasibleConstellations>,
     wake: Res<EventLoopProxyWrapper<WakeUp>>,
 ) {
-    info!("calculating P(\"unique solutions\") ...");
+    info!("calculating unique solutions ...");
     let thread_pool = AsyncComputeTaskPool::get();
     let entity = commands.spawn_empty().id();
     let feasible = feasible.0.clone();
     let wake = wake.clone();
     let task = thread_pool.spawn(async move {
-        let feasible = feasible.iter().copied().collect();
-        let p_random_chance = solitaire_solver::calculate_p_random_chance_success(feasible);
+        let unique_solutions =
+            solitaire_solver::all_unique_solutions(Board::default(), feasible.iter().copied());
+        info!("unique solutions: {}", unique_solutions.len());
 
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
-            world.insert_resource(RandomMoveChances(p_random_chance));
+            world.insert_resource(UniqueSolutions(unique_solutions.into_iter().collect()));
             world.entity_mut(entity).remove::<BackgroundTask>();
         });
         wake.send_event(WakeUp).unwrap();

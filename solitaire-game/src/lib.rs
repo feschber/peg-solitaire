@@ -60,8 +60,8 @@ fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
     };
     if let Projection::Orthographic(projection2d) = &mut *projection {
         projection2d.scaling_mode = ScalingMode::AutoMin {
-            min_width: 8.,
-            min_height: 8.,
+            min_width: 12.,
+            min_height: 12.,
         }
     }
 }

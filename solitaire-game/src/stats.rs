@@ -5,7 +5,7 @@ use bevy::{
 
 use crate::{
     BoardPosition, CurrentBoard,
-    solver::{FeasibleConstellations, RandomMoveChances},
+    solver::{FeasibleConstellations, RandomMoveChances, UniqueSolutions},
     total_progress::TotalProgress,
 };
 
@@ -73,6 +73,7 @@ impl Plugin for StatsPlugin {
         app.add_observer(update_overall_success);
         app.add_observer(update_total_progress);
         app.add_observer(update_solution_count);
+        app.add_observer(update_unique_solutions);
         app.add_observer(toggle_stats);
     }
 }
@@ -88,6 +89,9 @@ struct TotalProgressText;
 
 #[derive(Component)]
 struct SolutionText;
+
+#[derive(Component)]
+struct UniqueSolutionsText;
 
 #[derive(Component)]
 struct OverallSuccessRatioText;
@@ -121,6 +125,8 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         Vec3::from((BoardPosition { x: 4, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let title_pos_3 =
         Vec3::from((BoardPosition { x: 1, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
+    let title_pos_4 =
+        Vec3::from((BoardPosition { x: 6, y: 2 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     commands
         .spawn((
             Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
@@ -135,6 +141,16 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             TextSpan("\n“chance of winning by\nchosing moves at random”".into()),
             small_font.clone(),
         ));
+    commands
+        .spawn((
+            Text2d::new("unique solutions"),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos_4),
+            medium_font.clone(),
+            TextLayout::new_with_justify(Justify::Left),
+            Anchor::TOP_LEFT,
+            UniqueSolutionsText,
+        ))
+        .with_child((TextSpan("".into()), large_font.clone()));
     commands
         .spawn((
             Text2d::new(""),
@@ -272,6 +288,26 @@ fn update_solution_count(
     for text in solution_text {
         *writer.text(text, 1) = format!("{num_solutions}");
         *writer.text(text, 3) = format!("{num_unique_solutions}");
+    }
+    request_redraw.write(RequestRedraw);
+}
+
+fn update_unique_solutions(
+    _: On<UpdateStats>,
+    unique_solutions_text: Query<Entity, With<UniqueSolutionsText>>,
+    board: Res<CurrentBoard>,
+    unique_solutions: Option<Res<UniqueSolutions>>,
+    mut writer: TextUiWriter,
+    mut request_redraw: MessageWriter<RequestRedraw>,
+) {
+    let msg = if let Some(unique_solutions) = unique_solutions {
+        format!("\n{}", unique_solutions.0.len())
+    } else {
+        format!("\ncalculating unique solutions ...")
+    };
+
+    for text in unique_solutions_text {
+        *writer.text(text, 1) = msg.clone();
     }
     request_redraw.write(RequestRedraw);
 }
