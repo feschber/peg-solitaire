@@ -1,14 +1,10 @@
-use crate::HashSet;
-use crate::{Board, Move};
+use crate::solution::SolutionMultiset;
+use crate::{Board, Move, unique_solutions};
+use crate::{HashSet, Solution};
 use std::collections::BTreeMap;
 
 /// we define two solutions as "equal" when the
 ///  multiset of steps is equivalent between them
-
-/// A solution is a multiset of steps (step -> count)
-type SolutionMultiset = BTreeMap<Move, usize>;
-
-type Solution = [Board; 32];
 
 /// Finds all *unique* solutions (by step-multiset) from `start` to any board in `goals`.
 ///
@@ -18,7 +14,7 @@ type Solution = [Board; 32];
 pub fn all_unique_solutions(
     start: Board,
     feasible: impl Iterator<Item = Board>,
-) -> std::collections::HashSet<SolutionMultiset> {
+) -> Vec<[Board; 32]> {
     let feasible: HashSet<Board> = feasible.collect();
 
     // Work-stack entry: (current_board, accumulated_multiset, hash of multiset)
@@ -67,6 +63,29 @@ pub fn all_unique_solutions(
             }
         }
     }
+
+    // canonicalize => sort multiset,
+    // then always take first possible move on initial board.
+    // Deduplicate by normalizing the boards and rehashing
+    let unique_solutions: std::collections::HashSet<Solution> = unique_solutions
+        .into_iter()
+        .map(|b| Solution::from((b, &feasible)))
+        .collect();
+    log::info!(
+        "unique solutions by move multiset: {}",
+        unique_solutions.len()
+    );
+
+    let unique_solutions: std::collections::HashSet<[Board; 32]> = unique_solutions
+        .into_iter()
+        .map(<[Board; 32]>::from)
+        .map(|mut s| {
+            s.iter_mut().for_each(|b| *b = b.normalize());
+            s
+        })
+        .collect();
+    let mut unique_solutions: Vec<_> = unique_solutions.into_iter().collect();
+    unique_solutions.sort();
 
     unique_solutions
 }

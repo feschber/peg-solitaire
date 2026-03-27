@@ -594,7 +594,9 @@ impl Board {
                 (p, d) if d.1 > p.1 => Dir::East,
                 _ => unreachable!(),
             };
-            self.occupied(pos);
+            if !self.occupied(pos) {
+                return None;
+            }
             self.get_legal_move(pos, dir)
         } else {
             None

@@ -1,6 +1,9 @@
-use std::fmt::{Display, Formatter, Result};
+use std::{
+    collections::{self, BTreeMap},
+    fmt::{Display, Formatter, Result},
+};
 
-use crate::{Board, Move};
+use crate::{Board, HashSet, Move};
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Hash)]
 pub struct Solution {
@@ -74,5 +77,69 @@ pub fn print_solution(solution: Solution) {
         board = board.mov(mov);
         println!("{mov}");
         println!("{board}");
+    }
+}
+
+/// A solution is a multiset of steps (step -> count)
+pub type SolutionMultiset = BTreeMap<Move, usize>;
+
+fn from_unordered_moves(
+    moves: &[Move],
+    solution: &mut Solution,
+    move_mask: u32,
+    current_board: Board,
+    feasible: &HashSet<Board>,
+) -> bool {
+    if move_mask == (1 << 31) - 1 {
+        return true;
+    }
+    let mut next_moves: Vec<_> = (0..31)
+        .filter(|i| move_mask & (1 << i) == 0)
+        .map(|i| (i, moves[i]))
+        .filter(|(_, m)| current_board.is_legal_move(m.pos, m.target).is_some())
+        .map(|(i, m)| (i, m, current_board.mov(m)))
+        .filter(|(_, _, b)| feasible.contains(&b.normalize()))
+        .collect();
+    next_moves.sort_unstable_by_key(|(_, _, b)| u64::MAX - b.0);
+    next_moves.dedup();
+    for (i, m, b) in next_moves {
+        solution.push(m);
+        if from_unordered_moves(moves, solution, move_mask | (1 << i), b, feasible) {
+            return true;
+        }
+        solution.pop();
+    }
+    false
+}
+
+impl From<(SolutionMultiset, &HashSet<Board>)> for Solution {
+    fn from(mf: (SolutionMultiset, &HashSet<Board>)) -> Self {
+        let (mset, feasible) = mf;
+        log::info!("from::<SolutionMultiset>()");
+        let mut vec: Vec<_> = mset
+            .into_iter()
+            .flat_map(|(k, v)| std::iter::repeat(k).take(v))
+            .collect();
+        // canonicalize by sorting
+        vec.sort();
+        vec.reverse();
+        let move_mask = 0u32;
+        let mut solution = Self::default();
+        let board = Board::default();
+        let ass = from_unordered_moves(&vec, &mut solution, move_mask, board, &feasible);
+        assert!(ass);
+        solution
+    }
+}
+
+impl From<Solution> for [Board; 32] {
+    fn from(sol: Solution) -> Self {
+        let mut board = Board::default();
+        let mut boards = [Board::default(); 32];
+        for (i, mov) in sol.into_iter().enumerate() {
+            board = board.mov(mov);
+            boards[i + 1] = board
+        }
+        boards
     }
 }
