@@ -69,14 +69,16 @@ fn update_unique_solutions(
         let mut unique_solutions = unique_solutions.as_mut();
         unique_solutions.0.retain_mut(|e| {
             if let Some(count) = e.get_mut(&mov.event().mov) {
-                let ret = *count > 0;
-                *count -= 1;
-                ret
+                if *count > 0 {
+                    *count -= 1;
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             }
         });
-        mov.event().mov;
     }
     commands.trigger(UpdateStats);
 }

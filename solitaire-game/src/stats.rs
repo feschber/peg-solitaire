@@ -66,6 +66,7 @@ impl Plugin for StatsPlugin {
             update_stats.run_if(
                 resource_added::<FeasibleConstellations>
                     .or(resource_added::<RandomMoveChances>)
+                    .or(resource_added::<UniqueSolutions>)
                     .or(resource_changed::<CurrentBoard>),
             ),
         );
