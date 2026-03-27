@@ -124,19 +124,26 @@ fn spawn_pegs(mut commands: Commands, board: Res<CurrentBoard>) {
         for x in 0..Board::SIZE {
             let board_pos = BoardPosition { y, x };
             let world_pos = board_pos.to_world_space();
+            let color = color_by_type(x, y);
             if Board::inbounds((y, x)) {
                 // spawn holes
                 commands.spawn((
                     CircleComponent {
+                        radius: HOLE_RADIUS * 0.2,
+                        color: color.with_luminance(0.3),
+                    },
+                    Transform::from_translation((world_pos, HOLE_POS + 0.02).into()),
+                ));
+                commands.spawn((
+                    CircleComponent {
                         radius: HOLE_RADIUS,
-                        color: Color::WHITE.with_luminance(0.01),
+                        color: color.with_luminance(0.05),
                     },
                     Transform::from_translation((world_pos, HOLE_POS).into()),
                 ));
             }
 
             // spawn pegs
-            let color = Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.7);
             if board.occupied((y, x)) {
                 commands.spawn((
                     CircleComponent {
@@ -150,6 +157,28 @@ fn spawn_pegs(mut commands: Commands, board: Res<CurrentBoard>) {
             }
         }
     }
+}
+
+fn color_hsl(x: i64, y: i64) -> Color {
+    Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.9)
+}
+
+fn color_by_type(x: i64, y: i64) -> Color {
+    let masks = Board::type_masks();
+    let col_idx = masks
+        .iter()
+        .position(|&m| Board::empty().set((y, x)) & m != Board::empty())
+        .unwrap_or(0);
+    let colors: Vec<_> = (0..4)
+        .map(|i| Color::hsl((i * 100) as f32, 1., 0.7))
+        .collect();
+    let colors = [
+        Srgba::hex("#b7bb26").unwrap().into(),
+        Srgba::hex("#fabe2f").unwrap().into(),
+        Srgba::hex("#fb4934").unwrap().into(),
+        Srgba::hex("#8ec07c").unwrap().into(),
+    ];
+    colors[col_idx]
 }
 
 fn draw_pegs(mut painter: ShapePainter, circles: Query<(&Transform, &CircleComponent)>) {

@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 /// A solution is a multiset of steps (step -> count)
 type SolutionMultiset = BTreeMap<Move, usize>;
 
+type Solution = [Board; 32];
+
 /// Finds all *unique* solutions (by step-multiset) from `start` to any board in `goals`.
 ///
 /// Uses BFS/DFS over the feasible graph, accumulating the multiset of steps along
@@ -19,7 +21,7 @@ pub fn all_unique_solutions(
 ) -> std::collections::HashSet<SolutionMultiset> {
     let feasible: HashSet<Board> = feasible.collect();
 
-    // Work-stack entry: (current_board, accumulated_multiset)
+    // Work-stack entry: (current_board, accumulated_multiset, hash of multiset)
     // Using a stack (DFS) keeps memory proportional to path depth;
     // swap for a VecDeque + pop_front if you prefer BFS.
     let mut stack: Vec<(Board, SolutionMultiset, MultisetHash)> = vec![(start, BTreeMap::new(), 0)];

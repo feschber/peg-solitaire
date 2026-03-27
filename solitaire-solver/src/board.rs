@@ -368,14 +368,14 @@ impl Board {
 
     /// the game is not solvable, if none of the marked fields contain a ball:
     ///
-    ///  ```no_run
-    ///        .  .  .
-    ///        .  x  .
-    ///  .  .  .  .  .  .  .
-    ///  .  x  .  x  .  x  .
-    ///  .  .  .  .  .  .  .
-    ///        .  x  .
-    ///        .  .  .
+    ///  ```
+    ///  //       .  .  .
+    ///  //       .  x  .
+    ///  // .  .  .  .  .  .  .
+    ///  // .  x  .  x  .  x  .
+    ///  // .  .  .  .  .  .  .
+    ///  //       .  x  .
+    ///  //       .  .  .
     /// ```
     pub(crate) fn is_solvable(&self) -> bool {
         const POSITION_VEC: u64 = {
@@ -700,4 +700,106 @@ impl Board {
         }
         constellations
     }
+
+    ///
+    /// ```rust
+    /// use solitaire_solver::Board;
+    /// let and = Board::type_masks().into_iter().reduce(std::ops::BitAnd::bitand).unwrap();
+    /// let or = Board::type_masks().into_iter().reduce(std::ops::BitOr::bitor).unwrap();
+    /// assert_eq!(and, Board::empty());
+    /// assert_eq!(or, Board::full());
+    /// ```
+    pub fn type_masks() -> [Self; 4] {
+        [
+            ". . .
+             . o .
+         . . . . . . .
+         . o . o . o .
+         . . . . . . .
+             . o .
+             . . .
+        "
+            .try_into()
+            .unwrap(),
+            "o . o
+             . . .
+         o . o . o . o
+         . . . . . . .
+         o . o . o . o
+             . . .
+             o . o
+        "
+            .try_into()
+            .unwrap(),
+            ". . .
+             o . o
+         . . . . . . .
+         o . o . o . o
+         . . . . . . .
+             o . o
+             . . .
+        "
+            .try_into()
+            .unwrap(),
+            ". o .
+             . . .
+         . o . o . o .
+         . . . . . . .
+         . o . o . o .
+             . . .
+             . o .
+        "
+            .try_into()
+            .unwrap(),
+        ]
+    }
+}
+
+impl TryFrom<&'_ str> for Board {
+    type Error = &'static str;
+
+    fn try_from(s: &'_ str) -> Result<Self, Self::Error> {
+        let lines = s.lines();
+        let mut board = Board::empty();
+        for (y, l) in lines.enumerate() {
+            let mut x = 0;
+            for c in l.chars() {
+                match c {
+                    'o' => {
+                        {
+                            let x = match y {
+                                0 | 1 | 5 | 6 => x + 2,
+                                _ => x,
+                            };
+                            board = board.set((y as Idx, x as Idx));
+                        }
+                        x += 1;
+                    }
+                    '.' => {
+                        x += 1;
+                    }
+                    ' ' => {}
+                    _ => return Err("invalid character"),
+                }
+            }
+        }
+        Ok(board)
+    }
+}
+
+#[test]
+fn test_parse() {
+    let full = Board::try_from(
+        "o o o
+         o o o
+    o o o o o o o
+    o o o o o o o
+    o o o o o o o
+        o o o
+        o o o
+    ",
+    )
+    .unwrap();
+    eprintln!("{full}");
+    assert_eq!(full, Board::full());
 }
