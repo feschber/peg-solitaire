@@ -549,14 +549,11 @@ impl Board {
         }
     }
 
-    pub fn get_legal_moves(&self) -> Vec<Move> {
+    pub fn get_legal_moves(self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
-        let mut copy = self.0;
-        while copy != 0 {
-            let idx = copy.trailing_zeros();
+        for idx in self.pegs() {
             let y = idx as i64 / Board::REPR;
             let x = idx as i64 % Board::REPR;
-            copy &= !(1 << idx);
             for dir in Dir::enumerate() {
                 if let Some(mov) = self.get_legal_move((y, x), dir) {
                     legal_moves.push(mov);
@@ -566,14 +563,11 @@ impl Board {
         legal_moves
     }
 
-    pub fn get_legal_inverse_moves(&self) -> Vec<Move> {
+    pub fn get_legal_inverse_moves(self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
-        let mut copy = self.0;
-        while copy != 0 {
-            let idx = copy.trailing_zeros();
+        for idx in self.pegs() {
             let y = idx as i64 / Board::REPR;
             let x = idx as i64 % Board::REPR;
-            copy &= !(1 << idx);
             for dir in Dir::enumerate() {
                 if let Some(mov) = self.get_legal_inverse_move((y, x), dir) {
                     legal_moves.push(mov);
@@ -677,10 +671,7 @@ impl Board {
         let mut constellations = Vec::default();
         for dir in Dir::enumerate() {
             for board in states {
-                let mut mask = board.mov_pattern_mask(dir);
-                while mask != Board::empty() {
-                    let idx = mask.0.trailing_zeros() as usize;
-                    mask &= Board(mask.0 - 1);
+                for idx in board.mov_pattern_mask(dir).pegs() {
                     constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
                 }
             }
@@ -692,10 +683,7 @@ impl Board {
         let mut constellations = Vec::default();
         for dir in Dir::enumerate() {
             for board in states {
-                let mut mask = board.rev_mov_pattern_mask(dir);
-                while mask != Board::empty() {
-                    let idx = mask.0.trailing_zeros() as usize;
-                    mask &= Board(mask.0 - 1);
+                for idx in board.rev_mov_pattern_mask(dir).pegs() {
                     constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
                 }
             }
@@ -755,6 +743,10 @@ impl Board {
             .unwrap(),
         ]
     }
+
+    fn pegs(self) -> impl Iterator<Item = usize> {
+        PegIter(self.0)
+    }
 }
 
 impl TryFrom<&'_ str> for Board {
@@ -804,4 +796,18 @@ fn test_parse() {
     .unwrap();
     eprintln!("{full}");
     assert_eq!(full, Board::full());
+}
+
+struct PegIter(u64); // or whatever your inner type is
+
+impl Iterator for PegIter {
+    type Item = usize;
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 {
+            return None;
+        }
+        let idx = self.0.trailing_zeros() as usize;
+        self.0 &= self.0 - 1;
+        Some(idx)
+    }
 }
