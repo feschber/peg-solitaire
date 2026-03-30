@@ -551,7 +551,7 @@ impl Board {
 
     pub fn get_legal_moves(self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
-        for idx in self.pegs() {
+        for idx in self {
             let y = idx as i64 / Board::REPR;
             let x = idx as i64 % Board::REPR;
             for dir in Dir::enumerate() {
@@ -565,7 +565,7 @@ impl Board {
 
     pub fn get_legal_inverse_moves(self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
-        for idx in self.pegs() {
+        for idx in self {
             let y = idx as i64 / Board::REPR;
             let x = idx as i64 % Board::REPR;
             for dir in Dir::enumerate() {
@@ -671,7 +671,7 @@ impl Board {
         let mut constellations = Vec::default();
         for dir in Dir::enumerate() {
             for board in states {
-                for idx in board.mov_pattern_mask(dir).pegs() {
+                for idx in board.mov_pattern_mask(dir) {
                     constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
                 }
             }
@@ -683,7 +683,7 @@ impl Board {
         let mut constellations = Vec::default();
         for dir in Dir::enumerate() {
             for board in states {
-                for idx in board.rev_mov_pattern_mask(dir).pegs() {
+                for idx in board.rev_mov_pattern_mask(dir) {
                     constellations.push(board.toggle_mov_idx_unchecked(idx, dir));
                 }
             }
@@ -743,9 +743,15 @@ impl Board {
             .unwrap(),
         ]
     }
+}
 
-    fn pegs(self) -> impl Iterator<Item = usize> {
-        PegIter(self.0)
+impl IntoIterator for Board {
+    type Item = usize;
+
+    type IntoIter = PegIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        PegIter(self)
     }
 }
 
@@ -798,16 +804,16 @@ fn test_parse() {
     assert_eq!(full, Board::full());
 }
 
-struct PegIter(u64); // or whatever your inner type is
+pub struct PegIter(Board); // or whatever your inner type is
 
 impl Iterator for PegIter {
     type Item = usize;
-    fn next(&mut self) -> Option<usize> {
-        if self.0 == 0 {
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.0 == Board::empty() {
             return None;
         }
-        let idx = self.0.trailing_zeros() as usize;
-        self.0 &= self.0 - 1;
+        let idx = self.0.0.trailing_zeros() as Self::Item;
+        self.0.0 &= self.0.0 - 1;
         Some(idx)
     }
 }
