@@ -6,7 +6,7 @@ use bevy::{
 use crate::{
     BoardPosition, CurrentBoard, WorldSpaceViewPort,
     solver::{FeasibleConstellations, RandomMoveChances, UniqueSolutions},
-    total_progress::TotalProgress,
+    total_progress::{PossibleUniqueSolutions, TotalProgress},
 };
 
 #[derive(Default, Event)]
@@ -362,12 +362,12 @@ fn update_unique_solutions(
     _: On<UpdateStats>,
     unique_solutions_text: Query<Entity, With<UniqueSolutionsText>>,
     board: Res<CurrentBoard>,
-    unique_solutions: Option<Res<UniqueSolutions>>,
+    unique_solutions: Res<PossibleUniqueSolutions>,
     mut writer: TextUiWriter,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
-    let msg = if let Some(unique_solutions) = unique_solutions {
-        format!("\n{}", unique_solutions.0.len())
+    let msg = if let Some(unique_solutions) = unique_solutions.0 {
+        format!("\n{}", unique_solutions)
     } else {
         format!("\n?")
     };

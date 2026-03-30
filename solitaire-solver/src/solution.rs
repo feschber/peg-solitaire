@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fmt::{Display, Formatter, Result},
+    fmt::{Display, Formatter, Result}, ops::Index,
 };
 
 use crate::{Board, HashSet, Move};
@@ -28,6 +28,14 @@ impl Solution {
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+impl Index<usize> for Solution {
+    type Output = Move;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.steps[index]
     }
 }
 

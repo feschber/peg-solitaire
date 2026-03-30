@@ -1,19 +1,16 @@
 use std::collections::HashSet;
 
 use bevy::{
+    prelude::*,
     app::Plugin,
     ecs::{
-        observer::On,
-        resource::Resource,
-        system::{Commands, Res, ResMut},
+        observer::On, resource::Resource, schedule::common_conditions::resource_changed, system::{Commands, Res, ResMut}
     },
 };
 use solitaire_solver::{Board, Solution};
 
 use crate::{
-    CurrentBoard, MoveEvent, SolutionEvent,
-    solver::{FeasibleConstellations, UniqueSolutions},
-    stats::UpdateStats,
+    CurrentBoard, CurrentSolution, MoveEvent, SolutionEvent, solver::{FeasibleConstellations, UniqueSolutions}, stats::UpdateStats
 };
 
 /// This module keeps track of the total progress of the game.
@@ -36,10 +33,11 @@ pub struct TotalProgress {
 
 impl Plugin for TotalProgressPlugin {
     fn build(&self, app: &mut bevy::app::App) {
+        app.init_resource::<PossibleUniqueSolutions>();
         app.init_resource::<TotalProgress>();
         app.add_observer(update_total_progress);
         app.add_observer(update_solutions);
-        app.add_observer(update_unique_solutions);
+        app.add_systems(Update, update_unique_solutions.run_if(resource_changed::<CurrentSolution>));
     }
 }
 
@@ -58,27 +56,34 @@ fn update_total_progress(
     }
 }
 
+#[derive(Default, Resource)]
+pub struct PossibleUniqueSolutions(pub Option<usize>);
+
 fn update_unique_solutions(
-    mov: On<MoveEvent>,
-    mut unique_solutions: Option<ResMut<UniqueSolutions>>,
+    current_solution: Res<CurrentSolution>,
+    mut unique_solutions: Option<Res<UniqueSolutions>>,
     feasible: Option<Res<FeasibleConstellations>>,
     board: Res<CurrentBoard>,
     mut commands: Commands,
+    mut possible_unique_solutions: ResMut<PossibleUniqueSolutions>,
 ) {
-    if let Some(mut unique_solutions) = unique_solutions {
-        let mut unique_solutions = unique_solutions.as_mut();
-        unique_solutions.0.retain_mut(|e| {
-            if let Some(count) = e.get_mut(&mov.event().mov) {
-                if *count > 0 {
-                    *count -= 1;
-                    true
+    if let Some(unique_solutions) = unique_solutions {
+        let mut unique_solutions = unique_solutions.0.clone();
+        for m in &current_solution.1 {
+            unique_solutions.retain_mut(|e| {
+                if let Some(count) = e.get_mut(&m.mov) {
+                    if *count > 0 {
+                        *count -= 1;
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
-            } else {
-                false
-            }
-        });
+            });
+        }
+        possible_unique_solutions.0.replace(unique_solutions.len());
     }
     commands.trigger(UpdateStats);
 }
