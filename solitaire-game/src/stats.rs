@@ -1,10 +1,10 @@
 use bevy::{
-    ecs::entity_disabling::Disabled, prelude::*, sprite::Anchor, text::TextBounds,
-    window::RequestRedraw,
+    ecs::entity_disabling::Disabled, math::AspectRatio, prelude::*, sprite::Anchor,
+    text::TextBounds, window::RequestRedraw,
 };
 
 use crate::{
-    BoardPosition, CurrentBoard,
+    BoardPosition, CurrentBoard, WorldSpaceViewPort,
     solver::{FeasibleConstellations, RandomMoveChances, UniqueSolutions},
     total_progress::TotalProgress,
 };
@@ -27,6 +27,7 @@ fn toggle_stats(
                 With<OverallSuccessRatioText>,
                 With<TotalProgressText>,
                 With<NextMoveChanceText>,
+                With<UniqueSolutionsText>,
             )>,
             Or<(With<Disabled>, Without<Disabled>)>,
         ),
@@ -74,6 +75,7 @@ impl Plugin for StatsPlugin {
         app.add_observer(update_overall_success);
         app.add_observer(update_total_progress);
         app.add_observer(update_solution_count);
+        app.add_systems(Update, update_solution_text_pos);
         app.add_observer(update_unique_solutions);
         app.add_observer(toggle_stats);
     }
@@ -97,6 +99,16 @@ struct UniqueSolutionsText;
 #[derive(Component)]
 struct OverallSuccessRatioText;
 
+#[derive(Component)]
+enum TextPosition {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+    AboveOrLeft,
+    BelowOrRight,
+}
+
 fn update_stats(mut commands: Commands) {
     commands.trigger(UpdateStats);
 }
@@ -118,23 +130,16 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         font_size: 50.0,
         ..default()
     };
-    let title_pos =
-        Vec3::from((BoardPosition { x: 4, y: 4 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
-    let title_pos_1 =
-        Vec3::from((BoardPosition { x: 1, y: 4 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     let title_pos_2 =
         Vec3::from((BoardPosition { x: 4, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
-    let title_pos_3 =
-        Vec3::from((BoardPosition { x: 1, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
-    let title_pos_4 =
-        Vec3::from((BoardPosition { x: 6, y: 2 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     commands
         .spawn((
+            TextPosition::TopLeft,
             Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
-            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             medium_font.clone(),
             TextLayout::new_with_justify(Justify::Left),
-            Anchor::TOP_LEFT,
+            Anchor::CENTER,
             OverallSuccessRatioText,
         ))
         .with_child((TextSpan(" ... ?".into()), medium_font.clone()))
@@ -144,21 +149,23 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         ));
     commands
         .spawn((
+            TextPosition::TopRight,
             Text2d::new("unique solutions"),
-            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos_4),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             medium_font.clone(),
-            TextLayout::new_with_justify(Justify::Left),
-            Anchor::TOP_LEFT,
+            TextLayout::new_with_justify(Justify::Center),
+            Anchor::CENTER,
             UniqueSolutionsText,
         ))
         .with_child((TextSpan("".into()), large_font.clone()));
     commands
         .spawn((
+            TextPosition::BottomLeft,
             Text2d::new(""),
-            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)).with_translation(title_pos_1),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             large_font.clone(),
             TextLayout::new_with_justify(Justify::Center),
-            Anchor::TOP_RIGHT,
+            Anchor::CENTER,
             NextMoveChanceText,
         ))
         .with_child((TextSpan("? / ?\n".into()), large_font.clone()))
@@ -168,12 +175,13 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         ));
     commands
         .spawn((
+            TextPosition::BottomRight,
             Text2d::new("you have seen "),
-            Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(title_pos_2),
+            Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)),
             small_font.clone(),
             TextLayout::new(Justify::Center, LineBreak::WordBoundary),
             TextBounds::from(Vec2::new(600.0, 300.0)),
-            Anchor::BOTTOM_LEFT,
+            Anchor::CENTER,
             TotalProgressText,
         ))
         .with_child((TextSpan("?%".into()), large_font.clone()))
@@ -184,18 +192,75 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         .with_child((TextSpan("".into()), small_font.clone()));
     commands
         .spawn((
+            TextPosition::AboveOrLeft,
             Text2d::new("you have found "),
-            Transform::from_scale(Vec3::new(0.004, 0.004, 0.004)).with_translation(title_pos_3),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             small_font.clone(),
             TextLayout::new(Justify::Center, LineBreak::WordBoundary),
             TextBounds::from(Vec2::new(600.0, 300.0)),
-            Anchor::BOTTOM_RIGHT,
+            Anchor::CENTER,
             SolutionText,
         ))
         .with_child((TextSpan(" ? ".into()), large_font.clone()))
         .with_child((TextSpan(" solutions, ".into()), small_font.clone()))
         .with_child((TextSpan(" ? ".into()), large_font.clone()))
         .with_child((TextSpan(" of which are unique!".into()), small_font.clone()));
+}
+
+fn update_solution_text_pos(
+    ws_view_port: Res<WorldSpaceViewPort>,
+    camera: Single<&Camera>,
+    text: Query<(&mut Transform, &TextPosition)>,
+) {
+    let camera = *camera;
+    let board_tl = Vec2::new(-1.5, 1.5);
+    let board_tr = Vec2::new(1.5, 1.5);
+    let board_bl = Vec2::new(-1.5, -1.5);
+    let board_br = Vec2::new(1.5, -1.5);
+
+    let Some(view_port) = camera.logical_viewport_rect() else {
+        return;
+    };
+
+    for (mut transform, pos) in text {
+        let (a, b) = match pos {
+            TextPosition::TopLeft => (ws_view_port.top_left, board_tl),
+            TextPosition::TopRight => (ws_view_port.top_right, board_tr),
+            TextPosition::BottomLeft => (ws_view_port.bottom_left, board_bl),
+            TextPosition::BottomRight => (ws_view_port.bottom_right, board_br),
+            TextPosition::AboveOrLeft => {
+                if view_port.width() > view_port.height() {
+                    // landscape
+                    (
+                        (ws_view_port.top_left + ws_view_port.bottom_left) / 2.0,
+                        Vec2::new(-3.5, 0.0),
+                    )
+                } else {
+                    // portrait
+                    (
+                        (ws_view_port.top_left + ws_view_port.top_right) / 2.0,
+                        Vec2::new(0.0, 3.5),
+                    )
+                }
+            }
+            TextPosition::BelowOrRight => {
+                if view_port.width() > view_port.height() {
+                    // landscape
+                    (
+                        (ws_view_port.top_right + ws_view_port.bottom_right) / 2.0,
+                        Vec2::new(-3.5, 0.0),
+                    )
+                } else {
+                    // portrait
+                    (
+                        (ws_view_port.bottom_left + ws_view_port.bottom_right) / 2.0,
+                        Vec2::new(0.0, -3.5),
+                    )
+                }
+            }
+        };
+        transform.translation = Vec3::from(((a.xy() + b) / 2.0, 1.5));
+    }
 }
 
 fn update_overall_success(
@@ -304,7 +369,7 @@ fn update_unique_solutions(
     let msg = if let Some(unique_solutions) = unique_solutions {
         format!("\n{}", unique_solutions.0.len())
     } else {
-        format!("\ncalculating unique solutions ...")
+        format!("\n?")
     };
 
     for text in unique_solutions_text {

@@ -1,5 +1,5 @@
 use std::{
-    collections::{self, BTreeMap},
+    collections::BTreeMap,
     fmt::{Display, Formatter, Result},
 };
 

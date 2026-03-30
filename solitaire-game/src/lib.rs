@@ -54,14 +54,18 @@ fn camera_setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
-fn scale_viewport(mut camera_query: Query<&mut Projection, With<Camera>>) {
-    let Ok(mut projection) = camera_query.single_mut() else {
+fn scale_viewport(mut camera_query: Query<(&mut Projection, &Camera)>) {
+    let Ok((mut projection, camera)) = camera_query.single_mut() else {
         return;
+    };
+    let scale = match camera.logical_viewport_rect() {
+        Some(view_port) => 12.,
+        None => 8.0,
     };
     if let Projection::Orthographic(projection2d) = &mut *projection {
         projection2d.scaling_mode = ScalingMode::AutoMin {
-            min_width: 12.,
-            min_height: 12.,
+            min_width: scale,
+            min_height: scale,
         }
     }
 }
@@ -116,6 +120,7 @@ impl Plugin for PegSolitaire {
 
         app.add_observer(update_solution);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());
+        app.add_systems(Update, scale_viewport);
         app.add_systems(PostUpdate, highlight_selected);
         app.add_systems(PreUpdate, calc_view_port);
     }

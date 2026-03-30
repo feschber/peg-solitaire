@@ -1,5 +1,5 @@
 use crate::solution::SolutionMultiset;
-use crate::{Board, Move, unique_solutions};
+use crate::{Board, Move};
 use crate::{HashSet, Solution};
 use std::collections::BTreeMap;
 

@@ -18,24 +18,13 @@ fn draw_solution(
 ) {
     let cam = camera_query;
     if let Some(view_port) = cam.0.logical_viewport_rect() {
-        let y_size = view_port.max.y - view_port.min.y;
-        let x_size = view_port.max.x - view_port.min.x;
-
-        let (start, end) = if y_size > x_size {
+        let (start, end) = {
             let pos_vp = (Vec2::new(view_port.min.x, view_port.max.y), view_port.max);
             (
                 viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
                     + Vec3::new(0.6, 0.6, 0.0),
                 viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
                     + Vec3::new(-0.6, 0.6, 0.0),
-            )
-        } else {
-            let pos_vp = (view_port.min, Vec2::new(view_port.min.x, view_port.max.y));
-            (
-                viewport_to_world(pos_vp.0, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.6, -0.6, 0.0),
-                viewport_to_world(pos_vp.1, cam.0, cam.1).unwrap_or_default()
-                    + Vec3::new(0.6, 0.6, 0.0),
             )
         };
 
