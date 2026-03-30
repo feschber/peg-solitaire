@@ -19,8 +19,19 @@ jobs:
           target: wasm32-unknown-unknown
           profile: minimal
           toolchain: stable
+      - name: Cache wasm-bindgen-cli
+        id: cache-wasm-bindgen
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-${{ hashFiles('Cargo.lock') }}
+
       - name: Install Bindgen
-        run: cargo install wasm-bindgen-cli
+        if: steps.cache-wasm-bindgen.outputs.cache-hit != 'true'
+        run: |
+          WASM_BINDGEN_VERSION=$(cargo metadata --format-version 1 | \
+            jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install wasm-bindgen-cli --version $WASM_BINDGEN_VERSION
       - name: Install Binaryen
         run: sudo apt install binaryen
       - name: Install Brotli

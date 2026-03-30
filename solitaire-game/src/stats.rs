@@ -138,7 +138,7 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             medium_font.clone(),
-            TextLayout::new_with_justify(Justify::Left),
+            TextLayout::new_with_justify(Justify::Center),
             Anchor::CENTER,
             OverallSuccessRatioText,
         ))

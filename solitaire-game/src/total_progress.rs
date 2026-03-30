@@ -84,8 +84,8 @@ fn update_unique_solutions(
             });
         }
         possible_unique_solutions.0.replace(unique_solutions.len());
+        commands.trigger(UpdateStats);
     }
-    commands.trigger(UpdateStats);
 }
 
 fn update_solutions(
