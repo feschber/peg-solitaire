@@ -4,7 +4,7 @@ use bevy::{
 };
 
 use crate::{
-    BoardPosition, CurrentBoard, WorldSpaceViewPort,
+    CurrentBoard, WorldSpaceViewPort,
     solver::{FeasibleConstellations, RandomMoveChances, UniqueSolutions},
     total_progress::{PossibleUniqueSolutions, TotalProgress},
 };
@@ -363,7 +363,6 @@ fn update_solution_count(
 fn update_unique_solutions(
     _: On<UpdateStats>,
     unique_solutions_text: Query<Entity, With<UniqueSolutionsText>>,
-    board: Res<CurrentBoard>,
     unique_solutions: Res<PossibleUniqueSolutions>,
     mut writer: TextUiWriter,
     mut request_redraw: MessageWriter<RequestRedraw>,

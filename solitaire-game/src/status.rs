@@ -17,10 +17,7 @@ impl Plugin for StatusPlugin {
 #[derive(Component)]
 struct MoveText(usize);
 
-fn init_text(mut commands: Commands,
-    solution: Res<CurrentSolution>,
-    asset_server: Res<AssetServer>
-) {
+fn init_text(mut commands: Commands, asset_server: Res<AssetServer>) {
     let latin_modern = asset_server.load("fonts/latinmodern-math.otf");
     let small_font = TextFont {
         font: latin_modern.clone(),
@@ -28,26 +25,22 @@ fn init_text(mut commands: Commands,
         ..default()
     };
     for i in 0..31 {
-        commands
-            .spawn((
-                Text2d::new(""),
-                Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
-                small_font.clone(),
-                TextLayout::new_with_justify(Justify::Center),
-                TextColor::WHITE,
-                Anchor::CENTER,
-                MoveText(i),
-            ));
+        commands.spawn((
+            Text2d::new(""),
+            Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
+            small_font.clone(),
+            TextLayout::new_with_justify(Justify::Center),
+            TextColor::WHITE,
+            Anchor::CENTER,
+            MoveText(i),
+        ));
     }
 }
 
-fn update_text(
-    moves: Query<(&mut Text2d, &MoveText)>,
-    solution: Res<CurrentSolution>,
-) {
+fn update_text(moves: Query<(&mut Text2d, &MoveText)>, solution: Res<CurrentSolution>) {
     for (mut t, m) in moves {
         if m.0 < solution.0.len() {
-            t.0 =  format!("{}", solution.0[m.0]);
+            t.0 = format!("{}", solution.0[m.0]);
         } else {
             t.0 = "".into()
         }
@@ -88,15 +81,20 @@ fn draw_solution(
     }
 }
 
-fn pos(cam: &Camera, global_transform: &GlobalTransform, view_port: Rect, i: usize, solution: &CurrentSolution) -> Vec3 {
-        let pos_vp = (Vec2::new(view_port.min.x, view_port.max.y), view_port.max);
-        let end_idx = solution.0.total() - 1;
-        let (start, end) = (
-            viewport_to_world(pos_vp.0, cam, global_transform).unwrap_or_default()
-                + Vec3::new(0.6, 0.6, 0.0),
-            viewport_to_world(pos_vp.1, cam, global_transform).unwrap_or_default()
-                + Vec3::new(-0.6, 0.6, 0.0),
-        );
-        start.lerp(end, i as f32 / end_idx as f32)
-
+fn pos(
+    cam: &Camera,
+    global_transform: &GlobalTransform,
+    view_port: Rect,
+    i: usize,
+    solution: &CurrentSolution,
+) -> Vec3 {
+    let pos_vp = (Vec2::new(view_port.min.x, view_port.max.y), view_port.max);
+    let end_idx = solution.0.total() - 1;
+    let (start, end) = (
+        viewport_to_world(pos_vp.0, cam, global_transform).unwrap_or_default()
+            + Vec3::new(0.6, 0.6, 0.0),
+        viewport_to_world(pos_vp.1, cam, global_transform).unwrap_or_default()
+            + Vec3::new(-0.6, 0.6, 0.0),
+    );
+    start.lerp(end, i as f32 / end_idx as f32)
 }
