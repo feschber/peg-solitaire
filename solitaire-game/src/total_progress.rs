@@ -1,16 +1,21 @@
 use std::collections::HashSet;
 
 use bevy::{
-    prelude::*,
     app::Plugin,
     ecs::{
-        observer::On, resource::Resource, schedule::common_conditions::resource_changed, system::{Commands, Res, ResMut}
+        observer::On,
+        resource::Resource,
+        schedule::common_conditions::resource_changed,
+        system::{Commands, Res, ResMut},
     },
+    prelude::*,
 };
-use solitaire_solver::{Board, Solution};
+use solitaire_solver::{Board, HashMap, Solution};
 
 use crate::{
-    CurrentBoard, CurrentSolution, MoveEvent, SolutionEvent, solver::{FeasibleConstellations, UniqueSolutions}, stats::UpdateStats
+    CurrentBoard, CurrentSolution, MoveEvent, SolutionEvent,
+    solver::{FeasibleConstellations, UniqueSolutions},
+    stats::UpdateStats,
 };
 
 /// This module keeps track of the total progress of the game.
@@ -19,10 +24,12 @@ use crate::{
 
 pub struct TotalProgressPlugin;
 
-#[derive(Default, Resource)]
+#[derive(Resource)]
 pub struct TotalProgress {
-    /// all states that have ever been seen
-    pub explored_states: HashSet<Board>,
+    /// all states that have ever been seen (->amount)
+    pub explored_states: HashMap<Board, usize>,
+    /// all states that have ever been seen but normalized (->amount)
+    pub normalized_explored_states: HashMap<Board, usize>,
     /// explored states by number of pegs
     pub explored_states_by_pegs: [HashSet<Board>; Board::SLOTS - 1],
     /// all unique solutions that have been explored
@@ -31,13 +38,28 @@ pub struct TotalProgress {
     pub num_solutions: u64,
 }
 
+impl Default for TotalProgress {
+    fn default() -> Self {
+        Self {
+            explored_states: HashMap::from_iter([(Board::default(), 1)]),
+            normalized_explored_states: HashMap::from_iter([(Board::default(), 1)]),
+            explored_states_by_pegs: Default::default(),
+            unique_solutions: Default::default(),
+            num_solutions: Default::default(),
+        }
+    }
+}
+
 impl Plugin for TotalProgressPlugin {
     fn build(&self, app: &mut bevy::app::App) {
         app.init_resource::<PossibleUniqueSolutions>();
         app.init_resource::<TotalProgress>();
         app.add_observer(update_total_progress);
         app.add_observer(update_solutions);
-        app.add_systems(Update, update_unique_solutions.run_if(resource_changed::<CurrentSolution>));
+        app.add_systems(
+            Update,
+            update_unique_solutions.run_if(resource_changed::<CurrentSolution>),
+        );
     }
 }
 
@@ -50,7 +72,14 @@ fn update_total_progress(
     let board = board.0;
     if let Some(feasible) = feasible {
         if feasible.0.contains(&board.normalize()) {
-            total_progress.explored_states.insert(board);
+            *total_progress
+                .explored_states
+                .entry(board)
+                .or_insert(Default::default()) += 1;
+            *total_progress
+                .normalized_explored_states
+                .entry(board.normalize())
+                .or_insert(Default::default()) += 1;
             total_progress.explored_states_by_pegs[board.count_balls() as usize - 1].insert(board);
         }
     }

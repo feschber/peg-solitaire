@@ -12,6 +12,9 @@ use crate::{
 #[derive(Default, Event)]
 pub struct ToggleStats;
 
+#[derive(Default, Event)]
+pub struct ToggleBookMarks;
+
 #[derive(Resource)]
 struct ShowStats;
 

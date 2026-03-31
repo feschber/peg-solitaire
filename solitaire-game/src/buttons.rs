@@ -7,8 +7,12 @@ use bevy::{
 use bevy_vector_shapes::prelude::*;
 
 use crate::{
-    CurrentBoard, CurrentSolution, PegMoved, WorldSpaceViewPort, board::BoardPosition,
-    hints::ToggleHints, stats::ToggleStats, viewport_to_world,
+    CurrentBoard, CurrentSolution, PegMoved, WorldSpaceViewPort,
+    board::BoardPosition,
+    hints::ToggleHints,
+    stats::{ToggleBookMarks, ToggleStats},
+    total_progress::TotalProgress,
+    viewport_to_world,
 };
 
 pub struct Buttons;
@@ -29,12 +33,15 @@ impl Plugin for Buttons {
                     .run_if(input_just_pressed(MouseButton::Left)),
                 handle_toggle_press::<Stats, ToggleStats>
                     .run_if(input_just_pressed(MouseButton::Left)),
+                handle_toggle_press::<BookMark, ToggleBookMarks>
+                    .run_if(input_just_pressed(MouseButton::Left)),
                 handle_touch_press::<Undo, UndoEvent>,
                 handle_touch_press::<Reset, ResetEvent>,
                 handle_touch_release::<Undo>,
                 handle_touch_release::<Reset>,
                 handle_touch_toggle::<Hints, ToggleHints>,
                 handle_touch_toggle::<Stats, ToggleStats>,
+                handle_touch_toggle::<BookMark, ToggleBookMarks>,
             ),
         );
         app.add_systems(Update, (draw_buttons, update_button_pos));
@@ -42,6 +49,10 @@ impl Plugin for Buttons {
         app.add_systems(FixedUpdate, reset);
         app.add_observer(do_undo);
         app.add_observer(do_reset);
+        app.add_systems(
+            Update,
+            draw_bookmark.run_if(resource_changed::<CurrentBoard>),
+        );
     }
 }
 
@@ -49,6 +60,7 @@ impl Plugin for Buttons {
 #[allow(unused)]
 enum Pos {
     TopLeft,
+    Top,
     TopRight,
     BottomLeft,
     BottomRight,
@@ -91,6 +103,9 @@ struct Hints;
 #[derive(Component)]
 struct Stats;
 
+#[derive(Component)]
+struct BookMark;
+
 fn update_button_pos(
     buttons: Query<(&ViewPortRelativeTranslation, &mut Transform), With<CircleButton>>,
     world_space_view_port: Option<Res<WorldSpaceViewPort>>,
@@ -99,6 +114,7 @@ fn update_button_pos(
         for (rt, mut transform) in buttons {
             let (pos, rt) = (rt.0, rt.1);
             match pos {
+                Pos::Top => transform.translation = (vp.top_left + vp.top_right) / 2.0 + rt,
                 Pos::TopLeft => transform.translation = vp.top_left + rt,
                 Pos::TopRight => transform.translation = vp.top_right + rt,
                 Pos::BottomLeft => transform.translation = vp.bottom_left + rt,
@@ -179,6 +195,21 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
         TextColor(Color::WHITE),
         font_awesome.clone(),
         Stats,
+    ));
+    // book toggle
+    commands.spawn((
+        ViewPortRelativeTranslation(Pos::Top, Vec3::new(0.0, -1.0, 0.0)),
+        Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
+        CircleButton {
+            fg_color: Color::WHITE,
+            bg_color: Color::BLACK,
+            radius: 0.4,
+        },
+        ToggleState(false),
+        Text2d::new("\u{f02d}".to_string()),
+        TextColor(Color::WHITE),
+        font_awesome.clone(),
+        BookMark,
     ));
 }
 
@@ -394,5 +425,29 @@ fn draw_toggles(
             painter.set_color(button.bg_color);
         }
         painter.circle(button.radius);
+    }
+}
+
+fn draw_bookmark(
+    total_progress: Res<TotalProgress>,
+    current_board: Res<CurrentBoard>,
+    buttons: Query<&mut Text2d, With<BookMark>>,
+) {
+    match total_progress
+        .normalized_explored_states
+        .get(&current_board.0.normalize())
+    {
+        Some(&c) if c > 1 => {
+            for mut b in buttons {
+                // book-bookmark e0bb
+                b.0 = format!("\u{e0bb} {c}");
+            }
+        }
+        _ => {
+            for mut b in buttons {
+                // book          f02d
+                b.0 = format!("\u{f02d}");
+            }
+        }
     }
 }
