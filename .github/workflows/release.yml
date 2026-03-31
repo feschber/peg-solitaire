@@ -16,6 +16,7 @@ jobs:
           target: aarch64-linux-android
           profile: minimal
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install cargo-ndk
         run: cargo install --locked cargo-ndk
       - name: Build Native Library
@@ -37,6 +38,7 @@ jobs:
           target: wasm32-unknown-unknown
           profile: minimal
           toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - name: Cache wasm-bindgen-cli
         id: cache-wasm-bindgen
         uses: actions/cache@v5
