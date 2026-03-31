@@ -357,8 +357,8 @@ impl Board {
         self.movable_positions(dir) & self & !self.dir_shift(dir, 1) & !self.dir_shift(dir, 2)
     }
 
-    pub const fn count_balls(&self) -> u64 {
-        self.0.count_ones() as u64
+    pub const fn count_pegs(&self) -> usize {
+        self.0.count_ones() as usize
     }
 
     #[inline(always)]

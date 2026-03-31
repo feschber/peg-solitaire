@@ -30,6 +30,8 @@ enum Command {
     CalculateRandomChanceSuccessRatio,
     /// calculate unique solutions
     UniqueSolutions,
+    /// calculate unique paths of solutions
+    UniquePaths,
 }
 
 fn main() {
@@ -84,6 +86,12 @@ fn main() {
                 let solutions =
                     solitaire_solver::all_unique_solutions(Board::default(), feasible.into_iter());
                 log::info!("unique solutions: {}", solutions.len());
+            }
+            Command::UniquePaths => {
+                let feasible = solitaire_solver::calculate_all_solutions(None);
+                log::info!("feasible: {}", feasible.len());
+                let paths = solitaire_solver::all_unique_paths(feasible);
+                log::info!("unique paths: {}", paths.get(&Board::default()).unwrap());
             }
         },
         None => {

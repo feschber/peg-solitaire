@@ -12,7 +12,7 @@ pub fn calculate_p_random_chance_success(feasible: Vec<Board>) -> HashMap<Board,
         let feasible_with_i_pegs = feasible
             .iter()
             .copied()
-            .filter(|b| b.count_balls() == i as u64)
+            .filter(|b| b.count_pegs() == i)
             .collect::<Vec<_>>();
         for constellation in feasible_with_i_pegs {
             let legal_moves = constellation.get_legal_moves();

@@ -1,6 +1,7 @@
 use crate::solution::SolutionMultiset;
-use crate::{Board, Move};
+use crate::{Board, Move, normalize};
 use crate::{HashSet, Solution};
+use std::array;
 use std::collections::BTreeMap;
 
 /// we define two solutions as "equal" when the
@@ -137,4 +138,31 @@ impl ZobristTable {
 type MultisetHash = u64;
 
 #[allow(unused)]
-pub fn all_unique_paths(feasible: &HashSet<Board>) {}
+pub fn all_unique_paths(feasible: impl IntoIterator<Item = Board>) -> HashMap<Board, usize> {
+    let mut number_of_combinations: HashMap<Board, usize, _> = HashMap::new();
+    let mut boards: [Vec<Board>; 33] = array::from_fn(|_| Default::default());
+    let mut feasible_set: HashSet<Board> = HashSet::default();
+    for board in feasible.into_iter() {
+        feasible_set.insert(board);
+        boards[board.count_pegs()].push(board);
+    }
+    number_of_combinations.insert(Board::solved(), 1);
+    for i in 2..=32 {
+        for board in &boards[i] {
+            let mut next = Board::possible_moves(&[*board]);
+            normalize(&mut next);
+            next.dedup();
+
+            let count = next
+                .into_iter()
+                .filter(|b| feasible_set.contains(b))
+                .map(|b| number_of_combinations[&b])
+                .sum();
+            let entry = number_of_combinations
+                .entry(*board)
+                .or_insert(Default::default());
+            *entry = count;
+        }
+    }
+    number_of_combinations
+}
