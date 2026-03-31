@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
-    fmt::{Display, Formatter, Result}, ops::Index,
+    fmt::{Display, Formatter, Result},
+    ops::Index,
 };
 
 use crate::{Board, HashSet, Move};
