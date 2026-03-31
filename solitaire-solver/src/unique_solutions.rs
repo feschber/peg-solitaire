@@ -135,3 +135,6 @@ impl ZobristTable {
 }
 
 type MultisetHash = u64;
+
+#[allow(unused)]
+pub fn all_unique_paths(feasible: &HashSet<Board>) {}
