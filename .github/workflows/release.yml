@@ -69,6 +69,8 @@ jobs:
 
   release:
     needs: [build-apk, build-wasm]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
 
     steps:
@@ -76,8 +78,6 @@ jobs:
         uses: actions/download-artifact@v8
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        permissions:
-            contents: write
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ github.event.inputs.name || github.ref_name }}
