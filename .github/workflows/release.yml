@@ -1,43 +1,101 @@
-name: Release
-
 on:
-  workflow_run:
-    workflows:
-      - "Build APK"
-      - "Build WASM"
-    types:
-      - completed
+  push:
     branches:
       - main
 
+name: Release
+
 jobs:
-  release:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+  build-apk:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # Required to create a GitHub Release
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          target: aarch64-linux-android
+          profile: minimal
+          toolchain: stable
+      - name: Install cargo-ndk
+        run: cargo install --locked cargo-ndk
+      - name: Build Native Library
+        run: cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --package solitaire-game --release
+      - name: Assemble Apk
+        run: ./gradlew assemble
+      - uses: actions/upload-artifact@v6
+        with:
+          name: android-apk
+          path: app/build/outputs/apk/release/peg-solitaire.apk
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          target: wasm32-unknown-unknown
+          profile: minimal
+          toolchain: stable
+      - name: Cache wasm-bindgen-cli
+        id: cache-wasm-bindgen
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install Bindgen
+        if: steps.cache-wasm-bindgen.outputs.cache-hit != 'true'
+        run: |
+          WASM_BINDGEN_VERSION=$(cargo metadata --format-version 1 | \
+            jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install wasm-bindgen-cli --version $WASM_BINDGEN_VERSION
+      - name: Install Binaryen
+        run: sudo apt install binaryen
+      - name: Install Brotli
+        run: sudo apt install brotli
+      - name: Build WASM dist
+        run: make
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: wasm-dist
+          path: www/
+      - name: Upload github pages artifact
+        id: deployment
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: www/
+
+  release:
+    needs: [build-apk, build-wasm]
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Download Android APK
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: android.yml
-          name: android-apk
-          path: ./artifacts/android-apk
-
-      - name: Download WASM Dist
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: wasm.yml
-          name: wasm-dist
-          path: ./artifacts/wasm-dist
-
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v8
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.event.inputs.name || github.ref_name }}
+          name: ${{ github.event.inputs.name || github.ref_name }}
           files: |
-            ./artifacts/android-apk/**
-            ./artifacts/wasm-dist/**
+            android-apk/peg-solitaire.apk
+            wasm-dist/**
           generate_release_notes: true   # Auto-generates changelog
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: [build-wasm]
+    permissions:
+      contents: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
