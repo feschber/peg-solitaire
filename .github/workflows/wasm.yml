@@ -6,7 +6,7 @@ on:
       branches:
         - main
 
-name: WASM
+name: Build WASM
 
 jobs:
   build:
