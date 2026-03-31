@@ -59,7 +59,12 @@ fn scale_viewport(mut camera_query: Query<(&mut Projection, &Camera)>) {
         return;
     };
     let scale = match camera.logical_viewport_rect() {
-        Some(view_port) => 12.,
+        Some(view_port) => {
+            let aspect = view_port.width() / view_port.height();
+            let aspect = aspect.max(1.0 / aspect);
+            let over = aspect - 1.0;
+            (8.0f32).lerp(12.0f32, 1. - over.clamp(0.0, 1.0))
+        }
         None => 8.0,
     };
     if let Projection::Orthographic(projection2d) = &mut *projection {

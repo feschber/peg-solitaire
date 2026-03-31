@@ -67,6 +67,7 @@ pub fn all_unique_solutions(
     unique_solutions
 }
 
+#[allow(unused)]
 fn canonicalize(
     unique_solutions: std::collections::HashSet<SolutionMultiset>,
     feasible: HashSet<Board>,

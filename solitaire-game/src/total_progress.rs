@@ -90,9 +90,7 @@ pub struct PossibleUniqueSolutions(pub Option<usize>);
 
 fn update_unique_solutions(
     current_solution: Res<CurrentSolution>,
-    mut unique_solutions: Option<Res<UniqueSolutions>>,
-    feasible: Option<Res<FeasibleConstellations>>,
-    board: Res<CurrentBoard>,
+    unique_solutions: Option<Res<UniqueSolutions>>,
     mut commands: Commands,
     mut possible_unique_solutions: ResMut<PossibleUniqueSolutions>,
 ) {

@@ -159,6 +159,7 @@ fn spawn_pegs(mut commands: Commands, board: Res<CurrentBoard>) {
     }
 }
 
+#[allow(unused)]
 fn color_hsl(x: i64, y: i64) -> Color {
     Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.9)
 }
@@ -169,9 +170,6 @@ fn color_by_type(x: i64, y: i64) -> Color {
         .iter()
         .position(|&m| Board::empty().set((y, x)) & m != Board::empty())
         .unwrap_or(0);
-    let colors: Vec<_> = (0..4)
-        .map(|i| Color::hsl((i * 100) as f32, 1., 0.7))
-        .collect();
     let colors = [
         Srgba::hex("#b7bb26").unwrap().into(),
         Srgba::hex("#fabe2f").unwrap().into(),

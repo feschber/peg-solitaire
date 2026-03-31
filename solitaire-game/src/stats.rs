@@ -1,6 +1,6 @@
 use bevy::{
-    ecs::entity_disabling::Disabled, math::AspectRatio, prelude::*, sprite::Anchor,
-    text::TextBounds, window::RequestRedraw,
+    ecs::entity_disabling::Disabled, prelude::*, sprite::Anchor, text::TextBounds,
+    window::RequestRedraw,
 };
 
 use crate::{
@@ -109,6 +109,7 @@ enum TextPosition {
     BottomLeft,
     BottomRight,
     AboveOrLeft,
+    #[allow(unused)]
     BelowOrRight,
 }
 
@@ -133,8 +134,6 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
         font_size: 50.0,
         ..default()
     };
-    let title_pos_2 =
-        Vec3::from((BoardPosition { x: 4, y: 1 }.to_world_space(), 1.)) + Vec3::new(0.5, -0.5, 0.0);
     commands
         .spawn((
             TextPosition::TopLeft,
