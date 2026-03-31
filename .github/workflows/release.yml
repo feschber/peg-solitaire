@@ -82,6 +82,8 @@ jobs:
     steps:
       - name: Download Build Artifacts
         uses: actions/download-artifact@v8
+      - name: Zip WASM dist
+        run: zip -r wasm-dist.zip wasm-dist/
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -90,7 +92,7 @@ jobs:
           name: ${{ github.event.inputs.name || github.ref_name }}
           files: |
             android-apk/peg-solitaire.apk
-            wasm-dist/
+            wasm-dist.zip
           generate_release_notes: true   # Auto-generates changelog
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
