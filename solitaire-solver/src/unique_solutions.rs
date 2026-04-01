@@ -1,6 +1,6 @@
 use crate::solution::SolutionMultiset;
 use crate::{Board, Move, normalize};
-use crate::{HashSet, Solution};
+use crate::{HashMap, HashSet, Solution};
 use std::array;
 use std::collections::BTreeMap;
 
@@ -110,13 +110,11 @@ fn canonicalize(
     unique_solutions
 }
 
-use std::collections::HashMap;
-
 /// Precomputed random values for each (Step, occurrence_index) pair.
 /// occurrence_index 0 means "going from 0 to 1 occurrences", etc.
 #[derive(Default)]
 struct ZobristTable {
-    table: HashMap<(Move, usize), u64>,
+    table: std::collections::HashMap<(Move, usize), u64>,
 }
 
 impl ZobristTable {
@@ -138,8 +136,8 @@ impl ZobristTable {
 type MultisetHash = u64;
 
 #[allow(unused)]
-pub fn all_unique_paths(feasible: impl IntoIterator<Item = Board>) -> HashMap<Board, usize> {
-    let mut number_of_combinations: HashMap<Board, usize, _> = HashMap::new();
+pub fn all_unique_paths(feasible: impl IntoIterator<Item = Board>) -> HashMap<Board, u64> {
+    let mut number_of_combinations: HashMap<Board, u64> = HashMap::default();
     let mut boards: [Vec<Board>; 33] = array::from_fn(|_| Default::default());
     let mut feasible_set: HashSet<Board> = HashSet::default();
     for board in feasible.into_iter() {

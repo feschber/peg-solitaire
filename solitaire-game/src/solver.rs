@@ -23,6 +23,10 @@ impl Plugin for Solver {
             Update,
             calculate_unique_solutions.run_if(resource_added::<FeasibleConstellations>),
         );
+        app.add_systems(
+            Update,
+            calculate_unique_paths.run_if(resource_added::<FeasibleConstellations>),
+        );
         app.add_systems(Update, poll_task);
     }
 }
@@ -35,6 +39,9 @@ pub struct RandomMoveChances(pub HashMap<Board, f64>);
 
 #[derive(Resource)]
 pub struct UniqueSolutions(pub Vec<SolutionMultiset>);
+
+#[derive(Resource)]
+pub struct UniquePaths(pub HashMap<Board, u64>);
 
 #[derive(Component)]
 struct BackgroundTask {
@@ -105,6 +112,31 @@ fn calculate_unique_solutions(
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world.insert_resource(UniqueSolutions(unique_solutions.into_iter().collect()));
+            world.entity_mut(entity).remove::<BackgroundTask>();
+        });
+        wake.send_event(WakeUp).unwrap();
+        command_queue
+    });
+    commands.entity(entity).insert(BackgroundTask { task });
+}
+
+fn calculate_unique_paths(
+    mut commands: Commands,
+    feasible: Res<FeasibleConstellations>,
+    wake: Res<EventLoopProxyWrapper<WakeUp>>,
+) {
+    info!("calculating unique paths ...");
+    let thread_pool = AsyncComputeTaskPool::get();
+    let entity = commands.spawn_empty().id();
+    let feasible = feasible.0.clone();
+    let wake = wake.clone();
+    let task = thread_pool.spawn(async move {
+        let unique_paths = solitaire_solver::all_unique_paths(feasible.iter().copied());
+        info!("unique solutions: {}", unique_paths.len());
+
+        let mut command_queue = CommandQueue::default();
+        command_queue.push(move |world: &mut World| {
+            world.insert_resource(UniquePaths(unique_paths));
             world.entity_mut(entity).remove::<BackgroundTask>();
         });
         wake.send_event(WakeUp).unwrap();

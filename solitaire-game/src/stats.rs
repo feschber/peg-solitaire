@@ -5,7 +5,7 @@ use bevy::{
 
 use crate::{
     CurrentBoard, WorldSpaceViewPort,
-    solver::{FeasibleConstellations, RandomMoveChances, UniqueSolutions},
+    solver::{FeasibleConstellations, RandomMoveChances, UniquePaths, UniqueSolutions},
     total_progress::{PossibleUniqueSolutions, TotalProgress},
 };
 
@@ -71,6 +71,8 @@ impl Plugin for StatsPlugin {
                 resource_added::<FeasibleConstellations>
                     .or(resource_added::<RandomMoveChances>)
                     .or(resource_added::<UniqueSolutions>)
+                    .or(resource_changed::<PossibleUniqueSolutions>)
+                    .or(resource_added::<UniquePaths>)
                     .or(resource_changed::<CurrentBoard>),
             ),
         );
@@ -364,14 +366,28 @@ fn update_unique_solutions(
     _: On<UpdateStats>,
     unique_solutions_text: Query<Entity, With<UniqueSolutionsText>>,
     unique_solutions: Res<PossibleUniqueSolutions>,
+    unique_paths: Option<Res<UniquePaths>>,
+    current_board: Res<CurrentBoard>,
     mut writer: TextUiWriter,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
-    let msg = if let Some(unique_solutions) = unique_solutions.0 {
-        format!("\n{}", unique_solutions)
+    let unique_paths = if let Some(unique_paths) = unique_paths {
+        format!(
+            "{}",
+            unique_paths
+                .0
+                .get(&current_board.0.normalize())
+                .unwrap_or(&0u64)
+        )
     } else {
-        format!("\n?")
+        format!("?")
     };
+    let unique_solutions = if let Some(unique_solutions) = unique_solutions.0 {
+        format!("{}", unique_solutions)
+    } else {
+        format!("?")
+    };
+    let msg = format!("\n{unique_paths}(paths)\n{unique_solutions}(move multiset)");
 
     for text in unique_solutions_text {
         *writer.text(text, 1) = msg.clone();
