@@ -11,7 +11,7 @@ use voracious_radix_sort::{
     Dispatcher, RadixKey, Radixable, dlsd_radixsort, lsd_stable_radixsort, msd_stable_radixsort,
 };
 
-pub(crate) type Idx = i64;
+pub type Idx = i8;
 
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
@@ -552,8 +552,8 @@ impl Board {
     pub fn get_legal_moves(self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
         for idx in self {
-            let y = idx as i64 / Board::REPR;
-            let x = idx as i64 % Board::REPR;
+            let y = idx as Idx / Board::REPR;
+            let x = idx as Idx % Board::REPR;
             for dir in Dir::enumerate() {
                 if let Some(mov) = self.get_legal_move((y, x), dir) {
                     legal_moves.push(mov);
@@ -566,8 +566,8 @@ impl Board {
     pub fn get_legal_inverse_moves(self) -> Vec<Move> {
         let mut legal_moves = Vec::new();
         for idx in self {
-            let y = idx as i64 / Board::REPR;
-            let x = idx as i64 % Board::REPR;
+            let y = idx as Idx / Board::REPR;
+            let x = idx as Idx % Board::REPR;
             for dir in Dir::enumerate() {
                 if let Some(mov) = self.get_legal_inverse_move((y, x), dir) {
                     legal_moves.push(mov);

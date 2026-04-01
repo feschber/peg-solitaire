@@ -1,6 +1,6 @@
 use bevy::{ecs::entity_disabling::Disabled, prelude::*};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
-use solitaire_solver::Board;
+use solitaire_solver::{Board, Idx};
 
 use crate::{CurrentBoard, MoveEvent, PegMoved, input::RequestPegMove};
 
@@ -32,8 +32,8 @@ pub struct Peg;
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BoardPosition {
-    pub x: i64,
-    pub y: i64,
+    pub x: Idx,
+    pub y: Idx,
 }
 
 #[derive(Event)]
@@ -56,26 +56,26 @@ impl From<Vec2> for BoardPosition {
     }
 }
 
-impl From<(i64, i64)> for BoardPosition {
-    fn from(value: (i64, i64)) -> Self {
+impl From<(Idx, Idx)> for BoardPosition {
+    fn from(value: (Idx, Idx)) -> Self {
         let (y, x) = value;
         Self { y, x }
     }
 }
 
-impl From<BoardPosition> for (i64, i64) {
+impl From<BoardPosition> for (Idx, Idx) {
     fn from(pos: BoardPosition) -> Self {
         (pos.y, pos.x)
     }
 }
 
-impl From<&BoardPosition> for (i64, i64) {
+impl From<&BoardPosition> for (Idx, Idx) {
     fn from(value: &BoardPosition) -> Self {
         (*value).into()
     }
 }
 
-impl From<&mut BoardPosition> for (i64, i64) {
+impl From<&mut BoardPosition> for (Idx, Idx) {
     fn from(value: &mut BoardPosition) -> Self {
         (*value).into()
     }
@@ -160,11 +160,11 @@ fn spawn_pegs(mut commands: Commands, board: Res<CurrentBoard>) {
 }
 
 #[allow(unused)]
-fn color_hsl(x: i64, y: i64) -> Color {
+fn color_hsl(x: Idx, y: Idx) -> Color {
     Color::hsl(((y * 7 + x) * 16) as f32, 1., 0.9)
 }
 
-fn color_by_type(x: i64, y: i64) -> Color {
+fn color_by_type(x: Idx, y: Idx) -> Color {
     let masks = Board::type_masks();
     let col_idx = masks
         .iter()

@@ -22,7 +22,7 @@ use std::{cmp::Ordering, num::NonZero, thread};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
-pub use board::Board;
+pub use board::{Board, Idx};
 pub use dir::Dir;
 pub use hash::{CustomHashMap as HashMap, CustomHashSet as HashSet};
 pub use mov::Move;

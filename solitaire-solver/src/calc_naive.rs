@@ -1,3 +1,5 @@
+use crate::board::Idx;
+
 use super::{Board, Dir, hash::CustomHashSet as HashSet};
 
 pub fn calculate_all_solutions_naive() -> Vec<Board> {
@@ -23,8 +25,8 @@ pub fn calculate_all_solutions_naive() -> Vec<Board> {
         while copy != 0 {
             let idx = copy.trailing_zeros();
             copy &= !(1 << idx);
-            let y = idx as i64 / Board::REPR;
-            let x = idx as i64 % Board::REPR;
+            let y = idx as Idx / Board::REPR;
+            let x = idx as Idx % Board::REPR;
             for dir in [Dir::North, Dir::East, Dir::South, Dir::West] {
                 if let Some(mov) = board.get_legal_move((y, x), dir) {
                     any_solution |=
