@@ -163,9 +163,9 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             UniqueSolutionsText,
         ))
         .with_child((TextSpan("".into()), medium_font.clone()))
-        .with_child((TextSpan(" move multisets\n".into()), small_font.clone()))
+        .with_child((TextSpan(" paths\n".into()), small_font.clone()))
         .with_child((TextSpan("".into()), medium_font.clone()))
-        .with_child((TextSpan(" paths".into()), small_font.clone()));
+        .with_child((TextSpan(" move multisets".into()), small_font.clone()));
     commands
         .spawn((
             TextPosition::BottomLeft,
