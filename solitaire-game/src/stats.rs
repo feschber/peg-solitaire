@@ -2,6 +2,7 @@ use bevy::{
     ecs::entity_disabling::Disabled, prelude::*, sprite::Anchor, text::TextBounds,
     window::RequestRedraw,
 };
+use num_format::{Locale, ToFormattedString};
 
 use crate::{
     CurrentBoard, WorldSpaceViewPort,
@@ -154,14 +155,17 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands
         .spawn((
             TextPosition::TopRight,
-            Text2d::new("unique solutions"),
+            Text2d::new("remaining\nunique solutions\n"),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
-            medium_font.clone(),
+            small_font.clone(),
             TextLayout::new_with_justify(Justify::Center),
             Anchor::CENTER,
             UniqueSolutionsText,
         ))
-        .with_child((TextSpan("".into()), large_font.clone()));
+        .with_child((TextSpan("".into()), medium_font.clone()))
+        .with_child((TextSpan(" move multisets\n".into()), small_font.clone()))
+        .with_child((TextSpan("".into()), medium_font.clone()))
+        .with_child((TextSpan(" paths".into()), small_font.clone()));
     commands
         .spawn((
             TextPosition::BottomLeft,
@@ -372,13 +376,11 @@ fn update_unique_solutions(
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let unique_paths = if let Some(unique_paths) = unique_paths {
-        format!(
-            "{}",
-            unique_paths
-                .0
-                .get(&current_board.0.normalize())
-                .unwrap_or(&0u64)
-        )
+        let paths = unique_paths
+            .0
+            .get(&current_board.0.normalize())
+            .unwrap_or(&0u64);
+        paths.to_formatted_string(&Locale::en)
     } else {
         format!("?")
     };
@@ -387,10 +389,10 @@ fn update_unique_solutions(
     } else {
         format!("?")
     };
-    let msg = format!("\n{unique_paths}(paths)\n{unique_solutions}(move multiset)");
 
     for text in unique_solutions_text {
-        *writer.text(text, 1) = msg.clone();
+        *writer.text(text, 1) = unique_paths.clone();
+        *writer.text(text, 3) = unique_solutions.clone();
     }
     request_redraw.write(RequestRedraw);
 }
