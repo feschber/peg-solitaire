@@ -78,11 +78,18 @@ jobs:
   build-linux-x86_64:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          target: wasm32-unknown-unknown
+          profile: minimal
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
       - name: install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@v2
       - name: release build
         run: |
           cargo build --release
@@ -97,6 +104,13 @@ jobs:
   build-macos-arm64:
     runs-on: macos-latest
     steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          target: wasm32-unknown-unknown
+          profile: minimal
+          toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: release build
         run: |
@@ -112,6 +126,13 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rs/toolchain@v1
+        with:
+          override: true
+          target: wasm32-unknown-unknown
+          profile: minimal
+          toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: release build
         run: |
