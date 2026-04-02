@@ -5,6 +5,9 @@ on:
 
 name: Release
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -70,6 +73,56 @@ jobs:
         uses: actions/upload-pages-artifact@v4
         with:
           path: www/
+
+
+  build-linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: release build
+        run: |
+          cargo build --release
+          cp target/release/peg-solitaire peg-solitaire-linux-x86_64
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: peg-solitaire-linux-x86_64
+          path: peg-solitaire-linux-x86_64
+
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: Swatinem/rust-cache@v2
+      - name: release build
+        run: |
+          cargo build --release
+          cp target/release/peg-solitaire peg-solitaire-macos-aarch64
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: peg-solitaire-macos-aarch64
+          path: peg-solitaire-macos-aarch64
+
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: Swatinem/rust-cache@v2
+      - name: release build
+        run: |
+          cargo build --release
+          cp target/release/peg-solitaire peg-solitaire-macos-aarch64
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: peg-solitaire-macos-aarch64
+          path: peg-solitaire-macos-aarch64
+
 
   release:
     needs: [build-apk, build-wasm]
