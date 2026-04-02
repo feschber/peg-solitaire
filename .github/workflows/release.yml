@@ -141,7 +141,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
         with:
-          name: peg-solitaire-windows-x86_64.exe
+          name: peg-solitaire-windows-x86_64
           path: peg-solitaire-windows-x86_64.exe
 
 
@@ -167,9 +167,9 @@ jobs:
           files: |
             android-apk/peg-solitaire.apk
             wasm-dist.zip
-            peg-solitaire-linux-x86_64
-            peg-solitaire-windows-x86_64.exe
-            peg-solitaire-macos-aarch64
+            peg-solitaire-linux-x86_64/peg-solitaire-linux-x86_64
+            peg-solitaire-windows-x86_64/peg-solitaire-windows-x86_64.exe
+            peg-solitaire-macos-aarch64/peg-solitaire-macos-aarch64
           generate_release_notes: true   # Auto-generates changelog
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
