@@ -16,6 +16,8 @@ Based on the calculated solution graph, an interactive solver is included, showi
 lead to a solvable or unsolvable constellation.
 
 <img width="1571" height="1084" alt="image" src="https://github.com/user-attachments/assets/0c237b65-3f8d-4b37-9349-6d6661e571ce" />
+<img width="1709" height="1088" alt="image" src="https://github.com/user-attachments/assets/64ead3f4-9f07-408c-8172-44d899aa2cd3" />
+
 
 
 This solver is available [online](https://peg-solitaire.feschber.de) as a WASM base WebApp
