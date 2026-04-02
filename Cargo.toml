@@ -9,7 +9,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.45", features = ["derive"] }
 env_logger = "0.11.10"
-log = "0.4.29"
+log = { version = "*", features = ["release_max_level_info"] }
 solitaire-game = { path = "./solitaire-game", version = "0.0.1", optional = true }
 solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
 
