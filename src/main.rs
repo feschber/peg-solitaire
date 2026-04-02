@@ -43,6 +43,17 @@ fn main() {
         let env = Env::default().filter_or("RUST_LOG", "info");
         env_logger::init_from_env(env);
     }
+    let board: Board = ". o .
+                        . . .
+                    . o . o . o .
+                    . . . . . . .
+                    . o . o . o .
+                        . . .
+                        . o .
+                    "
+    .try_into()
+    .unwrap();
+    println!("{}", board.reachable_pegs());
     match args.command {
         Some(command) => match command {
             Command::CalculateAll => {

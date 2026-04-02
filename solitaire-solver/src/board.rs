@@ -520,12 +520,22 @@ impl Board {
     }
 
     #[inline(always)]
+    const fn unset_idx(self, idx: usize) -> Self {
+        Self(self.0 & !(1 << idx))
+    }
+
+    #[inline(always)]
     pub const fn inbounds(pos: (Idx, Idx)) -> bool {
         pos.0 >= 0
             && pos.0 < Board::SIZE
             && pos.1 >= 0
             && pos.1 < Board::SIZE
             && (Board::empty().set(pos).0 & Board::full().0) != 0
+    }
+
+    #[inline(always)]
+    pub fn idx_inbounds(idx: usize) -> bool {
+        Board(1 << idx) & Board::full() != Board::empty()
     }
 
     #[inline(always)]
@@ -742,6 +752,80 @@ impl Board {
             .try_into()
             .unwrap(),
         ]
+    }
+
+    pub fn reachable_pegs(self) -> Self {
+        let mut mask = Board::empty();
+        for peg in self {
+            mask |= Board(if self.can_become_empty(peg) {
+                1 << peg
+            } else {
+                0
+            });
+        }
+        mask
+    }
+
+    fn can_become_empty(self, idx: usize) -> bool {
+        if !Self::idx_inbounds(idx) {
+            return false;
+        }
+        if !self.occupied_idx(idx) {
+            return true;
+        }
+        for dir in Dir::enumerate() {
+            let skip = match dir {
+                Dir::East => self.0 >> 1,
+                Dir::West => self.0 << 1,
+                Dir::South => self.0 >> (1 * Self::REPR as usize),
+                Dir::North => self.0 << (1 * Self::REPR as usize),
+            } as usize;
+            let target = match dir {
+                Dir::East => self.0 >> 2,
+                Dir::West => self.0 << 2,
+                Dir::South => self.0 >> (2 * Self::REPR as usize),
+                Dir::North => self.0 << (2 * Self::REPR as usize),
+            } as usize;
+            if Self::idx_inbounds(skip)
+                && Self::idx_inbounds(target)
+                && self.unset_idx(idx).can_become_empty(target)
+                && self.unset_idx(idx).can_become_occupied(skip)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn can_become_occupied(self, idx: usize) -> bool {
+        if !Self::idx_inbounds(idx) {
+            return false;
+        }
+        if self.occupied_idx(idx) {
+            return true;
+        }
+        for dir in Dir::enumerate() {
+            let skip = match dir {
+                Dir::East => self.0 >> 1,
+                Dir::West => self.0 << 1,
+                Dir::South => self.0 >> (1 * Self::REPR as usize),
+                Dir::North => self.0 << (1 * Self::REPR as usize),
+            } as usize;
+            let target = match dir {
+                Dir::East => self.0 >> 2,
+                Dir::West => self.0 << 2,
+                Dir::South => self.0 >> (2 * Self::REPR as usize),
+                Dir::North => self.0 << (2 * Self::REPR as usize),
+            } as usize;
+            if Self::idx_inbounds(skip)
+                && Self::idx_inbounds(target)
+                && self.unset_idx(idx).can_become_occupied(target)
+                && self.unset_idx(idx).can_become_occupied(skip)
+            {
+                return true;
+            }
+        }
+        false
     }
 }
 
