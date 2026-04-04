@@ -6,7 +6,7 @@ use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task},
     window::RequestRedraw,
-    winit::{EventLoopProxyWrapper, WakeUp},
+    winit::{EventLoopProxyWrapper, WinitUserEvent::WakeUp},
 };
 use solitaire_solver::Board;
 
@@ -48,7 +48,7 @@ struct BackgroundTask {
     task: Task<CommandQueue>,
 }
 
-fn create_solution_dag(mut commands: Commands, wake: Res<EventLoopProxyWrapper<WakeUp>>) {
+fn create_solution_dag(mut commands: Commands, wake: Res<EventLoopProxyWrapper>) {
     info!("calculating feasible constellations ...");
     let thread_pool = AsyncComputeTaskPool::get();
     let entity = commands.spawn_empty().id();
@@ -72,7 +72,7 @@ fn create_solution_dag(mut commands: Commands, wake: Res<EventLoopProxyWrapper<W
 fn calculate_random_move_chances(
     mut commands: Commands,
     feasible: Res<FeasibleConstellations>,
-    wake: Res<EventLoopProxyWrapper<WakeUp>>,
+    wake: Res<EventLoopProxyWrapper>,
 ) {
     info!("calculating P(\"success by random moves\") ...");
     let thread_pool = AsyncComputeTaskPool::get();
@@ -97,7 +97,7 @@ fn calculate_random_move_chances(
 fn calculate_unique_solutions(
     mut commands: Commands,
     feasible: Res<FeasibleConstellations>,
-    wake: Res<EventLoopProxyWrapper<WakeUp>>,
+    wake: Res<EventLoopProxyWrapper>,
 ) {
     info!("calculating unique solutions ...");
     let thread_pool = AsyncComputeTaskPool::get();
@@ -123,7 +123,7 @@ fn calculate_unique_solutions(
 fn calculate_unique_paths(
     mut commands: Commands,
     feasible: Res<FeasibleConstellations>,
-    wake: Res<EventLoopProxyWrapper<WakeUp>>,
+    wake: Res<EventLoopProxyWrapper>,
 ) {
     info!("calculating unique paths ...");
     let thread_pool = AsyncComputeTaskPool::get();
