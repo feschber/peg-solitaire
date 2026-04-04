@@ -17,6 +17,7 @@ impl Plugin for PegAnimation {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, snap_to_board_grid);
         app.add_systems(Update, follow_mouse);
+        app.add_systems(Update, follow_touch);
     }
 }
 
@@ -52,6 +53,26 @@ fn follow_mouse(
             let current_z = transform.translation.z;
             let destination_z = PEG_POS_RAISED;
             if let Some(mut destination) = viewport_to_world(cursor_pos, camera, camera_transform) {
+                destination.z = current_z.lerp(destination_z, 0.2);
+                transform.translation = destination;
+                // no need to RequestRedraw, since mouse movement already triggers a wakeup
+            }
+        }
+    }
+}
+
+fn follow_touch(
+    camera_query: Single<(&Camera, &GlobalTransform)>,
+    mut transforms: Query<&mut Transform, With<Selected>>,
+    touches: Res<Touches>,
+) {
+    let (camera, camera_transform) = *camera_query;
+    for touch in touches.iter() {
+        if let Some(mut destination) = viewport_to_world(touch.position(), camera, camera_transform)
+        {
+            for mut transform in &mut transforms {
+                let current_z = transform.translation.z;
+                let destination_z = PEG_POS_RAISED;
                 destination.z = current_z.lerp(destination_z, 0.2);
                 transform.translation = destination;
                 // no need to RequestRedraw, since mouse movement already triggers a wakeup
