@@ -2,7 +2,7 @@ use bevy::{ecs::entity_disabling::Disabled, prelude::*};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::{Board, Idx};
 
-use crate::{CurrentBoard, MoveEvent, PegMoved, input::RequestPegMove};
+use crate::{CurrentBoard, MoveEvent, input::RequestPegMove};
 
 pub struct BoardPlugin;
 
@@ -226,5 +226,4 @@ fn on_move_peg(
         moved,
         skipped,
     });
-    commands.trigger(PegMoved { peg: moved });
 }

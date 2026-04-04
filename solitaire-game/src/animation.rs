@@ -4,8 +4,8 @@ use bevy::{
 };
 
 use crate::{
-    PegMoved, Selected,
-    board::{BoardPosition, PEG_POS, PEG_POS_RAISED},
+    Selected,
+    board::{BoardPosition, PEG_POS, PEG_POS_RAISED, Peg},
     viewport_to_world,
 };
 
@@ -16,27 +16,13 @@ pub struct PegAnimation;
 impl Plugin for PegAnimation {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, snap_to_board_grid);
-        app.add_systems(PreUpdate, follow_mouse);
-        app.add_observer(on_peg_move);
+        app.add_systems(Update, follow_mouse);
     }
 }
 
-#[derive(Component)]
-struct SnapToBoardPosition;
-
-fn on_peg_move(
-    moved: On<PegMoved>,
-    mut commands: Commands,
-    mut request_redraw: MessageWriter<RequestRedraw>,
-) {
-    commands.entity(moved.peg).insert(SnapToBoardPosition);
-    request_redraw.write(RequestRedraw);
-}
-
 fn snap_to_board_grid(
-    mut commands: Commands,
-    pegs: Query<Entity, With<SnapToBoardPosition>>,
-    mut pos: Query<(&BoardPosition, &mut Transform), With<SnapToBoardPosition>>,
+    pegs: Query<Entity, (With<Peg>, Without<Selected>)>,
+    mut pos: Query<(&BoardPosition, &mut Transform)>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     for peg in pegs {
@@ -46,10 +32,11 @@ fn snap_to_board_grid(
             let mut new_pos = current.lerp(target, 0.2);
             if new_pos.distance_squared(target) < 0.0001 {
                 new_pos = target;
-                commands.entity(peg).remove::<SnapToBoardPosition>();
             }
             transform.translation = new_pos;
-            request_redraw.write(RequestRedraw);
+            if current != new_pos {
+                request_redraw.write(RequestRedraw);
+            }
         }
     }
 }
