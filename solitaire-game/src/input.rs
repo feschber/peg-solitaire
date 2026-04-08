@@ -1,8 +1,7 @@
 use bevy::{
     input::common_conditions::{input_just_pressed, input_just_released},
     prelude::*,
-    window::PrimaryWindow,
-    winit::{EventLoopProxyWrapper, WinitUserEvent},
+    window::{PrimaryWindow, RequestRedraw},
 };
 
 use crate::{
@@ -40,7 +39,7 @@ fn grab_peg(
     window: Single<&Window, With<PrimaryWindow>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,
-    wake: Res<EventLoopProxyWrapper>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
     if let Some(cursor_pos) = window.cursor_position() {
@@ -48,7 +47,7 @@ fn grab_peg(
             let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
             if let Some(peg) = pegs.iter().find(|(_, p)| **p == board_pos).map(|(p, _)| p) {
                 commands.entity(peg).insert(Selected);
-                wake.send_event(WinitUserEvent::WakeUp).unwrap();
+                request_redraw.write(RequestRedraw);
             }
         };
     }
@@ -59,7 +58,7 @@ fn release_peg(
     window: Single<&Window, With<PrimaryWindow>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
     selected_pegs: Query<(Entity, &BoardPosition), (With<Peg>, With<Selected>)>,
-    wake: Res<EventLoopProxyWrapper>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
     if let Some(cursor_pos) = window.cursor_position() {
@@ -68,7 +67,7 @@ fn release_peg(
             for (selected_peg, &current_pos) in selected_pegs {
                 move_peg(&mut commands, selected_peg, current_pos, board_pos);
             }
-            wake.send_event(WinitUserEvent::WakeUp).unwrap();
+            request_redraw.write(RequestRedraw);
         };
     }
 }
@@ -79,7 +78,7 @@ fn peg_selection_touch(
     camera_query: Single<(&Camera, &GlobalTransform)>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,
     selected_pegs: Query<(Entity, &BoardPosition), (With<Peg>, With<Selected>)>,
-    wake: Res<EventLoopProxyWrapper>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
     for touch in touches.iter_just_pressed() {
@@ -89,7 +88,7 @@ fn peg_selection_touch(
                 commands.entity(peg).insert(Selected);
             }
         }
-        wake.send_event(WinitUserEvent::WakeUp).unwrap();
+        request_redraw.write(RequestRedraw);
     }
     for touch in touches.iter_just_released() {
         if let Some(world_pos) = viewport_to_world(touch.position(), camera, camera_transform) {
@@ -98,7 +97,7 @@ fn peg_selection_touch(
                 move_peg(&mut commands, selected_peg, current_pos, board_pos);
             }
         }
-        wake.send_event(WinitUserEvent::WakeUp).unwrap();
+        request_redraw.write(RequestRedraw);
     }
 }
 
