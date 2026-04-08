@@ -2,6 +2,7 @@ use bevy::{
     input::common_conditions::{input_just_pressed, input_just_released},
     prelude::*,
     window::PrimaryWindow,
+    winit::{EventLoopProxyWrapper, WinitUserEvent},
 };
 
 use crate::{
@@ -24,6 +25,7 @@ impl Plugin for Input {
             release_peg.run_if(input_just_released(MouseButton::Left)),
         );
         app.add_systems(PreUpdate, peg_selection_touch);
+        app.add_systems(PreUpdate, keyboard_input);
     }
 }
 
@@ -38,6 +40,7 @@ fn grab_peg(
     window: Single<&Window, With<PrimaryWindow>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,
+    wake: Res<EventLoopProxyWrapper>,
 ) {
     let (camera, camera_transform) = *camera_query;
     if let Some(cursor_pos) = window.cursor_position() {
@@ -45,6 +48,7 @@ fn grab_peg(
             let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
             if let Some(peg) = pegs.iter().find(|(_, p)| **p == board_pos).map(|(p, _)| p) {
                 commands.entity(peg).insert(Selected);
+                wake.send_event(WinitUserEvent::WakeUp).unwrap();
             }
         };
     }
@@ -55,6 +59,7 @@ fn release_peg(
     window: Single<&Window, With<PrimaryWindow>>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
     selected_pegs: Query<(Entity, &BoardPosition), (With<Peg>, With<Selected>)>,
+    wake: Res<EventLoopProxyWrapper>,
 ) {
     let (camera, camera_transform) = *camera_query;
     if let Some(cursor_pos) = window.cursor_position() {
@@ -63,6 +68,7 @@ fn release_peg(
             for (selected_peg, &current_pos) in selected_pegs {
                 move_peg(&mut commands, selected_peg, current_pos, board_pos);
             }
+            wake.send_event(WinitUserEvent::WakeUp).unwrap();
         };
     }
 }
@@ -73,6 +79,7 @@ fn peg_selection_touch(
     camera_query: Single<(&Camera, &GlobalTransform)>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,
     selected_pegs: Query<(Entity, &BoardPosition), (With<Peg>, With<Selected>)>,
+    wake: Res<EventLoopProxyWrapper>,
 ) {
     let (camera, camera_transform) = *camera_query;
     for touch in touches.iter_just_pressed() {
@@ -82,6 +89,7 @@ fn peg_selection_touch(
                 commands.entity(peg).insert(Selected);
             }
         }
+        wake.send_event(WinitUserEvent::WakeUp).unwrap();
     }
     for touch in touches.iter_just_released() {
         if let Some(world_pos) = viewport_to_world(touch.position(), camera, camera_transform) {
@@ -90,6 +98,7 @@ fn peg_selection_touch(
                 move_peg(&mut commands, selected_peg, current_pos, board_pos);
             }
         }
+        wake.send_event(WinitUserEvent::WakeUp).unwrap();
     }
 }
 
@@ -111,4 +120,41 @@ fn move_peg(commands: &mut Commands, selected: Entity, src: BoardPosition, dst: 
         });
     }
     commands.entity(selected).remove::<Selected>();
+}
+
+fn keyboard_input(
+    mut commands: Commands,
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera_query: Single<(&Camera, &GlobalTransform)>,
+    pegs: Query<(Entity, &BoardPosition), With<Peg>>,
+    keys: Res<ButtonInput<KeyCode>>,
+) {
+    let (camera, transform) = *camera_query;
+    let Some(cursor_pos) = window.cursor_position() else {
+        return;
+    };
+    let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, transform) else {
+        return;
+    };
+    let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
+    let Some((peg, pos)) = pegs
+        .iter()
+        .find(|(_, p)| **p == board_pos)
+        .map(|(peg, pos)| (peg, *pos))
+    else {
+        return;
+    };
+
+    if keys.just_pressed(KeyCode::KeyW) || keys.just_pressed(KeyCode::ArrowUp) {
+        move_peg(&mut commands, peg, pos, pos + BoardPosition { x: 0, y: -2 });
+    }
+    if keys.just_pressed(KeyCode::KeyS) || keys.just_pressed(KeyCode::ArrowDown) {
+        move_peg(&mut commands, peg, pos, pos + BoardPosition { x: 0, y: 2 });
+    }
+    if keys.just_pressed(KeyCode::KeyA) || keys.just_pressed(KeyCode::ArrowLeft) {
+        move_peg(&mut commands, peg, pos, pos + BoardPosition { x: -2, y: 0 });
+    }
+    if keys.just_pressed(KeyCode::KeyD) || keys.just_pressed(KeyCode::ArrowRight) {
+        move_peg(&mut commands, peg, pos, pos + BoardPosition { x: 2, y: 0 });
+    }
 }
