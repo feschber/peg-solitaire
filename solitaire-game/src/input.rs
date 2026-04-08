@@ -163,11 +163,25 @@ fn keyboard_input(
     }
 }
 
-fn wake_on_touch_release(touches: Res<Touches>, wake: Res<EventLoopProxyWrapper>) {
+#[derive(Default, Resource)]
+struct NeedsWake;
+
+fn wake_on_touch_release(
+    mut commands: Commands,
+    touches: Res<Touches>,
+    wake: Res<EventLoopProxyWrapper>,
+    mut needs_wake: Option<ResMut<NeedsWake>>,
+) {
     for _ in touches
         .iter_just_released()
         .chain(touches.iter_just_canceled())
     {
+        commands.init_resource::<NeedsWake>();
+        wake.send_event(WinitUserEvent::WakeUp).unwrap();
+    }
+
+    if needs_wake.is_some() {
+        needs_wake.take();
         wake.send_event(WinitUserEvent::WakeUp).unwrap();
     }
 }
