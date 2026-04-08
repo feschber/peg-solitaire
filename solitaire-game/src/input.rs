@@ -164,7 +164,10 @@ fn keyboard_input(
 }
 
 fn wake_on_touch_release(touches: Res<Touches>, wake: Res<EventLoopProxyWrapper>) {
-    for _ in touches.iter_just_released() {
+    for _ in touches
+        .iter_just_released()
+        .chain(touches.iter_just_canceled())
+    {
         wake.send_event(WinitUserEvent::WakeUp).unwrap();
     }
 }
