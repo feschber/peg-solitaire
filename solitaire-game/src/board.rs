@@ -11,7 +11,7 @@ impl Plugin for BoardPlugin {
         app.add_systems(Startup, spawn_pegs);
         app.add_observer(on_peg_move_request);
         app.add_observer(on_move_peg);
-        app.add_systems(Update, draw_pegs);
+        app.add_systems(PostUpdate, draw_pegs);
     }
 }
 
