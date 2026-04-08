@@ -63,9 +63,9 @@ fn scale_viewport(mut camera_query: Query<(&mut Projection, &Camera)>) {
             let aspect = view_port.width() / view_port.height();
             let aspect = aspect.max(1.0 / aspect);
             let over = aspect - 1.0;
-            (8.0f32).lerp(14.0f32, 1. - over.powf(2.).clamp(0.0, 1.0))
+            (7.0f32).lerp(14.0f32, 1. - over.powf(2.).clamp(0.0, 1.0))
         }
-        None => 8.0,
+        None => 7.0,
     };
     if let Projection::Orthographic(projection2d) = &mut *projection {
         projection2d.scaling_mode = ScalingMode::AutoMin {
