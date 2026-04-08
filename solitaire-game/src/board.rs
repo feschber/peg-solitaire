@@ -1,3 +1,5 @@
+use std::ops::{Add, Mul, Sub};
+
 use bevy::{ecs::entity_disabling::Disabled, prelude::*};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::{Board, Idx};
@@ -34,6 +36,36 @@ pub struct Peg;
 pub struct BoardPosition {
     pub x: Idx,
     pub y: Idx,
+}
+
+impl Sub for BoardPosition {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        let x = self.x - rhs.x;
+        let y = self.y - rhs.y;
+        Self { x, y }
+    }
+}
+
+impl Add for BoardPosition {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let x = self.x + rhs.x;
+        let y = self.y + rhs.y;
+        Self { x, y }
+    }
+}
+
+impl Mul<Idx> for BoardPosition {
+    type Output = Self;
+
+    fn mul(self, rhs: Idx) -> Self::Output {
+        let x = self.x * rhs;
+        let y = self.y * rhs;
+        Self { x, y }
+    }
 }
 
 #[derive(Event)]
