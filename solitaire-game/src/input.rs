@@ -2,6 +2,7 @@ use bevy::{
     input::common_conditions::{input_just_pressed, input_just_released},
     prelude::*,
     window::{PrimaryWindow, RequestRedraw},
+    winit::{EventLoopProxyWrapper, WinitUserEvent},
 };
 
 use crate::{
@@ -25,6 +26,7 @@ impl Plugin for Input {
         );
         app.add_systems(PreUpdate, peg_selection_touch);
         app.add_systems(PreUpdate, keyboard_input);
+        app.add_systems(PreUpdate, wake_on_touch_release);
     }
 }
 
@@ -90,7 +92,10 @@ fn peg_selection_touch(
         }
         request_redraw.write(RequestRedraw);
     }
-    for touch in touches.iter_just_released() {
+    for touch in touches
+        .iter_just_released()
+        .chain(touches.iter_just_canceled())
+    {
         if let Some(world_pos) = viewport_to_world(touch.position(), camera, camera_transform) {
             let board_pos = BoardPosition::from_world_space(world_pos.xy());
             for (selected_peg, &current_pos) in selected_pegs {
@@ -155,5 +160,11 @@ fn keyboard_input(
     }
     if keys.just_pressed(KeyCode::KeyD) || keys.just_pressed(KeyCode::ArrowRight) {
         move_peg(&mut commands, peg, pos, pos + BoardPosition { x: 2, y: 0 });
+    }
+}
+
+fn wake_on_touch_release(touches: Res<Touches>, wake: Res<EventLoopProxyWrapper>) {
+    for _ in touches.iter_just_released() {
+        wake.send_event(WinitUserEvent::WakeUp).unwrap();
     }
 }
