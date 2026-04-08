@@ -108,21 +108,23 @@ fn peg_selection_touch(
 
 fn move_peg(commands: &mut Commands, selected: Entity, src: BoardPosition, dst: BoardPosition) {
     let diff = dst - src;
-    let diff = BoardPosition {
-        x: if diff.x == 0 { 0 } else { diff.x.signum() },
-        y: if diff.y == 0 { 0 } else { diff.y.signum() },
+    let normalized = if diff.x.abs() > diff.y.abs() {
+        BoardPosition {
+            x: diff.x.signum(),
+            y: 0,
+        }
+    } else if diff.y.abs() > diff.x.abs() {
+        BoardPosition {
+            x: 0,
+            y: diff.y.signum(),
+        }
+    } else {
+        BoardPosition { x: 0, y: 0 }
     };
-    if diff.x > diff.y {
-        commands.trigger(RequestPegMove {
-            src,
-            dst: src + diff * 2,
-        });
-    } else if diff.y > diff.x {
-        commands.trigger(RequestPegMove {
-            src: src,
-            dst: src + diff * 2,
-        });
-    }
+    commands.trigger(RequestPegMove {
+        src,
+        dst: src + normalized * 2,
+    });
     commands.entity(selected).remove::<Selected>();
 }
 
