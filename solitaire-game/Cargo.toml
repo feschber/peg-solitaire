@@ -17,8 +17,8 @@ crate-type = [
 bevy = { version = "0.18.1", default-features = false, features = [
   "std",
   "async_executor",
-  # "android-game-activity",
-  "android-native-activity", # game activity seems to be broken :(
+  "android-game-activity",
+  # "android-native-activity", # game activity seems to be broken :(
   "android_shared_stdcxx",
   # "animation",
   "bevy_asset",

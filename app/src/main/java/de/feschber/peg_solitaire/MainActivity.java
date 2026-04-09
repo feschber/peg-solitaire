@@ -1,8 +1,8 @@
 package de.feschber.peg_solitaire;
 
-import android.app.NativeActivity;
+import com.google.androidgamesdk.GameActivity;
 
-public class MainActivity extends NativeActivity {
+public class MainActivity extends GameActivity {
     static {
         System.loadLibrary("peg_solitaire");
     }

@@ -18,6 +18,8 @@
     rust-toolchain = pkgs.rust-bin.nightly.latest.default.override {
       extensions = [ "rust-src" "rust-analyzer" ];
       targets = [
+        # Android target.
+        "aarch64-linux-android"
         # WASM target.
         "wasm32-unknown-unknown"
         # Linux targets.
