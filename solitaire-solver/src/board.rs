@@ -289,7 +289,7 @@ impl Board {
         !*self & Board::full()
     }
 
-    pub fn normalize(&self) -> Self {
+    pub fn normalize(self) -> Self {
         let mut symmetries = self.symmetries().into_iter();
         let mut min = symmetries.next().unwrap();
         for b in symmetries {
@@ -689,6 +689,12 @@ impl Board {
             }
         }
         constellations
+    }
+
+    pub fn normalize_all(constellations: &mut [Self]) {
+        for board in constellations {
+            *board = board.normalize();
+        }
     }
 
     ///

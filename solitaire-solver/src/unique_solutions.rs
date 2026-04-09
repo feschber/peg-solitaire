@@ -1,5 +1,5 @@
 use crate::solution::SolutionMultiset;
-use crate::{Board, Move, normalize};
+use crate::{Board, Move};
 use crate::{HashMap, HashSet, Solution};
 use std::array;
 use std::collections::BTreeMap;
@@ -148,7 +148,7 @@ pub fn all_unique_paths(feasible: impl IntoIterator<Item = Board>) -> HashMap<Bo
     for i in 2..=32 {
         for board in &boards[i] {
             let mut next = Board::possible_moves(&[*board]);
-            normalize(&mut next);
+            Board::normalize_all(&mut next);
             next.dedup();
 
             let count = next
