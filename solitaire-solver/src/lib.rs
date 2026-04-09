@@ -12,6 +12,7 @@ mod pagoda;
 mod par;
 mod solution;
 mod sort;
+mod timer;
 mod unique_solutions;
 
 pub use board::{Board, Idx};

@@ -1,5 +1,4 @@
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use std::{cmp::Ordering, num::NonZero};
 
@@ -9,6 +8,7 @@ use crate::{
     Board,
     par::{self, ParDedup},
     sort::Sort,
+    timer::Timer,
 };
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
@@ -44,12 +44,10 @@ fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
 }
 
 pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let start = Instant::now();
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut time_sort = Duration::default();
+    let mut timer = Timer::new();
     let threads = threads.unwrap_or(par::num_threads()).get();
     let mut visited = vec![vec![], vec![Board::solved()]];
+    let mut sort_time = Duration::ZERO;
 
     let mut total_constellations = 0;
     let mut total_moves = 0;
@@ -58,61 +56,41 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
         "boards", "moves", "deduped", "intersection"
     );
     info!("-----------------------------------------------------");
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut round = Instant::now();
     for i in 1..(Board::SLOTS - 1) / 2 {
+        let mut timer = Timer::new();
+
         let num_constellations = visited[i].len();
         let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
-        #[cfg(not(target_arch = "wasm32"))]
-        let rev_time = round.elapsed();
+
+        timer.round("reverse".into());
+
         let num_moves = constellations.len();
-        #[cfg(not(target_arch = "wasm32"))]
-        let start = Instant::now();
+
         constellations.fast_sort_unstable_mt(threads);
-        #[cfg(not(target_arch = "wasm32"))]
-        let sort = start.elapsed();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            time_sort += start.elapsed();
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let dd = Instant::now();
+
+        timer.round("sort".into());
+
         let constellations = constellations.par_dedup(threads);
-        #[cfg(not(target_arch = "wasm32"))]
-        let dd = dd.elapsed();
         let deduped = constellations.len();
         visited.push(constellations);
+
         total_moves += num_moves;
         total_constellations += deduped;
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = Instant::now();
-        #[cfg(not(target_arch = "wasm32"))]
-        let rt = now - round;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            round = now;
-        }
 
-        #[cfg(target_arch = "wasm32")]
-        let rt = 0;
-        #[cfg(target_arch = "wasm32")]
-        let rev_time = 0;
-        #[cfg(target_arch = "wasm32")]
-        let sort = 0;
-        #[cfg(target_arch = "wasm32")]
-        let dd = 0;
+        timer.round("dedup".into());
 
         info!(
-            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%)                       {:>10?} (r: {:>10?}, s: {:>10?}, d: {:>10?})",
+            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:>5.1}%)                        {:>12?} (r: {:>12?}, s: {:>12?}, d: {:>12?})",
             deduped as f64 / num_moves as f64 * 100.,
-            rt,
-            rev_time,
-            sort,
-            dd,
+            timer.total(),
+            timer.category("reverse".into()),
+            timer.category("sort".into()),
+            timer.category("dedup".into()),
         );
+        sort_time += timer.category("sort".into());
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let reverse_step = Instant::now();
+
+    timer.round("reverse step".into());
 
     let mut inverted: Vec<_> = visited[(Board::SLOTS - 1) / 2]
         .iter()
@@ -121,94 +99,60 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     Board::normalize_all(&mut inverted);
     inverted.fast_sort_unstable_mt(threads);
     visited.push(inverted);
-    #[cfg(not(target_arch = "wasm32"))]
-    let invert_step = Instant::now();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut round = Instant::now();
+    timer.round("inverse step".into());
+
     for remaining in (2..=(Board::SLOTS - 1) / 2 + 1).rev() {
+        let mut timer = Timer::new();
+
         let num_constellations = visited[remaining].len();
         let mut constellations = possible_moves_par(&visited[remaining], threads);
-        #[cfg(not(target_arch = "wasm32"))]
-        let t_moves = Instant::now();
-        #[cfg(not(target_arch = "wasm32"))]
-        let d_moves = t_moves.duration_since(round);
+
+        timer.round("moves".into());
+
         let num_moves = constellations.len();
         total_moves += num_moves;
-        #[cfg(not(target_arch = "wasm32"))]
-        let start = Instant::now();
+
         constellations.fast_sort_unstable_mt(threads);
-        #[cfg(not(target_arch = "wasm32"))]
-        let t_sort = Instant::now();
-        #[cfg(not(target_arch = "wasm32"))]
-        let d_sort = t_sort.duration_since(t_moves);
+        let constellations = constellations.par_dedup(threads);
         let deduped = constellations.len();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            time_sort += start.elapsed();
-        }
+
+        timer.round("sort".into());
+
         visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
-        #[cfg(not(target_arch = "wasm32"))]
-        let t_intersect = Instant::now();
-        #[cfg(not(target_arch = "wasm32"))]
-        let d_intersect = t_intersect.duration_since(t_sort);
         let intersection = visited[remaining - 1].len();
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = Instant::now();
-        #[cfg(not(target_arch = "wasm32"))]
-        let rt = now - round;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            round = now;
-        }
-        #[cfg(target_arch = "wasm32")]
-        let rt = 0;
-        #[cfg(target_arch = "wasm32")]
-        let d_moves = 0;
-        #[cfg(target_arch = "wasm32")]
-        let d_sort = 0;
-        #[cfg(target_arch = "wasm32")]
-        let d_intersect = 0;
+
+        timer.round("intersect".into());
+
         info!(
-            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:.1}%) {intersection:>10} ({:.1}%)    {:>10?} (m: {:>10?}, s: {:>10?}, i: {:>10?})",
+            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:>5.1}%) {intersection:>10} ({:>5.1}%)    {:>12?} (m: {:>12?}, s: {:>12?}, i: {:>12?})",
             deduped as f64 / num_moves as f64 * 100.,
             intersection as f64 / deduped as f64 * 100.,
-            rt,
-            d_moves,
-            d_sort,
-            d_intersect,
+            timer.total(),
+            timer.category("moves".into()),
+            timer.category("sort".into()),
+            timer.category("intersect".into()),
         );
+        sort_time += timer.category("sort".into());
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    let forward_step = Instant::now();
+
+    timer.round("forward".into());
 
     let solvable: Vec<Board> = visited
         .into_iter()
         .take((Board::SLOTS - 1) / 2 + 1)
         .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
         .collect();
-    #[cfg(not(target_arch = "wasm32"))]
-    let collect_step = Instant::now();
+
+    timer.round("collect".into());
+
     assert_eq!(solvable.len(), 1679072);
     info!("analyzed {total_moves} moves and {total_constellations} different constellations");
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        info!("reverse step: {:?}", reverse_step.duration_since(start));
-        info!(
-            " invert step: {:?}",
-            invert_step.duration_since(reverse_step)
-        );
-        info!(
-            "forward step: {:?}",
-            forward_step.duration_since(invert_step)
-        );
-        info!(
-            "collect step: {:?}",
-            collect_step.duration_since(forward_step)
-        );
-        info!("       total: {:?}", collect_step.duration_since(start));
-        info!("     sorting: {time_sort:?}");
+    for (desc, dur) in timer.descriptions().zip(timer.durations()) {
+        info!("{desc:>15}: {dur:>12?}");
     }
+    info!("          total: {:>12?}", timer.total());
+    info!("        sorting: {sort_time:?}");
     solvable
 }
 

@@ -19,6 +19,7 @@ impl Plugin for Solver {
             Update,
             calculate_random_move_chances.run_if(resource_added::<FeasibleConstellations>),
         );
+        #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(
             Update,
             calculate_unique_solutions.run_if(resource_added::<FeasibleConstellations>),
