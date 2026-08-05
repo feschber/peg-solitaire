@@ -281,8 +281,8 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
         // filter instead of Vec::retain (single-threaded) - up to ~2.6M elements
         // on the biggest rounds is enough for that gap to matter on its own.
         let solved_weight = crate::pagoda::pagoda(Board::solved());
-        let constellations = par::parallel(&constellations, threads, |chunk| {
-            chunk.iter().copied().filter(|&b| crate::pagoda::pagoda(b.inverse()) >= solved_weight).collect()
+        let constellations = par::par_filter(&constellations, threads, |&b| {
+            crate::pagoda::pagoda(b.inverse()) >= solved_weight
         });
 
         let deduped = constellations.len();
@@ -347,8 +347,8 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
             // Parallel filter instead of Vec::retain (single-threaded) - this is
             // exactly the biggest round in the whole algorithm, up to ~3M elements.
             let solved_weight = crate::pagoda::pagoda(Board::solved());
-            let constellations = par::parallel(&constellations, threads, |chunk| {
-                chunk.iter().copied().filter(|&b| crate::pagoda::pagoda(b) >= solved_weight).collect()
+            let constellations = par::par_filter(&constellations, threads, |&b| {
+                crate::pagoda::pagoda(b) >= solved_weight
             });
             let deduped = constellations.len();
 

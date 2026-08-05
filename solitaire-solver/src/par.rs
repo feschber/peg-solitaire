@@ -96,6 +96,27 @@ where
     par_join(&par_map_chunks(states, nthreads, f))
 }
 
+/// filters `items` in parallel, pre-sizing each chunk's output buffer exactly
+/// once instead of growing it via repeated reallocation as matches are found -
+/// same reasoning as the capacity precounting already used in `board.rs`'s
+/// `possible_moves`/`possible_reverse_moves` and `keyset.rs`'s extraction: a
+/// plain `chunk.iter().filter(pred).collect()` per chunk showed up as real,
+/// avoidable allocator cost (`finish_grow`) once `pred` got cheap enough that
+/// the buffer growth was no longer negligible next to it.
+pub(crate) fn par_filter<T, F>(items: &[T], nthreads: usize, pred: F) -> Vec<T>
+where
+    T: Copy + Send + Sync,
+    F: Fn(&T) -> bool + Send + Sync,
+{
+    let chunks: Vec<Vec<T>> = par_map_chunks(items, nthreads, |chunk| {
+        let count = chunk.iter().filter(|x| pred(x)).count();
+        let mut out = Vec::with_capacity(count);
+        out.extend(chunk.iter().copied().filter(|x| pred(x)));
+        out
+    });
+    par_join(&chunks)
+}
+
 pub(crate) trait ParDedup {
     fn par_dedup(self, n_threads: usize) -> Self;
 }
