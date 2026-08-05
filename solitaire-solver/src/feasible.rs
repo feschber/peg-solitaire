@@ -30,7 +30,17 @@ const BITSET_THRESHOLD: usize = 1_000_000;
 /// generates every forward (or, if `!forward`, reverse) move from `states`,
 /// normalizes, and sets each result's compressed key directly in `set` - fusing
 /// generation + normalize + dedup into a single pass with no intermediate `Vec`.
-/// Returns the total number of moves generated (pre-dedup).
+///
+/// deliberately does NOT apply pagoda-function pruning (see `pagoda.rs`) here:
+/// that was tried (both unconditionally and gated behind `set.test()` to skip
+/// already-set keys) and measurably regressed wall time despite shrinking the
+/// deduped/extracted output. The cost of checking pagoda scales with the raw
+/// move count (millions per round here), while its benefit scales with the
+/// distinct result count (usually a small fraction of that) - paying the check
+/// at the wrong granularity outweighed what it saved. Callers apply pagoda to
+/// the deduped/extracted result instead, where the cost/benefit ratio is right.
+///
+/// Returns the total number of moves considered (pre-dedup).
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> usize {
     states
@@ -263,6 +273,18 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
                 (num_moves, constellations)
             };
 
+        // pagoda-function pruning (see pagoda.rs), applied to the DEDUPED set
+        // rather than fused into generation: checking pagoda per-raw-move instead
+        // (before dedup) measurably regressed wall time - the check was then paid
+        // for every one of the 55-85% of raw moves that turn out to be duplicates
+        // of an already-seen board, instead of once per distinct board. Parallel
+        // filter instead of Vec::retain (single-threaded) - up to ~2.6M elements
+        // on the biggest rounds is enough for that gap to matter on its own.
+        let solved_weight = crate::pagoda::pagoda(Board::solved());
+        let constellations = par::parallel(&constellations, threads, |chunk| {
+            chunk.iter().copied().filter(|&b| crate::pagoda::pagoda(b.inverse()) >= solved_weight).collect()
+        });
+
         let deduped = constellations.len();
         visited.push(constellations);
 
@@ -315,6 +337,19 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
             constellations.fast_sort_unstable_mt(threads);
             let constellations = constellations.par_dedup(threads);
+
+            // pagoda-function pruning (see pagoda.rs) on the deduped set, same
+            // reasoning as the growth phase: doing this pre-dedup instead pays
+            // the check on every raw move rather than once per distinct board.
+            // Unlike growth phase this doesn't shrink what ultimately survives
+            // into `visited[remaining - 1]` (the intersect below already exactly
+            // determines that), but it does make the intersect itself cheaper.
+            // Parallel filter instead of Vec::retain (single-threaded) - this is
+            // exactly the biggest round in the whole algorithm, up to ~3M elements.
+            let solved_weight = crate::pagoda::pagoda(Board::solved());
+            let constellations = par::parallel(&constellations, threads, |chunk| {
+                chunk.iter().copied().filter(|&b| crate::pagoda::pagoda(b) >= solved_weight).collect()
+            });
             let deduped = constellations.len();
 
             timer.round("sort".into());
