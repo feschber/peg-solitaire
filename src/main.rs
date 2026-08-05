@@ -45,10 +45,13 @@ fn main() {
     }
     match args.command {
         Some(command) => {
-            use env_logger::Env;
+            #[cfg(feature = "game")]
+            {
+                use env_logger::Env;
 
-            let env = Env::default().filter_or("RUST_LOG", "info");
-            env_logger::init_from_env(env);
+                let env = Env::default().filter_or("RUST_LOG", "info");
+                env_logger::init_from_env(env);
+            }
             match command {
                 Command::CalculateAll => {
                     let vec = solitaire_solver::calculate_feasible_set(args.threads);
