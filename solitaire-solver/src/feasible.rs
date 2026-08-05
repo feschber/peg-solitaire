@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use std::{cmp::Ordering, num::NonZero};
+use std::num::NonZero;
 
 use log::info;
 
@@ -119,7 +119,8 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
         timer.round("sort".into());
 
-        visited[remaining - 1] = intersect_sorted_vecs(&visited[remaining - 1], &constellations);
+        visited[remaining - 1] =
+            par::intersect_sorted(&visited[remaining - 1], &constellations, threads);
         let intersection = visited[remaining - 1].len();
 
         timer.round("intersect".into());
@@ -154,25 +155,4 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     info!("          total: {:>12?}", timer.total());
     info!("        sorting: {sort_time:?}");
     solvable
-}
-
-fn intersect_sorted_vecs<R>(a: &[R], b: &[R]) -> Vec<R>
-where
-    R: Copy + Eq + Ord,
-{
-    let mut ia = 0;
-    let mut ib = 0;
-    let mut res = vec![];
-    while ia < a.len() && ib < b.len() {
-        match a[ia].cmp(&b[ib]) {
-            Ordering::Equal => {
-                res.push(a[ia]);
-                ia += 1;
-                ib += 1;
-            }
-            Ordering::Less => ia += 1,
-            Ordering::Greater => ib += 1,
-        }
-    }
-    res
 }

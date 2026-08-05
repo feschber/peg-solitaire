@@ -44,56 +44,64 @@ fn main() {
         env_logger::init_from_env(env);
     }
     match args.command {
-        Some(command) => match command {
-            Command::CalculateAll => {
-                let vec = solitaire_solver::calculate_feasible_set(args.threads);
-                println!("solutions: {}", vec.len());
-            }
-            Command::CalculateAllNaive => {
-                solitaire_solver::calculate_all_solutions_naive();
-            }
-            Command::CalculateRandomChanceSuccessRatio => {
-                let feasible = solitaire_solver::calculate_feasible_set(None);
-                let start = std::time::Instant::now();
-                let feasible = feasible.into_iter().collect();
-                let success_probabilities =
-                    solitaire_solver::calculate_p_random_chance_success(feasible);
-                let p = *success_probabilities.get(&Board::default()).unwrap();
-                let percentage = p * 100.;
+        Some(command) => {
+            use env_logger::Env;
 
-                println!("took {:?}", start.elapsed());
-                println!("success probability when chosing moves at random: {percentage}%");
-            }
-            Command::CalculateSingle => {
-                let solution = solitaire_solver::calculate_first_solution();
-                if args.print {
-                    solitaire_solver::print_solution(solution);
+            let env = Env::default().filter_or("RUST_LOG", "info");
+            env_logger::init_from_env(env);
+            match command {
+                Command::CalculateAll => {
+                    let vec = solitaire_solver::calculate_feasible_set(args.threads);
+                    println!("solutions: {}", vec.len());
                 }
-            }
-            Command::CompareSolutions => {
-                let solutions: HashSet<Board> = solitaire_solver::calculate_feasible_set(None)
-                    .into_iter()
-                    .collect();
-                let solutions_naive: HashSet<Board> =
-                    solitaire_solver::calculate_all_solutions_naive()
+                Command::CalculateAllNaive => {
+                    solitaire_solver::calculate_all_solutions_naive();
+                }
+                Command::CalculateRandomChanceSuccessRatio => {
+                    let feasible = solitaire_solver::calculate_feasible_set(None);
+                    let start = std::time::Instant::now();
+                    let feasible = feasible.into_iter().collect();
+                    let success_probabilities =
+                        solitaire_solver::calculate_p_random_chance_success(feasible);
+                    let p = *success_probabilities.get(&Board::default()).unwrap();
+                    let percentage = p * 100.;
+
+                    println!("took {:?}", start.elapsed());
+                    println!("success probability when chosing moves at random: {percentage}%");
+                }
+                Command::CalculateSingle => {
+                    let solution = solitaire_solver::calculate_first_solution();
+                    if args.print {
+                        solitaire_solver::print_solution(solution);
+                    }
+                }
+                Command::CompareSolutions => {
+                    let solutions: HashSet<Board> = solitaire_solver::calculate_feasible_set(None)
                         .into_iter()
                         .collect();
-                assert_eq!(solutions, solutions_naive)
+                    let solutions_naive: HashSet<Board> =
+                        solitaire_solver::calculate_all_solutions_naive()
+                            .into_iter()
+                            .collect();
+                    assert_eq!(solutions, solutions_naive)
+                }
+                Command::UniqueSolutions => {
+                    let feasible = solitaire_solver::calculate_feasible_set(None);
+                    log::info!("feasible: {}", feasible.len());
+                    let solutions = solitaire_solver::all_unique_solutions(
+                        Board::default(),
+                        feasible.into_iter(),
+                    );
+                    log::info!("unique solutions: {}", solutions.len());
+                }
+                Command::UniquePaths => {
+                    let feasible = solitaire_solver::calculate_feasible_set(None);
+                    log::info!("feasible: {}", feasible.len());
+                    let paths = solitaire_solver::all_unique_paths(feasible);
+                    log::info!("unique paths: {}", paths.get(&Board::default()).unwrap());
+                }
             }
-            Command::UniqueSolutions => {
-                let feasible = solitaire_solver::calculate_feasible_set(None);
-                log::info!("feasible: {}", feasible.len());
-                let solutions =
-                    solitaire_solver::all_unique_solutions(Board::default(), feasible.into_iter());
-                log::info!("unique solutions: {}", solutions.len());
-            }
-            Command::UniquePaths => {
-                let feasible = solitaire_solver::calculate_feasible_set(None);
-                log::info!("feasible: {}", feasible.len());
-                let paths = solitaire_solver::all_unique_paths(feasible);
-                log::info!("unique paths: {}", paths.get(&Board::default()).unwrap());
-            }
-        },
+        }
         None => {
             #[cfg(feature = "game")]
             peg_solitaire::run();

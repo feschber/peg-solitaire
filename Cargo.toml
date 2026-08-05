@@ -26,10 +26,10 @@ default = ["game"]
 game = ["dep:solitaire-game"]
 
 [profile.release]
-# lto = "thin"
-# strip = "symbols"
+lto = "thin"
+strip = "symbols"
 panic = "abort"
-# codegen-units = 1
+codegen-units = 1
 
 [profile.dev.package."*"]
 opt-level = 2

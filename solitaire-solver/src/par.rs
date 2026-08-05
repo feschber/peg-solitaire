@@ -123,3 +123,45 @@ impl<T: Copy + std::fmt::Debug + Send + Sync + PartialEq> ParDedup for Vec<T> {
         par_join(&chunks)
     }
 }
+
+fn intersect_sorted_seq<R: Copy + Eq + Ord>(a: &[R], b: &[R]) -> Vec<R> {
+    let mut ia = 0;
+    let mut ib = 0;
+    let mut res = vec![];
+    while ia < a.len() && ib < b.len() {
+        match a[ia].cmp(&b[ib]) {
+            std::cmp::Ordering::Equal => {
+                res.push(a[ia]);
+                ia += 1;
+                ib += 1;
+            }
+            std::cmp::Ordering::Less => ia += 1,
+            std::cmp::Ordering::Greater => ib += 1,
+        }
+    }
+    res
+}
+
+/// intersects two sorted, deduplicated slices, preserving order.
+///
+/// `a` is split into chunks (using the same raw-thread chunk machinery as the rest of
+/// this module); the matching bound for each chunk in `b` is found via binary search,
+/// so each chunk can be merged against its own (non-overlapping) slice of `b`
+/// independently, then the per-chunk results are joined back together in order.
+pub(crate) fn intersect_sorted<R>(a: &[R], b: &[R], nthreads: usize) -> Vec<R>
+where
+    R: Copy + Eq + Ord + Default + Send + Sync,
+{
+    if nthreads == 1 || a.len() < 100 * nthreads {
+        return intersect_sorted_seq(a, b);
+    }
+    let chunks = par_map_chunks(a, nthreads, |chunk| match (chunk.first(), chunk.last()) {
+        (Some(&first), Some(&last)) => {
+            let lo = b.partition_point(|x| *x < first);
+            let hi = lo + b[lo..].partition_point(|x| *x <= last);
+            intersect_sorted_seq(chunk, &b[lo..hi])
+        }
+        _ => vec![],
+    });
+    par_join(&chunks)
+}
