@@ -6,6 +6,7 @@ mod dir;
 mod dominators;
 mod feasible;
 mod hash;
+mod keyset;
 mod mov;
 mod normalize_dedup;
 mod pagoda;
