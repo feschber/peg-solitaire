@@ -43,6 +43,39 @@ fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     par::parallel(states, num_threads, reverse_moves)
 }
 
+fn inverse_normalized(states: &[Board]) -> Vec<Board> {
+    let mut inverted: Vec<Board> = states.iter().map(|b| b.inverse()).collect();
+    Board::normalize_all(&mut inverted);
+    inverted
+}
+
+#[cfg(target_arch = "wasm32")]
+fn inverse_normalized_par(states: &[Board], _: usize) -> Vec<Board> {
+    inverse_normalized(states)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn inverse_normalized_par(states: &[Board], num_threads: usize) -> Vec<Board> {
+    par::parallel(states, num_threads, inverse_normalized)
+}
+
+fn expand_with_inverse(states: &[Board]) -> Vec<Board> {
+    states
+        .iter()
+        .flat_map(|b| [*b, b.inverse().normalize()])
+        .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn expand_with_inverse_par(states: &[Board], _: usize) -> Vec<Board> {
+    expand_with_inverse(states)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn expand_with_inverse_par(states: &[Board], num_threads: usize) -> Vec<Board> {
+    par::parallel(states, num_threads, expand_with_inverse)
+}
+
 pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let mut timer = Timer::new();
     let threads = threads.unwrap_or(par::num_threads()).get();
@@ -92,11 +125,7 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
     timer.round("reverse step".into());
 
-    let mut inverted: Vec<_> = visited[(Board::SLOTS - 1) / 2]
-        .iter()
-        .map(|b| b.inverse())
-        .collect();
-    Board::normalize_all(&mut inverted);
+    let mut inverted = inverse_normalized_par(&visited[(Board::SLOTS - 1) / 2], threads);
     inverted.fast_sort_unstable_mt(threads);
     visited.push(inverted);
 
@@ -139,11 +168,9 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
     timer.round("forward".into());
 
-    let solvable: Vec<Board> = visited
-        .into_iter()
-        .take((Board::SLOTS - 1) / 2 + 1)
-        .flat_map(|s| s.into_iter().flat_map(|b| [b, b.inverse().normalize()]))
-        .collect();
+    let take_n = (Board::SLOTS - 1) / 2 + 1;
+    let flattened: Vec<Board> = visited.into_iter().take(take_n).flatten().collect();
+    let solvable = expand_with_inverse_par(&flattened, threads);
 
     timer.round("collect".into());
 
