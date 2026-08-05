@@ -3,6 +3,10 @@ use std::{collections::HashSet, num::NonZero};
 use clap::{Parser, Subcommand};
 use solitaire_solver::Board;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 struct Args {
     /// print the solution
