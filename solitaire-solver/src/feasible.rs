@@ -136,6 +136,15 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
         let num_constellations = visited[remaining].len();
         let mut constellations = possible_moves_par(&visited[remaining], threads);
+        // Every other `visited[remaining]` gets overwritten with its final,
+        // validated value one iteration later (as `visited[remaining - 1]` of
+        // the *next* iteration) and is still needed by the final collect step
+        // below (which reads indices 0..=(Board::SLOTS - 1) / 2). Only the very
+        // first iteration's index — one past that range — is truly dead after
+        // this read, so only it is safe to free early.
+        if remaining == (Board::SLOTS - 1) / 2 + 1 {
+            visited[remaining] = Vec::new();
+        }
 
         timer.round("moves".into());
 

@@ -714,7 +714,20 @@ impl Board {
     }
 
     pub fn possible_moves(states: &[Self]) -> Vec<Self> {
-        let mut constellations = Vec::default();
+        // count first so the vec is allocated exactly once, at its final size;
+        // pushing without this reserve was the single largest source of peak
+        // memory use (repeated grow+copy from doubling, plus leftover slack
+        // from over-allocation), since this runs on every generated board.
+        let total: usize = Dir::enumerate()
+            .into_iter()
+            .map(|dir| {
+                states
+                    .iter()
+                    .map(|board| board.mov_pattern_mask(dir).count_pegs())
+                    .sum::<usize>()
+            })
+            .sum();
+        let mut constellations = Vec::with_capacity(total);
         for dir in Dir::enumerate() {
             for board in states {
                 for idx in board.mov_pattern_mask(dir) {
@@ -726,7 +739,16 @@ impl Board {
     }
 
     pub fn possible_reverse_moves(states: &[Self]) -> Vec<Self> {
-        let mut constellations = Vec::default();
+        let total: usize = Dir::enumerate()
+            .into_iter()
+            .map(|dir| {
+                states
+                    .iter()
+                    .map(|board| board.rev_mov_pattern_mask(dir).count_pegs())
+                    .sum::<usize>()
+            })
+            .sum();
+        let mut constellations = Vec::with_capacity(total);
         for dir in Dir::enumerate() {
             for board in states {
                 for idx in board.rev_mov_pattern_mask(dir) {

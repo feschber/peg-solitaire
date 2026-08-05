@@ -113,6 +113,12 @@ impl<T: Copy + std::fmt::Debug + Send + Sync + PartialEq> ParDedup for Vec<T> {
         let mut chunks: Vec<Vec<T>> = par_map_chunks_mut(self, nthreads, |c| {
             let mut v = Vec::from(c);
             v.dedup();
+            // `Vec::from(c)` allocates at the pre-dedup chunk size; dedup() only
+            // shrinks the logical length, not the allocation. In high-duplicate
+            // rounds (we've seen >80% of generated moves be duplicates) that
+            // leaves most of this buffer allocated-but-unused for the rest of
+            // par_dedup's call, right as memory pressure peaks.
+            v.shrink_to_fit();
             v
         });
         for i in 0..chunks.len() - 1 {
