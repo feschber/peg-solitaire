@@ -3777,6 +3777,7 @@ dependencies = [
  "env_logger",
  "log",
  "mimalloc",
+ "rayon",
  "solitaire-game",
  "solitaire-solver",
 ]
