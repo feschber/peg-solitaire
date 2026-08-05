@@ -1,54 +1,57 @@
-use std::{num::NonZero, thread};
+use std::num::NonZero;
+
+use rayon::prelude::*;
 
 pub(crate) fn num_threads() -> NonZero<usize> {
     std::thread::available_parallelism().unwrap_or(NonZero::new(4).unwrap())
 }
 
-/// maps n chunks of a slice `&[T]` into `R` in parallel using F
+/// configures the global rayon thread pool to use exactly `nthreads` worker threads.
+///
+/// safe to call more than once per process (a pool that's already built is left
+/// as-is); callers that want an explicit `--threads` override honored should call
+/// this once, before any of the other functions in this module run.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn configure_thread_pool(nthreads: usize) {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(nthreads)
+        .build_global();
+}
+
+/// maps chunks of a slice `&[T]` into `R` in parallel using F.
+///
+/// chunks are intentionally smaller than `len / nthreads` (several chunks per
+/// thread) and dispatched through rayon's work-stealing scheduler rather than
+/// one fixed contiguous span per thread: per-board move counts vary, so a
+/// static one-chunk-per-thread split can leave some threads idle while others
+/// are still working through a heavier chunk.
 fn par_map_chunks<F, T, R>(t: impl AsRef<[T]>, nthreads: usize, f: F) -> Vec<R>
 where
     T: Send + Sync,
     F: Fn(&[T]) -> R + Send + Sync,
     R: Default + Send + Sync,
 {
-    if nthreads == 1 || t.as_ref().len() < 100 * nthreads {
-        vec![f(t.as_ref())]
-    } else {
-        let mut chunks = t.as_ref().chunks(t.as_ref().len().div_ceil(nthreads));
-        thread::scope(|s| {
-            let first_chunk = chunks.next().unwrap();
-            let threads: Vec<_> = chunks.map(|c| s.spawn(|| f(c))).collect();
-
-            // execute on current thread
-            let mut results = vec![f(first_chunk)];
-            results.extend(threads.into_iter().map(|t| t.join().unwrap()));
-            results
-        })
+    let slice = t.as_ref();
+    if nthreads == 1 || slice.len() < 100 * nthreads {
+        return vec![f(slice)];
     }
+    let chunk_size = slice.len().div_ceil(nthreads * 2);
+    slice.par_chunks(chunk_size).map(|c| f(c)).collect()
 }
 
-/// maps n chunks of a slice `&[T]` into `R` in parallel using F
+/// maps chunks of a slice `&mut [T]` into `R` in parallel using F; see [`par_map_chunks`].
 fn par_map_chunks_mut<F, T, R>(mut t: impl AsMut<[T]>, nthreads: usize, f: F) -> Vec<R>
 where
     T: Send + Sync,
     F: Fn(&mut [T]) -> R + Send + Sync,
     R: Default + Send + Sync,
 {
-    if nthreads == 1 || t.as_mut().len() < 100 * nthreads {
-        vec![f(t.as_mut())]
-    } else {
-        let chunk_size = t.as_mut().len().div_ceil(nthreads);
-        let mut chunks = t.as_mut().chunks_mut(chunk_size);
-        thread::scope(|s| {
-            let first_chunk = chunks.next().unwrap();
-            let threads: Vec<_> = chunks.map(|c| s.spawn(|| f(c))).collect();
-
-            // execute on current thread
-            let mut results = vec![f(first_chunk)];
-            results.extend(threads.into_iter().map(|t| t.join().unwrap()));
-            results
-        })
+    let slice = t.as_mut();
+    if nthreads == 1 || slice.len() < 100 * nthreads {
+        return vec![f(slice)];
     }
+    let chunk_size = slice.len().div_ceil(nthreads * 2);
+    slice.par_chunks_mut(chunk_size).map(|c| f(c)).collect()
 }
 
 /// slices `v` into multiple mutable slices according to `lens` lengths
@@ -69,15 +72,17 @@ fn par_join<T: Copy + Send + Sync, VT: Send + Sync + AsRef<[T]>>(slices: &[VT]) 
     let mut result = Vec::with_capacity(total);
     let uninit = result.spare_capacity_mut();
     let dsts = into_mut_slices(uninit, &lens);
-    thread::scope(|s| {
-        dsts.into_iter()
-            .zip(slices)
-            .map(|(dst, src)| {
-                let dst: &mut [T] = unsafe { std::mem::transmute(dst) };
-                s.spawn(|| dst.copy_from_slice(src.as_ref()))
-            })
-            .for_each(|_| {});
-    });
+    // dispatched on rayon's already-live global pool (see `configure_thread_pool`)
+    // instead of `thread::scope`: this function is called many times per BFS
+    // round, and spawning fresh OS threads on every call (as `thread::scope` does)
+    // adds up across a run to a lot of short-lived thread creations, which turned
+    // out to be the dominant source of process overhead, not anything algorithmic.
+    dsts.into_par_iter()
+        .zip(slices.par_iter())
+        .for_each(|(dst, src)| {
+            let dst: &mut [T] = unsafe { std::mem::transmute(dst) };
+            dst.copy_from_slice(src.as_ref());
+        });
     unsafe { result.set_len(total) };
     result
 }

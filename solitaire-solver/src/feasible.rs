@@ -79,6 +79,8 @@ fn expand_with_inverse_par(states: &[Board], num_threads: usize) -> Vec<Board> {
 pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     let mut timer = Timer::new();
     let threads = threads.unwrap_or(par::num_threads()).get();
+    #[cfg(not(target_arch = "wasm32"))]
+    par::configure_thread_pool(threads);
     let mut visited = vec![vec![], vec![Board::solved()]];
     let mut sort_time = Duration::ZERO;
 
