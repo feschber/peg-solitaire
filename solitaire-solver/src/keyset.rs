@@ -116,10 +116,28 @@ impl DenseKeySet {
             .par_iter()
             .enumerate()
             .map(|(sword_idx, sword)| {
-                let mut out = Vec::new();
-                let mut bits = sword.load(Ordering::Relaxed);
-                while bits != 0 {
-                    let block = sword_idx * 64 + bits.trailing_zeros() as usize;
+                let bits = sword.load(Ordering::Relaxed);
+                if bits == 0 {
+                    return Vec::new();
+                }
+                // count first so this chunk's `Vec` is allocated exactly once, at
+                // its final size: pushing into a `Vec::new()` here would otherwise
+                // grow it via repeated reallocation, on top of this already being
+                // one of many (one per set summary word) small per-chunk
+                // allocations that `par_join` below has to then copy out of again.
+                let mut count = 0usize;
+                let mut b = bits;
+                while b != 0 {
+                    let block = sword_idx * 64 + b.trailing_zeros() as usize;
+                    for w in &self.words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS] {
+                        count += w.load(Ordering::Relaxed).count_ones() as usize;
+                    }
+                    b &= b - 1;
+                }
+                let mut out = Vec::with_capacity(count);
+                let mut b = bits;
+                while b != 0 {
+                    let block = sword_idx * 64 + b.trailing_zeros() as usize;
                     for (wi, w) in self.words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS]
                         .iter()
                         .enumerate()
@@ -133,12 +151,15 @@ impl DenseKeySet {
                             wbits &= wbits - 1;
                         }
                     }
-                    bits &= bits - 1;
+                    b &= b - 1;
                 }
                 out
             })
             .collect();
-        chunks.concat()
+        // parallel copy-out instead of `[Vec<T>]::concat()`, which is sequential -
+        // that stood out sharply in a flamegraph of this exact call as a single
+        // core doing a large memmove while the other 15 sat idle.
+        crate::par::par_join(&chunks)
     }
 }
 
