@@ -221,6 +221,28 @@ impl Default for Board {
 }
 
 #[test]
+fn test_reverse_rows_rotate_180_bit_trick() {
+    // reverse_rows/rotate_180 were rewritten to share a cheaper "reverse bits
+    // within each byte" helper instead of each calling the full 64-bit
+    // reverse_bits(). Verify the new formulas agree with the original,
+    // straightforward ones for arbitrary u64 patterns (not just valid boards).
+    fn reverse_rows_orig(x: u64) -> u64 {
+        x.swap_bytes().reverse_bits() >> 1
+    }
+    fn rotate_180_orig(x: u64) -> u64 {
+        x.reverse_bits() >> 9
+    }
+    let samples = [0u64, u64::MAX, 0x1, 0x8000_0000_0000_0000, 0xAAAA_AAAA_AAAA_AAAA]
+        .into_iter()
+        .chain((0..100_000).map(|_| rand::random::<u64>()));
+    for x in samples {
+        let board = Board(x);
+        assert_eq!(board.reverse_rows().0, reverse_rows_orig(x), "reverse_rows mismatch for {x:#x}");
+        assert_eq!(board.rotate_180().0, rotate_180_orig(x), "rotate_180 mismatch for {x:#x}");
+    }
+}
+
+#[test]
 fn test_compression() {
     let board = Board::default().set((3, 3));
     let compressed = board.to_compressed_repr();
@@ -597,10 +619,26 @@ impl Board {
         }
     }
 
+    /// reverses the bit order *within* each byte, leaving byte positions untouched.
+    ///
+    /// `u64::reverse_bits` reverses byte order (like `swap_bytes`) *and* bit order
+    /// within each byte; those two permutations are independent and commute, so
+    /// `reverse_bits(x) == swap_bytes(reverse_bits_in_bytes(x))`. Reversing bits
+    /// only within bytes needs 3 SWAR stages instead of the 6 a full 64-bit
+    /// `reverse_bits` needs, so callers that also want a byte-order change (or
+    /// none at all) can get it almost for free via `swap_bytes` instead of paying
+    /// for a second full bit-reversal.
+    #[inline]
+    const fn reverse_bits_in_bytes(x: u64) -> u64 {
+        let x = ((x & 0xAAAAAAAAAAAAAAAA) >> 1) | ((x & 0x5555555555555555) << 1);
+        let x = ((x & 0xCCCCCCCCCCCCCCCC) >> 2) | ((x & 0x3333333333333333) << 2);
+        ((x & 0xF0F0F0F0F0F0F0F0) >> 4) | ((x & 0x0F0F0F0F0F0F0F0F) << 4)
+    }
+
     #[inline]
     pub const fn reverse_rows(&self) -> Self {
-        // we swap twice so we dont have to shift
-        Self(self.0.swap_bytes().reverse_bits() >> 1)
+        // swap_bytes(x).reverse_bits() == reverse_bits_in_bytes(x) (the two swap_bytes cancel)
+        Self(Self::reverse_bits_in_bytes(self.0) >> 1)
     }
 
     #[inline]
@@ -610,7 +648,7 @@ impl Board {
 
     #[inline]
     pub const fn rotate_180(&self) -> Self {
-        Self(self.0.reverse_bits() >> 9)
+        Self(Self::reverse_bits_in_bytes(self.0).swap_bytes() >> 9)
     }
 
     #[inline]
@@ -649,11 +687,19 @@ impl Board {
     pub const fn symmetries(&self) -> [Self; 8] {
         let transposed = self.transpose();
         let reverse_cols = self.reverse_cols();
-        let reverse_rows = self.reverse_rows();
-        let rotate_180 = self.rotate_180();
-        let rotate_90 = transposed.reverse_rows();
         let rotate_270 = transposed.reverse_cols();
-        let anti_transpose = transposed.rotate_180();
+
+        // reverse_rows/rotate_180 (and their transposed counterparts rotate_90/
+        // anti_transpose) both derive from `reverse_bits_in_bytes`; computing it
+        // once per base value instead of once per method call avoids doing the
+        // same 3-stage SWAR pass twice.
+        let pbr_self = Self::reverse_bits_in_bytes(self.0);
+        let reverse_rows = Self(pbr_self >> 1);
+        let rotate_180 = Self(pbr_self.swap_bytes() >> 9);
+
+        let pbr_transposed = Self::reverse_bits_in_bytes(transposed.0);
+        let rotate_90 = Self(pbr_transposed >> 1);
+        let anti_transpose = Self(pbr_transposed.swap_bytes() >> 9);
 
         [
             *self,
