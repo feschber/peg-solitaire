@@ -4,12 +4,160 @@ use std::num::NonZero;
 
 use log::info;
 
+// the dense-bitset path (see keyset.rs) is off on wasm32 (a flat 1 GiB
+// allocation is a non-starter in a browser) and, for now, on Android too:
+// solitaire-game calls calculate_feasible_set on startup on a real,
+// potentially memory-constrained device that hasn't been tested against this
+// allocation - revisit once that's been measured on a representative device.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+use rayon::prelude::*;
+
 use crate::{
-    Board,
+    Board, Dir,
+    keyset::DenseKeySet,
     par::{self, ParDedup},
     sort::Sort,
     timer::Timer,
 };
+
+/// boards-in-round threshold above which a shrink-phase round uses the dense
+/// bitset (see `keyset.rs`) instead of sort+dedup+merge-intersect. Tuned from the
+/// real per-round trace (`RUST_LOG=info`): starts by capturing only the single
+/// biggest round, which alone accounts for most of the sort+dedup time.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+const BITSET_THRESHOLD: usize = 1_000_000;
+
+/// generates every forward (or, if `!forward`, reverse) move from `states`,
+/// normalizes, and sets each result's compressed key directly in `set` - fusing
+/// generation + normalize + dedup into a single pass with no intermediate `Vec`.
+/// Returns the total number of moves generated (pre-dedup).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> usize {
+    states
+        .par_iter()
+        .map(|board| {
+            let mut count = 0usize;
+            for dir in Dir::enumerate() {
+                let mask = if forward {
+                    board.mov_pattern_mask(dir)
+                } else {
+                    board.rev_mov_pattern_mask(dir)
+                };
+                for idx in mask {
+                    let moved = board.toggle_mov_idx_unchecked(idx, dir).normalize();
+                    set.set(moved.to_compressed_repr());
+                    count += 1;
+                }
+            }
+            count
+        })
+        .sum()
+}
+
+/// attempts the bitset path for one shrink-phase round; returns `None` (falling
+/// back to the existing sort+dedup+intersect path) below `BITSET_THRESHOLD`, or
+/// wherever the bitset path is disabled entirely (see the module-level comment
+/// on the `rayon::prelude::*` import above).
+///
+/// on success, mutates `visited[remaining - 1]` in place (same effect as the
+/// existing `par::intersect_sorted` call it replaces) and returns
+/// `(num_moves, deduped, intersection)` for logging.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn try_bitset_shrink_round(
+    _keyset: &mut Option<DenseKeySet>,
+    _visited: &mut [Vec<Board>],
+    _remaining: usize,
+    _threads: usize,
+    _timer: &mut Timer,
+) -> Option<(usize, usize, usize)> {
+    None
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn try_bitset_shrink_round(
+    keyset: &mut Option<DenseKeySet>,
+    visited: &mut [Vec<Board>],
+    remaining: usize,
+    threads: usize,
+    timer: &mut Timer,
+) -> Option<(usize, usize, usize)> {
+    if visited[remaining].len() < BITSET_THRESHOLD {
+        return None;
+    }
+
+    let already_initialized = keyset.is_some();
+    let set = keyset.get_or_insert_with(DenseKeySet::new);
+    if already_initialized {
+        set.clear();
+    }
+
+    let num_moves = generate_into_bitset(&visited[remaining], set, true);
+    // see the matching comment in the pre-existing sort+dedup path below: this
+    // index is never read again once this round has read it, except by the final
+    // flatten+collect step, which only reads indices 0..=(Board::SLOTS - 1) / 2.
+    if remaining == (Board::SLOTS - 1) / 2 + 1 {
+        visited[remaining] = Vec::new();
+    }
+    timer.round("moves".into());
+
+    let deduped = set.count_ones();
+    timer.round("sort".into());
+
+    // probing the (already small) growth-phase side against this round's bitset
+    // is cheaper than extracting the bitset into a sorted Vec just to merge-
+    // intersect it against `visited[remaining - 1]` the way the non-bitset path
+    // does - no extraction needed at all here.
+    visited[remaining - 1] = par::parallel(&visited[remaining - 1], threads, |chunk| {
+        chunk
+            .iter()
+            .copied()
+            .filter(|b| set.test(b.to_compressed_repr()))
+            .collect()
+    });
+    let intersection = visited[remaining - 1].len();
+    timer.round("intersect".into());
+
+    Some((num_moves, deduped, intersection))
+}
+
+/// attempts the bitset path for one growth-phase round; see [`try_bitset_shrink_round`].
+///
+/// unlike the shrink phase, the result here must persist as `visited[i + 1]` for
+/// many later rounds, so (unlike the shrink phase's probe-only approach) this
+/// does need to extract the bitset into a sorted `Vec<Board>`.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn try_bitset_growth_round(
+    _keyset: &mut Option<DenseKeySet>,
+    _states: &[Board],
+    _timer: &mut Timer,
+) -> Option<(usize, Vec<Board>)> {
+    None
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn try_bitset_growth_round(
+    keyset: &mut Option<DenseKeySet>,
+    states: &[Board],
+    timer: &mut Timer,
+) -> Option<(usize, Vec<Board>)> {
+    if states.len() < BITSET_THRESHOLD {
+        return None;
+    }
+
+    let already_initialized = keyset.is_some();
+    let set = keyset.get_or_insert_with(DenseKeySet::new);
+    if already_initialized {
+        set.clear();
+    }
+
+    let num_moves = generate_into_bitset(states, set, false);
+    timer.round("reverse".into());
+
+    let deduped = set.extract_sorted_by_key();
+    timer.round("dedup".into());
+
+    Some((num_moves, deduped))
+}
 
 fn possible_moves(states: &[Board]) -> Vec<Board> {
     let mut constellations = Board::possible_moves(states);
@@ -83,6 +231,7 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     par::configure_thread_pool(threads);
     let mut visited = vec![vec![], vec![Board::solved()]];
     let mut sort_time = Duration::ZERO;
+    let mut keyset: Option<DenseKeySet> = None;
 
     let mut total_constellations = 0;
     let mut total_moves = 0;
@@ -95,24 +244,30 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let mut timer = Timer::new();
 
         let num_constellations = visited[i].len();
-        let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
 
-        timer.round("reverse".into());
+        let (num_moves, constellations) =
+            if let Some(result) = try_bitset_growth_round(&mut keyset, &visited[i], &mut timer) {
+                result
+            } else {
+                let mut constellations: Vec<Board> = reverse_moves_par(&visited[i], threads);
+                timer.round("reverse".into());
 
-        let num_moves = constellations.len();
+                let num_moves = constellations.len();
 
-        constellations.fast_sort_unstable_mt(threads);
+                constellations.fast_sort_unstable_mt(threads);
+                timer.round("sort".into());
 
-        timer.round("sort".into());
+                let constellations = constellations.par_dedup(threads);
+                timer.round("dedup".into());
 
-        let constellations = constellations.par_dedup(threads);
+                (num_moves, constellations)
+            };
+
         let deduped = constellations.len();
         visited.push(constellations);
 
         total_moves += num_moves;
         total_constellations += deduped;
-
-        timer.round("dedup".into());
 
         info!(
             "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:>5.1}%)                        {:>12?} (r: {:>12?}, s: {:>12?}, d: {:>12?})",
@@ -137,33 +292,43 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
         let mut timer = Timer::new();
 
         let num_constellations = visited[remaining].len();
-        let mut constellations = possible_moves_par(&visited[remaining], threads);
-        // Every other `visited[remaining]` gets overwritten with its final,
-        // validated value one iteration later (as `visited[remaining - 1]` of
-        // the *next* iteration) and is still needed by the final collect step
-        // below (which reads indices 0..=(Board::SLOTS - 1) / 2). Only the very
-        // first iteration's index — one past that range — is truly dead after
-        // this read, so only it is safe to free early.
-        if remaining == (Board::SLOTS - 1) / 2 + 1 {
-            visited[remaining] = Vec::new();
-        }
 
-        timer.round("moves".into());
+        let (num_moves, deduped, intersection) = if let Some(result) =
+            try_bitset_shrink_round(&mut keyset, &mut visited, remaining, threads, &mut timer)
+        {
+            result
+        } else {
+            let mut constellations = possible_moves_par(&visited[remaining], threads);
+            // Every other `visited[remaining]` gets overwritten with its final,
+            // validated value one iteration later (as `visited[remaining - 1]` of
+            // the *next* iteration) and is still needed by the final collect step
+            // below (which reads indices 0..=(Board::SLOTS - 1) / 2). Only the very
+            // first iteration's index — one past that range — is truly dead after
+            // this read, so only it is safe to free early.
+            if remaining == (Board::SLOTS - 1) / 2 + 1 {
+                visited[remaining] = Vec::new();
+            }
 
-        let num_moves = constellations.len();
+            timer.round("moves".into());
+
+            let num_moves = constellations.len();
+
+            constellations.fast_sort_unstable_mt(threads);
+            let constellations = constellations.par_dedup(threads);
+            let deduped = constellations.len();
+
+            timer.round("sort".into());
+
+            visited[remaining - 1] =
+                par::intersect_sorted(&visited[remaining - 1], &constellations, threads);
+            let intersection = visited[remaining - 1].len();
+
+            timer.round("intersect".into());
+
+            (num_moves, deduped, intersection)
+        };
+
         total_moves += num_moves;
-
-        constellations.fast_sort_unstable_mt(threads);
-        let constellations = constellations.par_dedup(threads);
-        let deduped = constellations.len();
-
-        timer.round("sort".into());
-
-        visited[remaining - 1] =
-            par::intersect_sorted(&visited[remaining - 1], &constellations, threads);
-        let intersection = visited[remaining - 1].len();
-
-        timer.round("intersect".into());
 
         info!(
             "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:>5.1}%) {intersection:>10} ({:>5.1}%)    {:>12?} (m: {:>12?}, s: {:>12?}, i: {:>12?})",
