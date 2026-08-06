@@ -345,18 +345,18 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
             constellations.fast_sort_unstable_mt(threads);
             let constellations = constellations.par_dedup(threads);
 
-            // pagoda-function pruning (see pagoda.rs) on the deduped set, same
-            // reasoning as the growth phase: doing this pre-dedup instead pays
-            // the check on every raw move rather than once per distinct board.
-            // Unlike growth phase this doesn't shrink what ultimately survives
-            // into `visited[remaining - 1]` (the intersect below already exactly
-            // determines that), but it does make the intersect itself cheaper.
-            // Parallel filter instead of Vec::retain (single-threaded) - this is
-            // exactly the biggest round in the whole algorithm, up to ~3M elements.
-            let solved_weight = crate::pagoda::pagoda(Board::solved());
-            let constellations = par::par_filter(&constellations, threads, |&b| {
-                crate::pagoda::pagoda(b) >= solved_weight
-            });
+            // No pagoda-function pruning here, unlike the growth phase. It does
+            // prune - these are forward moves, so they travel away from the solved
+            // position and can land on unsolvable boards, which is exactly what
+            // `pagoda(b) >= pagoda(solved)` detects - but only ~1.8% of the set, and
+            // every board it removes would be removed anyway by the intersect
+            // below: `visited[remaining - 1]` holds only solvable boards, so the
+            // intersect already eliminates *all* unsolvable candidates exactly,
+            // whereas pagoda catches a subset. Its only possible payoff was a
+            // cheaper intersect, and the intersect costs just 0.3-1.2ms per round,
+            // so trimming 1.8% off it cannot repay a filter pass over up to ~1M
+            // elements (which evaluates pagoda twice per element, once to size the
+            // output). Measured: removing it is a net win.
             let deduped = constellations.len();
 
             timer.round("sort".into());
