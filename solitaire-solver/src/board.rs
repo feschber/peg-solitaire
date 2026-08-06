@@ -291,6 +291,55 @@ fn test_reverse_rows_rotate_180_bit_trick() {
 }
 
 #[test]
+fn test_compressed_repr_matches_portable() {
+    // `to_compressed_repr` has two implementations selected by target feature (a
+    // BMI2 `pext` and a portable shift/mask chain) and only one is ever compiled,
+    // so neither can be diffed against the other directly. Pin whichever is built
+    // against an independent reference: extract the in-play cells one at a time.
+    fn reference(board: u64) -> u64 {
+        const MASK: u64 = (0x7 << 2)
+            | (0x7 << 10)
+            | (0x7f << 16)
+            | (0x7f << 24)
+            | (0x7f << 32)
+            | (0x7 << 42)
+            | (0x7 << 50);
+        let mut out = 0u64;
+        let mut out_bit = 0;
+        for bit in 0..64 {
+            if MASK >> bit & 1 == 1 {
+                out |= (board >> bit & 1) << out_bit;
+                out_bit += 1;
+            }
+        }
+        out
+    }
+    // valid boards first, then arbitrary bit patterns (the mask must ignore the
+    // out-of-play bits either way)
+    let full = Board::full().0;
+    let samples = [0u64, full, Board::default().0, Board::solved().0]
+        .into_iter()
+        .chain((0..50_000).map(|_| rand::random::<u64>() & full))
+        .chain((0..50_000).map(|_| rand::random::<u64>()));
+    for raw in samples {
+        let board = Board(raw);
+        assert_eq!(
+            board.to_compressed_repr(),
+            reference(raw),
+            "compressed repr mismatch for {raw:#018x}"
+        );
+    }
+    // and the round trip holds for valid boards
+    for _ in 0..50_000 {
+        let board = Board(rand::random::<u64>() & full);
+        assert_eq!(
+            Board::from_compressed_repr(board.to_compressed_repr()),
+            board
+        );
+    }
+}
+
+#[test]
 fn test_compression() {
     let board = Board::default().set((3, 3));
     let compressed = board.to_compressed_repr();
@@ -320,7 +369,17 @@ impl Board {
         b
     }
 
-    #[cfg(target_arch = "x86_64")]
+    /// Gathers the 33 in-play cells of the 8x8 board representation down into the
+    /// low 33 bits, in board order.
+    ///
+    /// Selected on `target_feature`, not on `target_arch`: `_pext_u64` is a BMI2
+    /// instruction, and this used to be gated on `x86_64` alone, so a default
+    /// `x86_64` build - which targets the baseline ISA, and BMI2 is not in it -
+    /// emitted `pext` unconditionally and died with SIGILL on any pre-Haswell CPU.
+    /// Now the fast path compiles only where BMI2 is actually enabled, and every
+    /// other target gets the portable version below. Build with
+    /// `-C target-cpu=x86-64-v3` (see `.cargo/config.toml`) to get the fast one.
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
     pub fn to_compressed_repr(&self) -> u64 {
         const MASK: u64 = (0x7 << 2)
             | (0x7 << 10)
@@ -329,10 +388,14 @@ impl Board {
             | (0x7f << 32)
             | (0x7 << 42)
             | (0x7 << 50);
+        // SAFETY: this arm only exists when the `bmi2` target feature is enabled,
+        // which is exactly `_pext_u64`'s requirement.
         unsafe { core::arch::x86_64::_pext_u64(self.0, MASK) }
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    /// Portable equivalent of the BMI2 path above; see its documentation.
+    /// `test_compressed_repr_matches_portable` checks the two agree.
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
     pub fn to_compressed_repr(&self) -> u64 {
         let board = self.0;
         (board & (0x7 << 2)) >> 2

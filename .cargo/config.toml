@@ -1,2 +1,27 @@
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"
+
+# Build x86_64 for the v3 microarchitecture level (Haswell 2013+ / Excavator+:
+# AVX2, BMI1/BMI2, POPCNT, LZCNT, FMA) rather than the x86-64 baseline.
+#
+# The baseline has no POPCNT, so every `count_ones()` - and they are all over the
+# hot paths, from `Board::count_pegs` to the bitset's extraction scan - compiled
+# to a software bit-twiddling fallback; the binary contained literally zero
+# `popcnt` instructions. Measured on the full `calculate-all` run, 12 reps
+# interleaved in shuffled order, internal timer medians:
+#
+#     baseline x86-64      263.1 ms
+#     x86-64-v3            241.5 ms   (-8.2%)
+#     native               235.9 ms   (-10.4%)
+#
+# v3 captures most of what `native` does while still naming a portable target.
+# It also matches what this code already needed in practice: `to_compressed_repr`
+# uses BMI2's `pext`, so a v3-capable CPU was effectively required regardless -
+# except that it now degrades to a portable fallback instead of SIGILL-ing if you
+# do build for the baseline (see `Board::to_compressed_repr`).
+#
+# To build for an older CPU, override with e.g.
+#   RUSTFLAGS="-C target-cpu=x86-64" cargo build --release
+# which still produces a correct binary, just a slower one.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v3"]
