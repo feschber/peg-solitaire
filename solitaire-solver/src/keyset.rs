@@ -78,6 +78,15 @@ impl DenseKeySet {
         // freshly allocated bitmap it also faults each page in twice, once
         // read-only against the shared zero page and again for the write. Tried
         // both ways; unconditional store won by ~34ms on a ~330ms run.
+        //
+        // Also resist making this return whether the key was new (which would give
+        // the caller a distinct-key count for free and save the `count_ones()` scan
+        // in `feasible.rs`'s shrink round). `fetch_or` does hand back the previous
+        // word, and exactly one racer can observe a given bit's 0 -> 1 transition,
+        // so the count would be exact - but *consuming* the return value makes LLVM
+        // emit a `lock cmpxchg` retry loop instead of a single `lock or`, and over
+        // the ~34M calls these rounds make that measured ~36ms worse than the ~4ms
+        // scan it replaces.
         self.words[word_idx].fetch_or(mask, Ordering::Relaxed);
 
         let block = word_idx / BLOCK_WORDS;
