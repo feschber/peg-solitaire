@@ -51,13 +51,49 @@ impl DenseKeySet {
         }
     }
 
+    /// Marks `key` present. Safe to call from many threads at once, but must never
+    /// overlap [`DenseKeySet::clear`] - callers always join the filling parallel
+    /// region first (see `feasible.rs`, where `clear()` is its own joined region
+    /// that runs before generation starts).
+    ///
+    /// INVARIANT, relied on by [`Self::count_ones`], [`Self::clear`] and
+    /// [`Self::extract_sorted_by_key`], all of which skip whole zero summary
+    /// words: if a bit in `words` is set then that bit's block is marked in
+    /// `summary`. Every call reaches the summary code below, so each setter either
+    /// marks the block itself or observes it already marked - which, by induction,
+    /// means some call did mark it. Readers all run after the generating rayon
+    /// region has joined, and that join supplies the happens-before edge making
+    /// these `Relaxed` writes visible; that is what the surrounding code already
+    /// relied on.
     #[inline]
     pub(crate) fn set(&self, key: u64) {
         let word_idx = (key >> 6) as usize;
-        let bit = (key & 63) as u32;
-        self.words[word_idx].fetch_or(1 << bit, Ordering::Relaxed);
+        let mask = 1u64 << (key & 63);
+        // Written unconditionally, on purpose. Guarding this with a `load` first
+        // looks attractive (~85% of the raw moves per round are duplicates of a
+        // key already set, so most of these RMWs are redundant) but measured
+        // *worse* than just writing: the line has to be pulled from DRAM either
+        // way, so the load doesn't avoid the miss, it just adds a second
+        // dependent access in front of it - and on the round that runs against a
+        // freshly allocated bitmap it also faults each page in twice, once
+        // read-only against the shared zero page and again for the write. Tried
+        // both ways; unconditional store won by ~34ms on a ~330ms run.
+        self.words[word_idx].fetch_or(mask, Ordering::Relaxed);
+
         let block = word_idx / BLOCK_WORDS;
-        self.summary[block / 64].fetch_or(1 << (block % 64), Ordering::Relaxed);
+        let sword = &self.summary[block / 64];
+        let smask = 1u64 << (block % 64);
+        // The summary is the opposite case, and this is where the win is. It is
+        // only 4096 words (~512 cache lines) but every thread writes it, so an
+        // unconditional `fetch_or` here is a stream of contended cross-core
+        // ownership transfers on a handful of lines. It is also L1-resident and
+        // every block that will ever be non-empty gets marked within its first
+        // few keys, so this load almost always hits in cache, finds the bit
+        // already set, and skips the RMW entirely - keeping the line Shared
+        // instead of bouncing it. Worth ~24-29ms per bitset round here.
+        if sword.load(Ordering::Relaxed) & smask == 0 {
+            sword.fetch_or(smask, Ordering::Relaxed);
+        }
     }
 
     #[inline]
@@ -210,6 +246,86 @@ mod tests {
         }
         let extracted = set.extract_sorted_by_key();
         assert_eq!(extracted.len(), nthreads * keys_per_thread);
+    }
+
+    /// keys per block, i.e. how far apart two keys must be to land in different
+    /// blocks (and therefore need different summary bits).
+    const KEYS_PER_BLOCK: u64 = (BLOCK_WORDS * 64) as u64;
+
+    #[test]
+    fn concurrent_set_spanning_many_blocks_loses_no_bits() {
+        // The dense variant above keeps every key inside ~2 blocks of a single
+        // summary word, so it barely exercises `set()`'s word-bit/summary-bit
+        // invariant. Spread the keys over many blocks AND many summary words, so
+        // that a dropped summary update makes whole runs of keys disappear from
+        // extraction, while still having several threads collide within each word.
+        let set = DenseKeySet::new();
+        let nthreads = 8;
+        let blocks_per_thread = 400usize; // 3200 blocks => spans 50 summary words
+        std::thread::scope(|s| {
+            for t in 0..nthreads {
+                let set = &set;
+                s.spawn(move || {
+                    for b in 0..blocks_per_thread {
+                        let block = t + b * nthreads;
+                        let base = block as u64 * KEYS_PER_BLOCK;
+                        // a few keys in the block, two of them in the same word so
+                        // concurrent fetch_or on one word is still covered
+                        for off in [0u64, 1, 63, 64, KEYS_PER_BLOCK - 1] {
+                            set.set(base + off);
+                        }
+                    }
+                });
+            }
+        });
+        let mut expected = Vec::new();
+        for t in 0..nthreads {
+            for b in 0..blocks_per_thread {
+                let base = (t + b * nthreads) as u64 * KEYS_PER_BLOCK;
+                for off in [0u64, 1, 63, 64, KEYS_PER_BLOCK - 1] {
+                    expected.push(base + off);
+                }
+            }
+        }
+        expected.sort_unstable();
+        let extracted: Vec<u64> = set
+            .extract_sorted_by_key()
+            .into_iter()
+            .map(|b| b.to_compressed_repr())
+            .collect();
+        // extraction is summary-driven, so this fails if any summary bit was lost
+        assert_eq!(extracted, expected);
+    }
+
+    #[test]
+    fn word_bit_set_implies_summary_bit_set() {
+        // Deterministic guard on the invariant that `set()`'s conditional summary
+        // update depends on, without relying on a race being hit. Covers both the
+        // first write to a block and a repeat write (which takes the branch that
+        // skips the summary RMW because the bit is already set).
+        let set = DenseKeySet::new();
+        let summary_bit_set = |key: u64| {
+            let block = (key >> 6) as usize / BLOCK_WORDS;
+            set.summary[block / 64].load(Ordering::Relaxed) & (1u64 << (block % 64)) != 0
+        };
+        for key in [
+            0u64,
+            63,
+            64,
+            KEYS_PER_BLOCK - 1,
+            KEYS_PER_BLOCK,
+            KEYS_PER_BLOCK * 64, // first block of the second summary word
+            KEYS_PER_BLOCK * 12345,
+            (1u64 << KEY_BITS) - 1,
+        ] {
+            set.set(key);
+            assert!(set.test(key), "word bit missing for {key}");
+            assert!(summary_bit_set(key), "summary bit missing for {key}");
+            // repeat set() takes the early return; the invariant must still hold
+            set.set(key);
+            assert!(set.test(key), "word bit lost on repeat set of {key}");
+            assert!(summary_bit_set(key), "summary bit lost on repeat set of {key}");
+        }
     }
 
     #[test]
