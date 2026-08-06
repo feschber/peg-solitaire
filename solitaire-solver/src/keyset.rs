@@ -171,21 +171,46 @@ impl DenseKeySet {
         (self.words[word_idx].load(Ordering::Relaxed) >> bit) & 1 != 0
     }
 
+    /// Reinterprets an exclusively-borrowed atomic slice as plain `u64`s.
+    ///
+    /// Atomics are only needed while [`Self::set`] is running concurrently. The
+    /// bulk operations below run between joined parallel regions, and `&mut`
+    /// proves it - so they can use plain loads and stores. That is not just
+    /// cosmetic: even a `Relaxed` atomic access is opaque to LLVM's loop
+    /// optimizations, so a loop of `store(0, Relaxed)` stays one `mov` per word
+    /// and a loop of `load(Relaxed).count_ones()` will not vectorize, whereas the
+    /// plain-`u64` equivalents lower to `memset` and to vectorized popcounts.
+    fn as_plain(v: &mut [AtomicU64]) -> &mut [u64] {
+        // SAFETY: `AtomicU64` is documented to have the same size, alignment and
+        // bit validity as `u64`, so the reinterpretation is layout-valid; and the
+        // `&mut` borrow proves no other thread can be accessing this memory, so
+        // non-atomic access here cannot race. Same guarantee `zeroed_atomic_vec`
+        // relies on, in the other direction.
+        unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr().cast::<u64>(), v.len()) }
+    }
+
     /// clears every key that was set. Cheaper than a flat 1 GiB clear when occupancy
     /// is low (it always is here - even the biggest round sets ~24M of ~8.6B keys):
     /// the summary tells us exactly which blocks need clearing, so untouched blocks
     /// (the vast majority) are skipped entirely.
-    pub(crate) fn clear(&self) {
-        self.summary.par_iter().enumerate().for_each(|(sword_idx, sword)| {
-            let mut bits = sword.swap(0, Ordering::Relaxed);
-            while bits != 0 {
-                let block = sword_idx * 64 + bits.trailing_zeros() as usize;
-                for w in &self.words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS] {
-                    w.store(0, Ordering::Relaxed);
+    pub(crate) fn clear(&mut self) {
+        let Self { words, summary } = self;
+        let words = Self::as_plain(words);
+        let summary = Self::as_plain(summary);
+        // One chunk per summary word (64 blocks). That keeps the summary's
+        // skip-untouched-blocks property - the whole point of the index - while
+        // still handing rayon disjoint `&mut` slices to work on.
+        words
+            .par_chunks_mut(BLOCK_WORDS * 64)
+            .zip(summary.par_iter_mut())
+            .for_each(|(chunk, sword)| {
+                let mut bits = std::mem::replace(sword, 0);
+                while bits != 0 {
+                    let start = bits.trailing_zeros() as usize * BLOCK_WORDS;
+                    chunk[start..start + BLOCK_WORDS].fill(0);
+                    bits &= bits - 1;
                 }
-                bits &= bits - 1;
-            }
-        });
+            });
     }
 
     /// extracts every set key as a `Board`, in ascending compressed-key order.
@@ -193,13 +218,18 @@ impl DenseKeySet {
     /// This is a valid, consistent total order for every use in this codebase (see
     /// the plan's audit of `Board`'s `Ord` usage) - it just isn't `Board`'s own `Ord`.
     /// Skips whole zero blocks via the summary rather than scanning all 1 GiB.
-    pub(crate) fn extract_sorted_by_key(&self) -> Vec<Board> {
-        let chunks: Vec<Vec<Board>> = self
-            .summary
+    pub(crate) fn extract_sorted_by_key(&mut self) -> Vec<Board> {
+        // `&mut` lets this read plain `u64`s rather than `Relaxed` atomics; see
+        // `as_plain`. It matters most for the counting pass below, which is a
+        // popcount over every word of every touched block - vectorizable as plain
+        // loads, not as atomic ones.
+        let Self { words, summary } = self;
+        let words: &[u64] = Self::as_plain(words);
+        let summary: &[u64] = Self::as_plain(summary);
+        let chunks: Vec<Vec<Board>> = summary
             .par_iter()
             .enumerate()
-            .map(|(sword_idx, sword)| {
-                let bits = sword.load(Ordering::Relaxed);
+            .map(|(sword_idx, &bits)| {
                 if bits == 0 {
                     return Vec::new();
                 }
@@ -212,8 +242,8 @@ impl DenseKeySet {
                 let mut b = bits;
                 while b != 0 {
                     let block = sword_idx * 64 + b.trailing_zeros() as usize;
-                    for w in &self.words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS] {
-                        count += w.load(Ordering::Relaxed).count_ones() as usize;
+                    for w in &words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS] {
+                        count += w.count_ones() as usize;
                     }
                     b &= b - 1;
                 }
@@ -221,11 +251,11 @@ impl DenseKeySet {
                 let mut b = bits;
                 while b != 0 {
                     let block = sword_idx * 64 + b.trailing_zeros() as usize;
-                    for (wi, w) in self.words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS]
+                    for (wi, w) in words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS]
                         .iter()
                         .enumerate()
                     {
-                        let mut wbits = w.load(Ordering::Relaxed);
+                        let mut wbits = *w;
                         while wbits != 0 {
                             let bit = wbits.trailing_zeros();
                             let word_idx = block * BLOCK_WORDS + wi;
@@ -268,7 +298,7 @@ mod tests {
 
     #[test]
     fn concurrent_set_loses_no_bits() {
-        let set = DenseKeySet::new();
+        let mut set = DenseKeySet::new();
         // many threads set overlapping/adjacent keys (including keys that land in
         // the same word, to exercise fetch_or races) - none should be lost.
         let keys_per_thread = 5000;
@@ -306,7 +336,7 @@ mod tests {
         // invariant. Spread the keys over many blocks AND many summary words, so
         // that a dropped summary update makes whole runs of keys disappear from
         // extraction, while still having several threads collide within each word.
-        let set = DenseKeySet::new();
+        let mut set = DenseKeySet::new();
         let nthreads = 8;
         let blocks_per_thread = 400usize; // 3200 blocks => spans 50 summary words
         std::thread::scope(|s| {
@@ -377,7 +407,7 @@ mod tests {
 
     #[test]
     fn extract_sorted_by_key_matches_and_is_ordered() {
-        let set = DenseKeySet::new();
+        let mut set = DenseKeySet::new();
         // spans multiple blocks and multiple summary words.
         let mut keys: Vec<u64> = vec![0, 5, 63, 64, 512 * 64 - 1, 512 * 64, 1 << 20, 1 << 25, (1u64 << 33) - 1];
         for &k in &keys {
@@ -396,7 +426,7 @@ mod tests {
 
     #[test]
     fn clear_removes_everything() {
-        let set = DenseKeySet::new();
+        let mut set = DenseKeySet::new();
         for k in [0u64, 100, 1 << 20, 1 << 26] {
             set.set(k);
         }
@@ -410,7 +440,7 @@ mod tests {
 
     #[test]
     fn empty_set_extracts_nothing() {
-        let set = DenseKeySet::new();
+        let mut set = DenseKeySet::new();
         assert!(set.extract_sorted_by_key().is_empty());
     }
 }
