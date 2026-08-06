@@ -37,3 +37,8 @@ codegen-units = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# for prctl(PR_SET_THP_DISABLE) - see disable_transparent_hugepages_for_process
+# in src/main.rs. Already present transitively, so the build graph is unchanged.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

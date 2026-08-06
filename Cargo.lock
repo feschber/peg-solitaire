@@ -3775,6 +3775,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "env_logger",
+ "libc",
  "log",
  "mimalloc",
  "rayon",
@@ -4476,6 +4477,7 @@ name = "solitaire-solver"
 version = "0.0.1"
 dependencies = [
  "getrandom 0.4.2",
+ "libc",
  "log",
  "nohash-hasher",
  "rand 0.10.0",

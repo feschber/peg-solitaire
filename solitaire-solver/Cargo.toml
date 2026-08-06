@@ -20,3 +20,9 @@ wasm-timer = "0.2.5"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 voracious_radix_sort = { git = "https://github.com/lakwet/voracious_sort", features = ["voracious_multithread"] }
+
+# for madvise(MADV_NOHUGEPAGE) on the dense bitset - see keyset.rs's
+# disable_transparent_hugepages for why that matters. Already in the lock file
+# transitively, so this adds nothing to the build graph.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
