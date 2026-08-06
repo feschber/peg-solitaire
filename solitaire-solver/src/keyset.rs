@@ -56,8 +56,8 @@ impl DenseKeySet {
     /// region first (see `feasible.rs`, where `clear()` is its own joined region
     /// that runs before generation starts).
     ///
-    /// INVARIANT, relied on by [`Self::count_ones`], [`Self::clear`] and
-    /// [`Self::extract_sorted_by_key`], all of which skip whole zero summary
+    /// INVARIANT, relied on by [`Self::clear`] and [`Self::extract_sorted_by_key`],
+    /// both of which skip whole zero summary
     /// words: if a bit in `words` is set then that bit's block is marked in
     /// `summary`. Every call reaches the summary code below, so each setter either
     /// marks the block itself or observes it already marked - which, by induction,
@@ -79,14 +79,13 @@ impl DenseKeySet {
         // read-only against the shared zero page and again for the write. Tried
         // both ways; unconditional store won by ~34ms on a ~330ms run.
         //
-        // Also resist making this return whether the key was new (which would give
-        // the caller a distinct-key count for free and save the `count_ones()` scan
-        // in `feasible.rs`'s shrink round). `fetch_or` does hand back the previous
+        // Should a distinct-key count ever be wanted here, resist getting it by
+        // returning whether the key was new. `fetch_or` does hand back the previous
         // word, and exactly one racer can observe a given bit's 0 -> 1 transition,
-        // so the count would be exact - but *consuming* the return value makes LLVM
-        // emit a `lock cmpxchg` retry loop instead of a single `lock or`, and over
-        // the ~34M calls these rounds make that measured ~36ms worse than the ~4ms
-        // scan it replaces.
+        // so such a count would be exact and looks free - but *consuming* the return
+        // value makes LLVM emit a `lock cmpxchg` retry loop instead of a single
+        // `lock or`, which measured ~36ms worse over the ~34M calls these rounds
+        // make. Measured, then reverted.
         self.words[word_idx].fetch_or(mask, Ordering::Relaxed);
 
         let block = word_idx / BLOCK_WORDS;
@@ -110,27 +109,6 @@ impl DenseKeySet {
         let word_idx = (key >> 6) as usize;
         let bit = (key & 63) as u32;
         (self.words[word_idx].load(Ordering::Relaxed) >> bit) & 1 != 0
-    }
-
-    /// counts set keys, skipping whole zero blocks via the summary rather than
-    /// scanning all 1 GiB - useful for logging without paying for a full extraction.
-    pub(crate) fn count_ones(&self) -> usize {
-        self.summary
-            .par_iter()
-            .enumerate()
-            .map(|(sword_idx, sword)| {
-                let mut bits = sword.load(Ordering::Relaxed);
-                let mut count = 0usize;
-                while bits != 0 {
-                    let block = sword_idx * 64 + bits.trailing_zeros() as usize;
-                    for w in &self.words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS] {
-                        count += w.load(Ordering::Relaxed).count_ones() as usize;
-                    }
-                    bits &= bits - 1;
-                }
-                count
-            })
-            .sum()
     }
 
     /// clears every key that was set. Cheaper than a flat 1 GiB clear when occupancy

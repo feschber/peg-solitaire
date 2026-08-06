@@ -71,7 +71,14 @@ fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> u
 ///
 /// on success, mutates `visited[remaining - 1]` in place (same effect as the
 /// existing `par::intersect_sorted` call it replaces) and returns
-/// `(num_moves, deduped, intersection)` for logging.
+/// `(num_moves, intersection)` for logging.
+///
+/// Note it deliberately does not report a deduped/distinct-key count. Nothing
+/// downstream uses one - the intersection below is what the algorithm actually
+/// carries forward - and on this path it is not a free by-product of any step the
+/// round already performs, unlike the growth phase where the extraction's length
+/// gives it away. Obtaining it cost a whole extra summary-guided scan over every
+/// touched block purely to fill in one column of a log line.
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn try_bitset_shrink_round(
     _keyset: &mut Option<DenseKeySet>,
@@ -79,7 +86,7 @@ fn try_bitset_shrink_round(
     _remaining: usize,
     _threads: usize,
     _timer: &mut Timer,
-) -> Option<(usize, usize, usize)> {
+) -> Option<(usize, usize)> {
     None
 }
 
@@ -90,7 +97,7 @@ fn try_bitset_shrink_round(
     remaining: usize,
     threads: usize,
     timer: &mut Timer,
-) -> Option<(usize, usize, usize)> {
+) -> Option<(usize, usize)> {
     if visited[remaining].len() < BITSET_THRESHOLD {
         return None;
     }
@@ -110,9 +117,6 @@ fn try_bitset_shrink_round(
     }
     timer.round("moves".into());
 
-    let deduped = set.count_ones();
-    timer.round("sort".into());
-
     // probing the (already small) growth-phase side against this round's bitset
     // is cheaper than extracting the bitset into a sorted Vec just to merge-
     // intersect it against `visited[remaining - 1]` the way the non-bitset path
@@ -127,7 +131,7 @@ fn try_bitset_shrink_round(
     let intersection = visited[remaining - 1].len();
     timer.round("intersect".into());
 
-    Some((num_moves, deduped, intersection))
+    Some((num_moves, intersection))
 }
 
 /// attempts the bitset path for one growth-phase round; see [`try_bitset_shrink_round`].
@@ -315,10 +319,13 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
         let num_constellations = visited[remaining].len();
 
-        let (num_moves, deduped, intersection) = if let Some(result) =
+        // `deduped` is `None` on the bitset path, which does not count its distinct
+        // keys - see `try_bitset_shrink_round`. The sort path gets the count for
+        // free as the length of a `Vec` it already built.
+        let (num_moves, deduped, intersection) = if let Some((num_moves, intersection)) =
             try_bitset_shrink_round(&mut keyset, &mut visited, remaining, threads, &mut timer)
         {
-            result
+            (num_moves, None, intersection)
         } else {
             let mut constellations = possible_moves_par(&visited[remaining], threads);
             // Every other `visited[remaining]` gets overwritten with its final,
@@ -360,15 +367,26 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
             timer.round("intersect".into());
 
-            (num_moves, deduped, intersection)
+            (num_moves, Some(deduped), intersection)
         };
 
         total_moves += num_moves;
 
+        // both columns that depend on the deduped count collapse to "-" when it
+        // wasn't computed; widths match the populated case to keep the table aligned
+        let (deduped_col, intersection_pct) = match deduped {
+            Some(deduped) => (
+                format!(
+                    "{deduped:>10} ({:>5.1}%)",
+                    deduped as f64 / num_moves as f64 * 100.
+                ),
+                format!("({:>5.1}%)", intersection as f64 / deduped as f64 * 100.),
+            ),
+            None => (format!("{:>10} {:>8}", "-", ""), format!("{:>8}", "")),
+        };
+
         info!(
-            "{num_constellations:>10} {num_moves:>10} {deduped:>10} ({:>5.1}%) {intersection:>10} ({:>5.1}%)    {:>12?} (m: {:>12?}, s: {:>12?}, i: {:>12?})",
-            deduped as f64 / num_moves as f64 * 100.,
-            intersection as f64 / deduped as f64 * 100.,
+            "{num_constellations:>10} {num_moves:>10} {deduped_col} {intersection:>10} {intersection_pct}    {:>12?} (m: {:>12?}, s: {:>12?}, i: {:>12?})",
             timer.total(),
             timer.category("moves".into()),
             timer.category("sort".into()),
