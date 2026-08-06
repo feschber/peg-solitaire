@@ -71,12 +71,60 @@ impl<T: Radixable<U33>> Dispatcher<T, U33> for U33 {
         if arr.len() <= 256 {
             arr.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         } else if arr.len() < 5_000_000_000 {
-            peeka_sort(arr, 8, 650_000, thread_n);
+            peeka_sort(arr, 8, peeka_block_size(arr.len(), thread_n), thread_n);
         } else {
             // Switch to regions sort algo
             peeka_sort(arr, 8, 5_000, thread_n);
         }
     }
+}
+
+/// Block size handed to `peeka_sort` as its `blocks_info` argument.
+///
+/// For any array smaller than 5e9 elements - i.e. every array this solver ever
+/// sorts - `peeka_sort_rec` assigns `blocks_info` straight to its `block_size`,
+/// and then only parallelizes its local-sorting phase when
+/// `arr.len() > block_size`; otherwise it does one `get_histogram` + `ska_swap`
+/// over the whole array on the calling thread. So this value is really "how many
+/// elements each core gets", and `len / block_size` is the width of the only
+/// parallel phase.
+///
+/// A single fixed value cannot serve both ends of the range this solver sorts.
+/// The upstream default of 650_000 is far too coarse for the ~1-2.4M arrays that
+/// roughly ten BFS rounds produce: measured sort-bucket scaling from 1 to 16
+/// threads was 1.9x at 0.99M elements, 2.9x at 1.52M, 3.5x at 2.03M and 2.38M -
+/// exactly the 2/3/4/4 blocks 650_000 yields - while comparable parallel work in
+/// the same rounds reached 4-8.6x. But simply lowering it to a fixed 100_000
+/// measurably *regressed* the two largest rounds (+3.5ms each), where 650_000
+/// already produced enough blocks and the extra ones only added histogram-merge
+/// work in the (largely serial) graph-construction phase.
+///
+/// So scale it with the array: aim for about one block per worker, and never go
+/// below `peeka_sort`'s own serial-fallback threshold of 128_000, beneath which
+/// extra blocks buy no parallelism and only add merge overhead.
+///
+/// Both knobs are overridable (`PEG_PEEKA_BLOCKS_PER_THREAD`, `PEG_PEEKA_MIN_BLOCK`)
+/// for tuning sweeps. `blocks_info` is a plain runtime argument to `peeka_sort`
+/// either way, so reading these from the environment cannot change that
+/// function's codegen - a sweep measures exactly what hardcoded values would do.
+#[cfg(not(target_arch = "wasm32"))]
+fn peeka_block_size(len: usize, thread_n: usize) -> usize {
+    fn env_or(var: &str, default: usize) -> usize {
+        std::env::var(var)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(default)
+    }
+    use std::sync::OnceLock;
+    static BLOCKS_PER_THREAD: OnceLock<usize> = OnceLock::new();
+    static MIN_BLOCK: OnceLock<usize> = OnceLock::new();
+    let blocks_per_thread =
+        *BLOCKS_PER_THREAD.get_or_init(|| env_or("PEG_PEEKA_BLOCKS_PER_THREAD", 1));
+    let min_block = *MIN_BLOCK.get_or_init(|| env_or("PEG_PEEKA_MIN_BLOCK", 128_000));
+
+    let target_blocks = thread_n.max(1) * blocks_per_thread;
+    (len / target_blocks).max(min_block)
 }
 
 impl Radixable<U33> for Board {
