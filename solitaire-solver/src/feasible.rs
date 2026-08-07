@@ -196,6 +196,72 @@ fn try_bitset_shrink_round(
     None
 }
 
+/// keeps the boards of `chunk` that `set` contains, in order - one chunk of the
+/// shrink phase's intersect.
+///
+/// Software-pipelined the same way `generate_into_bitset` pipelines its writes:
+/// each board's probe is issued `PREFETCH_DISTANCE` boards before it is needed,
+/// so the DRAM round trips overlap instead of serializing. See
+/// [`DenseKeySet::prefetch_for_test`] for why the read side needs this even
+/// though, unlike `set`, it is not a barrier.
+///
+/// `to_compressed_repr` is evaluated twice per board (once to prefetch, once to
+/// probe) rather than carried in a ring buffer as the write side does. It is a
+/// single `pext`, and this loop is bound on 1 GiB-scale misses, so the second
+/// one is free next to the bookkeeping a ring would add - and the pipeline can
+/// then be expressed as a `zip` of the slice against itself offset by the
+/// distance, with no index arithmetic or bounds checks in the body.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
+    /// how many boards ahead of the probe the prefetch runs. Matches
+    /// `generate_into_bitset`'s distance; the two loops are covering the same
+    /// latency against comparable amounts of per-item work.
+    const PREFETCH_DISTANCE: usize = 16;
+
+    // Pre-sized rather than grown. The filter keeps 12-20% of its input, so this
+    // over-allocates by ~5x, but `par::par_join` copies each chunk out and drops
+    // it immediately, so the slack is short-lived - and growing instead would put
+    // reallocations in the middle of the probe stream this function exists to
+    // keep flowing.
+    let mut out = Vec::with_capacity(chunk.len());
+
+    // warm-up: the first `PREFETCH_DISTANCE` probes have nobody ahead of them to
+    // have issued their fetch, so issue it here.
+    for board in chunk.iter().take(PREFETCH_DISTANCE) {
+        set.prefetch_for_test(board.to_compressed_repr());
+    }
+
+    // body: probe board `i` while fetching board `i + PREFETCH_DISTANCE`. Both
+    // halves are `len - PREFETCH_DISTANCE` long, so for a chunk shorter than the
+    // distance this is empty and the drain below handles every board.
+    //
+    // `get(..).unwrap_or(&[])` rather than `&chunk[PREFETCH_DISTANCE..]`: a range
+    // whose *start* is past the end panics rather than yielding an empty slice, so
+    // indexing would take down any chunk shorter than the distance even though the
+    // loop it feeds would have done nothing. `par::parallel` hands whole (not
+    // chunked) inputs to this when they are small, and the shrink phase's later
+    // rounds do filter very short ones, so that is a reachable panic and not a
+    // theoretical one - it was one, until the test below caught it.
+    let split = chunk.len().saturating_sub(PREFETCH_DISTANCE);
+    let ahead_of = chunk.get(PREFETCH_DISTANCE..).unwrap_or(&[]);
+    for (board, ahead) in chunk[..split].iter().zip(ahead_of) {
+        set.prefetch_for_test(ahead.to_compressed_repr());
+        if set.test(board.to_compressed_repr()) {
+            out.push(*board);
+        }
+    }
+
+    // drain: the last `PREFETCH_DISTANCE` boards were prefetched by the body (or
+    // the warm-up) and only need probing.
+    for board in &chunk[split..] {
+        if set.test(board.to_compressed_repr()) {
+            out.push(*board);
+        }
+    }
+
+    out
+}
+
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn try_bitset_shrink_round(
     keyset: &mut Option<DenseKeySet>,
@@ -228,11 +294,7 @@ fn try_bitset_shrink_round(
     // intersect it against `visited[remaining - 1]` the way the non-bitset path
     // does - no extraction needed at all here.
     visited[remaining - 1] = par::parallel(&visited[remaining - 1], threads, |chunk| {
-        chunk
-            .iter()
-            .copied()
-            .filter(|b| set.test(b.to_compressed_repr()))
-            .collect()
+        intersect_chunk(set, chunk)
     });
     let intersection = visited[remaining - 1].len();
     timer.round("intersect".into());
@@ -600,6 +662,36 @@ mod tests {
             let states = states_after(levels);
             assert_matches_reference(&states, false);
             assert_matches_reference(&states, true);
+        }
+    }
+
+    /// `intersect_chunk` splits its input into warm-up, a `zip`-driven body and a
+    /// drain, so - exactly as with the generator above - a boundary that is off by
+    /// one silently drops or duplicates boards while the code still looks right,
+    /// and the result is a wrong final answer rather than a crash. Checks every
+    /// length across both boundaries, plus lengths well past them.
+    #[test]
+    fn intersect_chunk_matches_straight_line_filter() {
+        let states = states_after(6);
+        let set = DenseKeySet::new();
+        // put half the boards in the set, so the filter has to both keep and drop,
+        // and interleaved so it cannot pass by accident on a contiguous run
+        for board in states.iter().step_by(2) {
+            set.set(board.to_compressed_repr());
+        }
+        for len in (0..40).chain([100, 512, states.len()]) {
+            let chunk = &states[..len.min(states.len())];
+            let expected: Vec<Board> = chunk
+                .iter()
+                .copied()
+                .filter(|b| set.test(b.to_compressed_repr()))
+                .collect();
+            assert_eq!(
+                intersect_chunk(&set, chunk),
+                expected,
+                "intersect_chunk differs at len {}",
+                chunk.len()
+            );
         }
     }
 }

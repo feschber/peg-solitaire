@@ -208,6 +208,27 @@ impl DenseKeySet {
     /// common case, so they arrive Exclusive and the RMW can upgrade locally.
     #[inline]
     pub(crate) fn prefetch_for_set(&self, key: u64) {
+        self.prefetch_word(key);
+    }
+
+    /// Starts fetching the cache line [`Self::test`] would read for `key`.
+    ///
+    /// Same single line as [`Self::prefetch_for_set`] - `set` and `test` index
+    /// `words` identically - but it earns its keep for a different reason, so the
+    /// two are named apart at the call sites. `test` is a plain `Relaxed` load
+    /// with no `lock` prefix, so unlike `set` it is not itself a barrier and the
+    /// core is free to overlap consecutive probes on its own. What limits that is
+    /// how far ahead the out-of-order window can run, and the caller
+    /// (`try_bitset_shrink_round`'s filter) puts a thoroughly unpredictable
+    /// data-dependent branch on every probe - so the window keeps being spent on
+    /// mispredicted work instead of on getting the next miss started.
+    #[inline]
+    pub(crate) fn prefetch_for_test(&self, key: u64) {
+        self.prefetch_word(key);
+    }
+
+    #[inline]
+    fn prefetch_word(&self, key: u64) {
         #[cfg(target_arch = "x86_64")]
         {
             // `key` is a `Board::to_compressed_repr` output, so `key < 2^KEY_BITS`
