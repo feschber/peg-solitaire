@@ -58,6 +58,33 @@ const BITSET_THRESHOLD: usize = 50_000;
 /// at the wrong granularity outweighed what it saved. Callers apply pagoda to
 /// the deduped/extracted result instead, where the cost/benefit ratio is right.
 ///
+/// It also cannot avoid generating the duplicates in the first place, which is
+/// worth recording because the idea keeps looking plausible. Measured on the two
+/// biggest rounds:
+///
+/// ```text
+///                          growth round   shrink round
+///   moves                    14,274,701     19,672,499
+///   distinct un-normalized    5,121,307      6,129,021    (2.79x / 3.21x)
+///   distinct normalized       2,499,905      3,163,355    (5.71x / 6.22x total)
+///   intra-board duplicates        5,592          7,077    (0.04% of moves)
+/// ```
+///
+/// So the ~6x splits into genuine graph convergence (2.8-3.2x: different
+/// predecessors reaching the identical board) and symmetry collapse (~2x:
+/// different members of one orbit normalizing together). Neither is decidable
+/// from `(board, move)` alone. A result `R` is generated once per forward move
+/// of `R` whose predecessor happens to be solvable, so choosing a single
+/// canonical generator means asking which of `R`'s ~10 predecessors are
+/// solvable: ~10 normalizations plus ~10 random probes into a 1 GiB structure,
+/// to skip ~6 prefetched `lock or`s. The only rule that *is* local, "emit only
+/// if this is `R`'s lowest-index forward move", silently drops every `R` whose
+/// lowest-index predecessor is unsolvable.
+///
+/// The one locally-removable class - two moves from the same board related by
+/// that board's symmetry stabilizer - is 0.04% of moves (only ~0.1% of boards
+/// have a nontrivial stabilizer at all), so it is not worth a branch.
+///
 /// Returns the total number of moves considered (pre-dedup).
 ///
 /// Generation and the bitset writes are software-pipelined `PREFETCH_DISTANCE`
@@ -107,6 +134,11 @@ fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> u
             // which is what makes the drain below correct.
             let mut n = 0usize;
             for board in chunk {
+                // hoisted out of the move loop: a move is an XOR with a constant
+                // mask and the symmetry transforms are GF(2)-linear, so every
+                // successor's eight symmetries are these eight XORed against a
+                // per-move constant. See `Board::normalize_after_move`.
+                let syms = board.symmetries();
                 for dir in Dir::enumerate() {
                     let mask = if forward {
                         board.mov_pattern_mask(dir)
@@ -114,7 +146,7 @@ fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> u
                         board.rev_mov_pattern_mask(dir)
                     };
                     for idx in mask {
-                        let moved = board.toggle_mov_idx_unchecked(idx, dir).normalize();
+                        let moved = Board::normalize_after_move(&syms, idx, dir);
                         let key = moved.to_compressed_repr();
                         set.prefetch_for_set(key);
                         let slot = n & (PREFETCH_DISTANCE - 1);

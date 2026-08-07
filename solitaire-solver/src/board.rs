@@ -17,6 +17,16 @@ pub type Idx = i8;
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Board(pub u64);
 
+/// One move's eight symmetry-transformed masks, for [`Board::SYM_DIR_LUT`].
+///
+/// `align(64)` is the point of the wrapper: eight `Board`s are exactly one cache
+/// line, and forcing the alignment makes each entry occupy one rather than
+/// straddling two. Without it the array would only be 8-aligned and half the
+/// lookups would touch two lines.
+#[repr(align(64))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SymMasks(pub(crate) [Board; 8]);
+
 pub struct U33(u64);
 
 impl RadixKey for U33 {
@@ -339,6 +349,52 @@ fn test_compressed_repr_matches_portable() {
     }
 }
 
+/// Pins the algebraic identity `Board::normalize_after_move` rests on:
+/// `g(board ^ mask) == g(board) ^ g(mask)` for every symmetry `g`, because the
+/// symmetry transforms are GF(2)-linear and a move is an XOR.
+///
+/// Checked per-symmetry rather than only on the resulting minimum, so that a
+/// `SYM_DIR_LUT` whose eight entries are permuted relative to `symmetries()`
+/// fails right here instead of surfacing as a wrong feasible-set count much
+/// later. Every geometrically valid `(idx, dir)` is covered - that is exactly
+/// the domain the table has entries for - against both real and arbitrary
+/// boards, since the identity is about bit patterns and does not care whether
+/// the move is legal on the board it is applied to.
+#[test]
+fn test_normalize_after_move_matches_direct_normalize() {
+    let full = Board::full().0;
+    let samples = [Board::empty(), Board::full(), Board::default(), Board::solved()]
+        .into_iter()
+        .chain((0..2_000).map(|_| Board(rand::random::<u64>() & full)));
+    let mut checked = 0usize;
+    for board in samples {
+        let syms = board.symmetries();
+        for dir in Dir::enumerate() {
+            for idx in board.movable_positions(dir) {
+                let moved = board.toggle_mov_idx_unchecked(idx, dir);
+                let direct = moved.symmetries();
+                let masks = &Board::SYM_DIR_LUT[dir.index()][idx].0;
+                for g in 0..8 {
+                    assert_eq!(
+                        direct[g],
+                        syms[g] ^ masks[g],
+                        "symmetry {g} of {board:?} ^ mask({idx}, {dir}) mismatched: \
+                         SYM_DIR_LUT ordering disagrees with symmetries()"
+                    );
+                }
+                assert_eq!(
+                    Board::normalize_after_move(&syms, idx, dir),
+                    moved.normalize(),
+                    "normalize_after_move disagrees for {board:?} ({idx}, {dir})"
+                );
+                checked += 1;
+            }
+        }
+    }
+    // ~76 valid moves per board over 2004 boards
+    assert!(checked > 100_000, "only checked {checked} move/board pairs");
+}
+
 #[test]
 fn test_compression() {
     let board = Board::default().set((3, 3));
@@ -431,6 +487,42 @@ impl Board {
             }
         }
         min
+    }
+
+    /// `(board ^ direction_mask(idx, dir)).normalize()`, given `syms = board.symmetries()`.
+    ///
+    /// A move is exactly an XOR with a constant mask (see
+    /// [`Self::toggle_mov_idx_unchecked`]), and every operation the eight symmetry
+    /// transforms are built from - `transpose`'s butterflies,
+    /// `reverse_bits_in_bytes`, `swap_bytes`, shifts, AND-with-a-constant - is
+    /// GF(2)-linear. So for every `g` in the symmetry group
+    ///
+    /// ```text
+    /// g(board ^ mask) == g(board) ^ g(mask)
+    /// ```
+    ///
+    /// and `g(mask)` depends only on the move, not the board: it is
+    /// [`Self::SYM_DIR_LUT`], computed at compile time. That lets the caller run
+    /// the transforms once per *board* and get every successor's eight symmetries
+    /// for eight XORs against one cache line. Boards average ~10 moves in the
+    /// rounds that matter, so the transform work is amortized about tenfold
+    /// against calling [`Self::normalize`] on each result.
+    ///
+    /// `syms` must come from `board.symmetries()` for the same `board` the move is
+    /// applied to, and `(idx, dir)` must be a geometrically valid move - i.e. one
+    /// yielded by `mov_pattern_mask`/`rev_mov_pattern_mask`, which is exactly the
+    /// set `SYM_DIR_LUT` has entries for.
+    #[inline]
+    pub fn normalize_after_move(syms: &[Self; 8], idx: usize, dir: Dir) -> Self {
+        let masks = &Self::SYM_DIR_LUT[dir.index()][idx].0;
+        let mut min = u64::MAX;
+        for g in 0..8 {
+            let candidate = syms[g].0 ^ masks[g].0;
+            if candidate < min {
+                min = candidate;
+            }
+        }
+        Self(min)
     }
 
     pub const fn empty() -> Self {
@@ -604,6 +696,39 @@ impl Board {
     const EXP_MOV_LUT: [[Board; 64]; 4] = Self::gen_luts().1;
     #[allow(unused)]
     const EXP_REV_LUT: [[Board; 64]; 4] = Self::gen_luts().2;
+
+    const fn gen_sym_dir_lut() -> [[SymMasks; 64]; 4] {
+        let mut lut = [[SymMasks([Board(0); 8]); 64]; 4];
+        let mut d = 0;
+        while d < 4 {
+            let dir = Dir::from_index(d);
+            // `direction_mask` computes `idx - 2` (West) and `idx - 2 * REPR`
+            // (North), which underflow for low `idx`. That is a hard error in
+            // const evaluation - the pre-existing `gen_luts` only gets away with
+            // it because nothing references its output, so it is never evaluated.
+            // Restricting to the positions a move in `dir` can actually start
+            // from avoids the underflow and leaves the unreachable entries zero.
+            let movable = Board::empty().movable_positions(dir);
+            let mut i = 0;
+            while i < 64 {
+                if (movable.0 >> i) & 1 == 1 {
+                    lut[d][i] = SymMasks(Self::direction_mask(i, dir).symmetries());
+                }
+                i += 1;
+            }
+            d += 1;
+        }
+        lut
+    }
+
+    /// `SYM_DIR_LUT[dir][idx][g]` is the `g`th symmetry of `direction_mask(idx, dir)`,
+    /// in the same order [`Self::symmetries`] returns - guaranteed by construction,
+    /// since the table is literally `symmetries()` applied to each move mask.
+    ///
+    /// Indexed `[dir][idx]` so a move's eight masks are one contiguous, 64-byte
+    /// aligned block: a single cache line. 16 KiB total, of which only the ~76
+    /// geometrically valid moves are ever touched.
+    pub(crate) const SYM_DIR_LUT: [[SymMasks; 64]; 4] = Self::gen_sym_dir_lut();
 
     pub fn movable_at_no_bounds_check(self, idx: usize, dir: Dir) -> bool {
         let mask = Self::direction_mask(idx, dir);
