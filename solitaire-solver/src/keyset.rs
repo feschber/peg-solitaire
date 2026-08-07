@@ -384,6 +384,23 @@ impl DenseKeySet {
         // value makes LLVM emit a `lock cmpxchg` retry loop instead of a single
         // `lock or`, which measured ~36ms worse over the ~34M calls these rounds
         // make. Measured, then reverted.
+        //
+        // And it is not worth dropping the atomic on the single-threaded path, though
+        // a profile makes it look like the obvious win: at `--threads 1` this
+        // function is 43.6% of the run against 20.1% at 16 threads, the same
+        // instruction apparently costing twice the share for want of other cores'
+        // misses to hide behind. Tried it - a serial generator taking the map by
+        // `&mut` (which *proves* exclusivity, where a `threads == 1` test would not:
+        // `par::configure_thread_pool` leaves an already-built pool alone, so that
+        // count does not bound how many rayon workers exist) and writing plain
+        // `u64`s. Measured at `--threads 1`: generation +0.4%, total +4.3 ms, faster
+        // in 6 of 12 paired runs. No effect.
+        //
+        // Because the share is the memory access, not the lock. `prefetch_at` issues
+        // the fetch 16 keys ahead, so the line is generally resident by the time the
+        // RMW runs, and an uncontended `lock or` on a resident line costs about what
+        // a plain read-modify-write costs on this core. Reverted: `unsafe` plus a
+        // duplicated generation loop, for nothing.
         self.words[word_idx].fetch_or(mask, Ordering::Relaxed);
 
         let block = word_idx / BLOCK_WORDS;
