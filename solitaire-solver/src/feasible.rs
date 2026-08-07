@@ -41,25 +41,81 @@ const BITSET_THRESHOLD: usize = 1_000_000;
 /// the deduped/extracted result instead, where the cost/benefit ratio is right.
 ///
 /// Returns the total number of moves considered (pre-dedup).
+///
+/// Generation and the bitset writes are software-pipelined `PREFETCH_DISTANCE`
+/// keys apart, via the ring buffer below: each key is prefetched (see
+/// [`DenseKeySet::prefetch_for_set`]) as soon as it is computed, and only
+/// `set()` once that many further keys have been generated. Profiling the
+/// straight-line version put ~70% of this function's cycles on the single
+/// `lock or` inside `set` - a serialized DRAM round trip per call, because the
+/// `lock` prefix bars the overlapping misses that would otherwise hide it. The
+/// ~8 symmetries `normalize` evaluates per key are exactly the independent work
+/// needed to cover that latency.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> usize {
+    /// how many keys ahead of the `set()` the prefetch runs. Must be a power of two
+    /// (the ring index is masked, not divided).
+    const PREFETCH_DISTANCE: usize = 16;
+
+    /// boards per work unit. The ring has to persist across boards to stay full -
+    /// these rounds average only ~10 moves per board, well under the distance - so
+    /// the parallel split is per chunk rather than rayon's default per element.
+    /// Small enough that a chunk is still a fraction of one thread's share (these
+    /// rounds run 1.4-2.0M boards over 16 threads), keeping work-stealing effective.
+    const CHUNK: usize = 2048;
+
+    // Deliberately no recently-seen filter in front of `set()`. ~85% of the keys
+    // here are repeats, so a small L1-resident direct-mapped tag table (index on
+    // `key & (SLOTS - 1)`, tag the remaining bits, skip on a match - exact, so it
+    // cannot drop a key) looks like it should erase most of the remaining DRAM
+    // traffic for an L1 access. Measured, and it does not: the duplicates' reuse
+    // distance is far longer than any table that stays in cache.
+    //
+    //     slots   keys reaching set(), growth round   shrink round
+    //      none            14,274,701  (100%)         19,672,499  (100%)
+    //      4096            11,850,941  ( 83%)         16,602,185  ( 84%)
+    //     16384            11,302,245  ( 79%)         15,908,615  ( 81%)
+    //
+    // So it removes under a fifth of the calls while charging a load, a store and
+    // a poorly-predicted branch against *all* of them - and the branch breaks up
+    // the prefetch pipeline below, which is worth far more. Net +5.4% on the
+    // generation step, +5.9% end to end. Tried at both sizes, then reverted.
+
     states
-        .par_iter()
-        .map(|board| {
-            let mut count = 0usize;
-            for dir in Dir::enumerate() {
-                let mask = if forward {
-                    board.mov_pattern_mask(dir)
-                } else {
-                    board.rev_mov_pattern_mask(dir)
-                };
-                for idx in mask {
-                    let moved = board.toggle_mov_idx_unchecked(idx, dir).normalize();
-                    set.set(moved.to_compressed_repr());
-                    count += 1;
+        .par_chunks(CHUNK)
+        .map(|chunk| {
+            let mut ring = [0u64; PREFETCH_DISTANCE];
+            // also the ring index: every increment corresponds to a slot written,
+            // which is what makes the drain below correct.
+            let mut n = 0usize;
+            for board in chunk {
+                for dir in Dir::enumerate() {
+                    let mask = if forward {
+                        board.mov_pattern_mask(dir)
+                    } else {
+                        board.rev_mov_pattern_mask(dir)
+                    };
+                    for idx in mask {
+                        let moved = board.toggle_mov_idx_unchecked(idx, dir).normalize();
+                        let key = moved.to_compressed_repr();
+                        set.prefetch_for_set(key);
+                        let slot = n & (PREFETCH_DISTANCE - 1);
+                        // once the ring is full, the slot about to be overwritten
+                        // holds the key prefetched exactly PREFETCH_DISTANCE keys ago
+                        if n >= PREFETCH_DISTANCE {
+                            set.set(ring[slot]);
+                        }
+                        ring[slot] = key;
+                        n += 1;
+                    }
                 }
             }
-            count
+            // drain the tail: the last min(n, PREFETCH_DISTANCE) keys are prefetched
+            // but not yet set.
+            for i in n.saturating_sub(PREFETCH_DISTANCE)..n {
+                set.set(ring[i & (PREFETCH_DISTANCE - 1)]);
+            }
+            n
         })
         .sum()
 }
@@ -411,4 +467,89 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     info!("          total: {:>12?}", timer.total());
     info!("        sorting: {sort_time:?}");
     solvable
+}
+
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "android"))))]
+mod tests {
+    use super::*;
+
+    /// The straight-line generator `generate_into_bitset` replaced: same keys, no
+    /// ring buffer, no prefetch, no chunking.
+    fn generate_reference(states: &[Board], set: &DenseKeySet, forward: bool) -> usize {
+        let mut count = 0usize;
+        for board in states {
+            for dir in Dir::enumerate() {
+                let mask = if forward {
+                    board.mov_pattern_mask(dir)
+                } else {
+                    board.rev_mov_pattern_mask(dir)
+                };
+                for idx in mask {
+                    let moved = board.toggle_mov_idx_unchecked(idx, dir).normalize();
+                    set.set(moved.to_compressed_repr());
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// `levels` rounds of reverse moves out from the solved board, deduped - i.e.
+    /// exactly the kind of input the bitset rounds see.
+    fn states_after(levels: usize) -> Vec<Board> {
+        let mut states = vec![Board::solved()];
+        for _ in 0..levels {
+            let mut next = reverse_moves(&states);
+            next.fast_sort_unstable_mt(1);
+            next.dedup();
+            states = next;
+        }
+        states
+    }
+
+    fn assert_matches_reference(states: &[Board], forward: bool) {
+        let mut pipelined = DenseKeySet::new();
+        let mut reference = DenseKeySet::new();
+        let n = generate_into_bitset(states, &pipelined, forward);
+        let n_ref = generate_reference(states, &reference, forward);
+        assert_eq!(n, n_ref, "move count differs ({} boards)", states.len());
+        assert_eq!(
+            pipelined.extract_sorted_by_key(),
+            reference.extract_sorted_by_key(),
+            "key set differs ({} boards, forward={forward})",
+            states.len()
+        );
+    }
+
+    /// The ring buffer defers every `set()` by `PREFETCH_DISTANCE`, so a key is
+    /// only written because a later key displaced it or because the drain caught
+    /// it. Both an off-by-one in the drain bound and any counter shared between
+    /// "moves seen" and "ring slots written" would silently drop keys here while
+    /// leaving the code looking right - and, since the bitset is a superset filter
+    /// for the rounds that use it, a dropped key shows up as a wrong final answer
+    /// rather than a crash.
+    #[test]
+    fn pipelined_generate_matches_straight_line() {
+        // ~9.7k boards: several `CHUNK`s, each holding many times PREFETCH_DISTANCE
+        // keys, so the steady-state path dominates and chunk boundaries are crossed.
+        let states = states_after(8);
+        assert!(
+            states.len() > 2048,
+            "want multiple chunks, got {}",
+            states.len()
+        );
+        assert_matches_reference(&states, false);
+        assert_matches_reference(&states, true);
+    }
+
+    /// A chunk that never fills the ring exercises only the drain, which the test
+    /// above cannot reach.
+    #[test]
+    fn pipelined_generate_matches_straight_line_below_prefetch_distance() {
+        for levels in 0..4 {
+            let states = states_after(levels);
+            assert_matches_reference(&states, false);
+            assert_matches_reference(&states, true);
+        }
+    }
 }

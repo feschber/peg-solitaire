@@ -164,6 +164,48 @@ impl DenseKeySet {
         }
     }
 
+    /// Starts fetching the cache line [`Self::set`] would touch for `key`, without
+    /// waiting for it.
+    ///
+    /// This is the counterpart to the "don't guard the `fetch_or` with a load"
+    /// comment above, and the reason that guard lost while this wins. `set` scatters
+    /// randomly over a 1 GiB bitmap at ~0.3% occupancy, so essentially every call
+    /// misses to DRAM - but the cost that dominates is not the miss, it is that a
+    /// `lock`ed RMW is a full barrier: it drains the store buffer, so consecutive
+    /// independent misses cannot overlap in the core's line-fill buffers and each
+    /// one pays the full latency in series. A guard load does not fix that (it is
+    /// dependent, and touches the same line); issuing the fetch some distance ahead
+    /// of the RMW does, restoring the memory-level parallelism the `lock` prefix
+    /// otherwise destroys. `generate_into_bitset` is the only caller and pipelines
+    /// it against its own key generation - see the ring buffer there.
+    ///
+    /// `_MM_HINT_ET0` would be the natural hint (write intent -> line arrives
+    /// Modified, so the RMW needs no second round trip for ownership), but LLVM's
+    /// x86 backend lowers it to a plain `prefetcht0` anyway. That is close enough
+    /// in practice here: nothing else is writing these lines concurrently in the
+    /// common case, so they arrive Exclusive and the RMW can upgrade locally.
+    #[inline]
+    pub(crate) fn prefetch_for_set(&self, key: u64) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            // `key` is a `Board::to_compressed_repr` output, so `key < 2^KEY_BITS`
+            // and `word_idx < NUM_WORDS` - the same bound `set`/`test` index under.
+            let word_idx = (key >> 6) as usize;
+            debug_assert!(word_idx < NUM_WORDS);
+            // SAFETY: `word_idx` is in bounds per the above, so the pointer is within
+            // the `words` allocation. A prefetch is a hint with no architectural
+            // effect - it neither reads nor writes - so it cannot race with the
+            // concurrent `set` calls happening around it.
+            unsafe {
+                core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T0 }>(
+                    self.words.as_ptr().add(word_idx).cast::<i8>(),
+                );
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = key;
+    }
+
     #[inline]
     pub(crate) fn test(&self, key: u64) -> bool {
         let word_idx = (key >> 6) as usize;
