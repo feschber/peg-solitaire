@@ -24,14 +24,12 @@ use crate::{
     timer::Timer,
 };
 
-/// boards-in-round threshold above which a shrink-phase round uses the dense
-/// bitset (see `keyset.rs`) instead of sort+dedup+merge-intersect.
+/// boards-in-round threshold above which a round uses the dense bitset (see
+/// `keyset.rs`) instead of sort+dedup+merge-intersect.
 ///
-/// This was 1_000_000 - deliberately conservative, capturing only the single
-/// biggest round of each phase. Once `generate_into_bitset` got its prefetch
-/// pipeline (~36% off the generation step, which is most of what the bitset path
-/// costs), the crossover moved a long way down. Re-swept end to end, 9 interleaved
-/// reps per point, internal timer medians:
+/// This has walked down twice, each time because the bitset got cheaper. It was
+/// 1_000_000 - capturing only the single biggest round of each phase - until
+/// `generate_into_bitset` got its prefetch pipeline, which moved it to 50_000:
 ///
 /// ```text
 /// 1_000_000    203.9 ms        50_000    181.3 ms
@@ -41,13 +39,58 @@ use crate::{
 ///                                  100    185.7 ms
 /// ```
 ///
-/// Flat from roughly 10k to 200k and worth ~10% against the old value; it only
-/// turns back up near 100, where a round's fixed bitset cost (the full-summary
-/// scan in `clear`/extraction, plus rayon dispatch) stops being amortized.
-/// 50_000 sits in the middle of the flat region rather than at its measured
-/// minimum, which is inside the noise.
+/// Ranking the key space then shrank the map 7.4x and the summary index with it
+/// (256 KiB -> 35 KiB), which is precisely the fixed per-round cost that used to
+/// penalize small rounds - `clear` and extraction both scan the whole summary. So
+/// it was re-swept, 9-11 interleaved reps per point, internal timer medians:
+///
+/// ```text
+///   200_000    100.1 ms         3_000     83.7 ms
+///    50_000     88.5 ms         2_000     84.4 ms
+///    20_000     87.6 ms         1_000     84.9 ms
+///    10_000     85.5 ms           500     84.7 ms
+///     5_000     85.1 ms             1     87.2 ms
+/// ```
+///
+/// Now flat from roughly 500 to 10_000 - a 1.9 ms spread across that whole band,
+/// i.e. inside the noise - so 2_000 is picked as the middle of it rather than the
+/// measured minimum of 3_000, which is not meaningfully better than its neighbours.
+///
+/// Worth ~5% against 50_000, give or take: the sweep above puts the two 4.1 ms
+/// apart, and a dedicated paired run (14 interleaved reps of just those two values)
+/// gave -6.3 ms on medians but only -1.5 ms on minima, faster in 14 of 14. The
+/// spread between those framings is the honest uncertainty - the lower threshold
+/// also has visibly tighter run-to-run variance, which flatters a median
+/// comparison, so treat ~4 ms as the conservative read.
+///
+/// Note the two ends both turn up, for opposite reasons, so this is a real optimum
+/// and not a monotone preference: at 200_000 the mid-size rounds are back on the
+/// sort path that the bitset now beats handily, while at 1 - every round on the
+/// bitset - the per-round costs that do *not* scale with the round (the summary
+/// scans, rayon dispatch, `begin_round`'s prefix sum) stop being amortized. The
+/// sort path still earns its keep for the smallest rounds.
+///
+/// `begin_round`'s table rebuild was the obvious suspect for that lower turn-up,
+/// since ranking added it, but it profiles at 0.09% of the run - the summary scans
+/// and rayon dispatch dominate the fixed cost instead.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-const BITSET_THRESHOLD: usize = 50_000;
+const BITSET_THRESHOLD_DEFAULT: usize = 2_000;
+
+/// [`BITSET_THRESHOLD_DEFAULT`], overridable for tuning sweeps as the `peeka_sort`
+/// knobs are. Read once; it only gates a per-round size comparison, so reading it
+/// from the environment cannot change any inner loop's codegen - a sweep measures
+/// exactly what hardcoding the value would do.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn bitset_threshold() -> usize {
+    use std::sync::OnceLock;
+    static T: OnceLock<usize> = OnceLock::new();
+    *T.get_or_init(|| {
+        std::env::var("PEG_BITSET_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(BITSET_THRESHOLD_DEFAULT)
+    })
+}
 
 /// generates every forward (or, if `!forward`, reverse) move from `states`,
 /// normalizes, and sets each result's compressed key directly in `set` - fusing
@@ -175,7 +218,7 @@ fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> u
 }
 
 /// attempts the bitset path for one shrink-phase round; returns `None` (falling
-/// back to the existing sort+dedup+intersect path) below `BITSET_THRESHOLD`, or
+/// back to the existing sort+dedup+intersect path) below `bitset_threshold`, or
 /// wherever the bitset path is disabled entirely (see the module-level comment
 /// on the `rayon::prelude::*` import above).
 ///
@@ -274,7 +317,7 @@ fn try_bitset_shrink_round(
     threads: usize,
     timer: &mut Timer,
 ) -> Option<(usize, usize)> {
-    if visited[remaining].len() < BITSET_THRESHOLD {
+    if visited[remaining].len() < bitset_threshold() {
         return None;
     }
 
@@ -337,7 +380,7 @@ fn try_bitset_growth_round(
     states: &[Board],
     timer: &mut Timer,
 ) -> Option<(usize, Vec<Board>)> {
-    if states.len() < BITSET_THRESHOLD {
+    if states.len() < bitset_threshold() {
         return None;
     }
 
