@@ -19,11 +19,30 @@ use crate::Board;
 const KEY_BITS: usize = Board::SLOTS;
 /// one bit per key, `2^KEY_BITS` bits total -> `2^(KEY_BITS - 6)` `u64` words (1 GiB).
 const NUM_WORDS: usize = 1 << (KEY_BITS - 6);
-/// words per summary bit: each summary bit says "is this whole 512-word (32 Kbit)
+/// words per summary bit: each summary bit says "is this whole 64-word (4 Kbit)
 /// span of `words` entirely zero?", so extraction/clear can skip it in O(1).
-const BLOCK_WORDS: usize = 512;
+///
+/// This trades directly against [`DenseKeySet::set`]'s summary update. Coarser
+/// blocks mean a smaller summary, which keeps that update in L1; finer blocks mean
+/// [`DenseKeySet::clear`] zeroes less untouched memory around each set bit. Keys
+/// are extremely sparse here (a round sets ~2M of 8.6B), so a block is almost
+/// always cleared for the sake of a handful of bits, and clear is where the money
+/// is. Measured end to end, 15 interleaved reps, internal timer medians - plus
+/// per-phase totals from an instrumented build:
+///
+/// ```text
+/// BLOCK_WORDS   summary    clear    generate   total wall
+///         512     32 KiB   21.8 ms    88.1 ms     181.4 ms
+///          64    256 KiB   14.7 ms    92.9 ms     173.3 ms   <- chosen
+///          32    512 KiB   12.1 ms    90.1 ms     179.7 ms
+/// ```
+///
+/// 64 is the turning point: clear keeps getting cheaper below it, but the summary
+/// outgrows what `set` can keep hot and the generation step gives back more than
+/// the clear saves.
+const BLOCK_WORDS: usize = 64;
 const NUM_BLOCKS: usize = NUM_WORDS / BLOCK_WORDS;
-/// one bit per block, so the summary itself is `2^18 / 64` = 4096 words (32 KiB).
+/// one bit per block, so the summary itself is `2^21 / 64` = 32768 words (256 KiB).
 const SUMMARY_WORDS: usize = NUM_BLOCKS / 64;
 
 fn zeroed_atomic_vec(len: usize) -> Vec<AtomicU64> {
@@ -102,8 +121,8 @@ pub(crate) struct DenseKeySet {
 impl DenseKeySet {
     pub(crate) fn new() -> Self {
         let words = zeroed_atomic_vec(NUM_WORDS);
-        // only `words` is worth advising; `summary` is 32 KiB, far below the 2 MiB
-        // a transparent huge page would need.
+        // only `words` is worth advising; `summary` is 256 KiB, still well below
+        // the 2 MiB a transparent huge page would need.
         disable_transparent_hugepages(&words);
         Self {
             words,
@@ -151,14 +170,17 @@ impl DenseKeySet {
         let block = word_idx / BLOCK_WORDS;
         let sword = &self.summary[block / 64];
         let smask = 1u64 << (block % 64);
-        // The summary is the opposite case, and this is where the win is. It is
-        // only 4096 words (~512 cache lines) but every thread writes it, so an
-        // unconditional `fetch_or` here is a stream of contended cross-core
-        // ownership transfers on a handful of lines. It is also L1-resident and
-        // every block that will ever be non-empty gets marked within its first
-        // few keys, so this load almost always hits in cache, finds the bit
-        // already set, and skips the RMW entirely - keeping the line Shared
-        // instead of bouncing it. Worth ~24-29ms per bitset round here.
+        // The summary is the opposite case, and this is where the win is. Every
+        // thread writes it, so an unconditional `fetch_or` here is a stream of
+        // contended cross-core ownership transfers; every block that will ever be
+        // non-empty gets marked within its first few keys, so this load almost
+        // always finds the bit already set and skips the RMW entirely - keeping
+        // the line Shared instead of bouncing it. Worth ~24-29ms per bitset round
+        // here, measured back when the summary was 32 KiB and comfortably
+        // L1-resident. It is 256 KiB since `BLOCK_WORDS` dropped to 64 (see the
+        // trade documented there), so the load now generally comes from L2 rather
+        // than L1 - which is exactly the cost that sweep was weighing, and still
+        // nothing next to the DRAM round trip the `fetch_or` above pays.
         if sword.load(Ordering::Relaxed) & smask == 0 {
             sword.fetch_or(smask, Ordering::Relaxed);
         }
@@ -450,8 +472,20 @@ mod tests {
     #[test]
     fn extract_sorted_by_key_matches_and_is_ordered() {
         let mut set = DenseKeySet::new();
-        // spans multiple blocks and multiple summary words.
-        let mut keys: Vec<u64> = vec![0, 5, 63, 64, 512 * 64 - 1, 512 * 64, 1 << 20, 1 << 25, (1u64 << 33) - 1];
+        // spans multiple blocks and multiple summary words. The pair straddling a
+        // block boundary is written in terms of `KEYS_PER_BLOCK` rather than a
+        // literal, so it keeps straddling one if `BLOCK_WORDS` is retuned again.
+        let mut keys: Vec<u64> = vec![
+            0,
+            5,
+            63,
+            64,
+            KEYS_PER_BLOCK - 1,
+            KEYS_PER_BLOCK,
+            1 << 20,
+            1 << 25,
+            (1u64 << 33) - 1,
+        ];
         for &k in &keys {
             set.set(k);
         }
