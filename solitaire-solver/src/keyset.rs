@@ -1,9 +1,24 @@
-//! A dense, fixed-size concurrent bitset over `Board`'s 33-bit compressed key space
-//! (`Board::to_compressed_repr`/`from_compressed_repr`), used as a replacement for
-//! sort+dedup (and, via [`DenseKeySet::test`], sorted-merge intersection) in the
-//! hottest rounds of `calculate_feasible_set`.
+//! A dense, fixed-size concurrent bitset over `Board`'s compressed key space, used
+//! as a replacement for sort+dedup (and, via [`DenseKeySet::test`], sorted-merge
+//! intersection) in the hottest rounds of `calculate_feasible_set`.
 //!
-//! Not used on `wasm32` (a flat 1 GiB allocation is a non-starter in a browser) or,
+//! Indexed by a key's *rank within its round*, not by the key itself. Every board
+//! in a BFS round has the same peg count `k`, so only the `C(33, k)` patterns of
+//! popcount `k` can occur - at most `C(33, 16)`, which is 7.4x fewer than the `2^33`
+//! a raw key spans. Ranking collapses the map from 1 GiB to 139 MiB, and shrinks the
+//! part of it a round actually touches from ~185 MiB to ~34 MiB, which is what the
+//! random probes and the page faults both scale with. Measured on the largest
+//! round's real key stream (`examples/rank_bench.rs`), against indexing raw keys:
+//! `set` 57% faster, `test` 71% faster, and the summary index shrinks 7x with it.
+//! [`LOW_BITS`] covers how the rank is made cheap enough to compute per key.
+//!
+//! The price is that a key only has a meaningful position *within* one layer:
+//! [`DenseKeySet::begin_round`] must declare the peg count, and mixing layers would
+//! silently alias distinct boards onto one bit rather than fail. `index` asserts the
+//! popcount in debug builds, and `begin_round` clears the map so bits can never
+//! outlive the ranking that produced them.
+//!
+//! Not used on `wasm32` (even 139 MiB is a poor citizen in a browser) or,
 //! for now, on Android (untested on a real, potentially memory-constrained device -
 //! `solitaire-game` calls `calculate_feasible_set` on startup there). Callers keep
 //! using the sort+dedup path unconditionally on both; this module still compiles
@@ -15,10 +30,87 @@ use rayon::prelude::*;
 
 use crate::Board;
 
-/// number of bits in `Board::to_compressed_repr`'s output; the key space is `2^KEY_BITS`.
+/// number of bits in `Board::to_compressed_repr`'s output.
 const KEY_BITS: usize = Board::SLOTS;
-/// one bit per key, `2^KEY_BITS` bits total -> `2^(KEY_BITS - 6)` `u64` words (1 GiB).
-const NUM_WORDS: usize = 1 << (KEY_BITS - 6);
+
+/// Largest number of keys any single round can produce: every board in a BFS round
+/// has the same peg count `k`, so its keys are not all `2^KEY_BITS` patterns but
+/// only the `C(33, k)` with popcount `k`, and `C(33, 16) = C(33, 17)` is the peak.
+///
+/// This is what the bitmap is sized for, indexed by [`DenseKeySet::index`] rather
+/// than by the raw key - 139 MiB instead of 1 GiB, and a round with fewer pegs uses
+/// only a low prefix of it. See the module docs for what that buys.
+const MAX_LAYER_KEYS: usize = 1_166_803_110;
+/// words covered by one summary word, i.e. one unit of the bulk operations below.
+/// Padding the bitmap up to a multiple of this keeps every chunk they take full,
+/// so none of them need a partial-chunk case.
+const CHUNK_WORDS: usize = BLOCK_WORDS * 64;
+/// one bit per rankable key, padded as above -> ~139 MiB.
+const NUM_WORDS: usize = MAX_LAYER_KEYS.div_ceil(64).next_multiple_of(CHUNK_WORDS);
+
+/// bits of a key handled by the low half of the two-table rank; the high half gets
+/// the remaining `KEY_BITS - LOW_BITS`.
+///
+/// The split exists to make ranking cheap enough for the hot path. The textbook
+/// rank - sum `C(p, i)` over the set bits - is a loop of up to 17 dependent
+/// lookups; splitting it turns it into two independent table reads and an add:
+///
+/// ```text
+///   index(key) = high_cum[key >> LOW_BITS] + low_rank[key & LOW_MASK]
+/// ```
+///
+/// 16 balances the two tables against the cache: `low_rank` is `2^16` u16s
+/// (128 KiB) and `high_cum` is `2^17` u32s (512 KiB), so both sit in L2 while
+/// `high_cum`'s values stay under `C(33,16) < 2^32`.
+const LOW_BITS: u32 = 16;
+const LOW_MASK: u64 = (1 << LOW_BITS) - 1;
+const HIGH_ENTRIES: usize = 1 << (KEY_BITS as u32 - LOW_BITS);
+
+/// The key whose rank within the `pegs` layer is `index` - the inverse of
+/// [`DenseKeySet::index`].
+///
+/// `hint` is a prefix index known not to exceed the answer's, so a caller decoding
+/// ascending indices can walk `high_cum` forward instead of searching it per key;
+/// pass 0 to start from the bottom. Returns the prefix it settled on, to be fed back
+/// as the next `hint`.
+fn unindex(
+    high_cum: &[u32],
+    low_unrank: &[Vec<u16>],
+    pegs: usize,
+    index: u64,
+    hint: usize,
+) -> (u64, usize) {
+    // The answer's prefix is the *last* one whose cumulative count still fits under
+    // `index`. Equal neighbouring counts are prefixes holding no keys of this layer
+    // (their popcount cannot be completed to `pegs` by 16 low bits), and taking the
+    // last of such a run steps past them onto one that does.
+    let mut h = hint;
+    while h + 1 < HIGH_ENTRIES && high_cum[h + 1] as u64 <= index {
+        h += 1;
+    }
+    let used = (h as u64).count_ones() as usize;
+    debug_assert!(
+        used <= pegs,
+        "index {index} decodes to a prefix with more pegs than the layer holds"
+    );
+    let low = low_unrank[pegs - used][(index - high_cum[h] as u64) as usize];
+    let key = ((h as u64) << LOW_BITS) | low as u64;
+    debug_assert_eq!(key.count_ones() as usize, pegs);
+    (key, h)
+}
+
+/// `binomial[n][k]` = C(n, k), for the rank tables.
+fn binomials() -> [[u64; KEY_BITS + 1]; KEY_BITS + 1] {
+    let mut c = [[0u64; KEY_BITS + 1]; KEY_BITS + 1];
+    for n in 0..=KEY_BITS {
+        c[n][0] = 1;
+        for k in 1..=n {
+            // c[n - 1][k] is legitimately 0 for k > n - 1; do not clamp the index
+            c[n][k] = c[n - 1][k - 1] + c[n - 1][k];
+        }
+    }
+    c
+}
 /// words per summary bit: each summary bit says "is this whole 64-word (4 Kbit)
 /// span of `words` entirely zero?", so extraction/clear can skip it in O(1).
 ///
@@ -116,6 +208,18 @@ fn disable_transparent_hugepages(_region: &[AtomicU64]) {}
 pub(crate) struct DenseKeySet {
     words: Vec<AtomicU64>,
     summary: Vec<AtomicU64>,
+    /// `low_rank[l]` = how many 16-bit values below `l` share its popcount.
+    /// Independent of the round, so built once.
+    low_rank: Vec<u16>,
+    /// `low_unrank[j]` = the 16-bit values with popcount `j`, ascending; the inverse
+    /// of `low_rank`, needed only by [`DenseKeySet::extract_sorted_by_key`].
+    low_unrank: Vec<Vec<u16>>,
+    /// `high_cum[h]` = keys below the prefix `h << LOW_BITS` that have this round's
+    /// peg count. Depends on that count, so rebuilt by [`DenseKeySet::begin_round`].
+    high_cum: Vec<u32>,
+    /// peg count shared by every key in the map this round; `index` is only a
+    /// bijection within one such layer.
+    pegs: usize,
 }
 
 impl DenseKeySet {
@@ -147,10 +251,88 @@ impl DenseKeySet {
         // mapping costs nothing but address space. Shrinking the key space - e.g.
         // ranking each round's boards within `C(33, pegs)` instead of `2^33` - is
         // the lever that would actually cut it, at the price of computing the rank.
+        let c = binomials();
+        // low_rank / low_unrank are inverses of each other, built in one pass: walking
+        // `l` upwards visits the values of each popcount in ascending order, so the
+        // running counter per popcount *is* the rank, and the position it is pushed
+        // to is that rank.
+        let mut low_rank = vec![0u16; 1 << LOW_BITS];
+        let mut low_unrank: Vec<Vec<u16>> = (0..=LOW_BITS as usize)
+            .map(|j| Vec::with_capacity(c[LOW_BITS as usize][j] as usize))
+            .collect();
+        for l in 0..(1u32 << LOW_BITS) {
+            let j = l.count_ones() as usize;
+            low_rank[l as usize] = low_unrank[j].len() as u16;
+            low_unrank[j].push(l as u16);
+        }
         Self {
             words,
             summary: zeroed_atomic_vec(SUMMARY_WORDS),
+            low_rank,
+            low_unrank,
+            high_cum: vec![0u32; HIGH_ENTRIES],
+            // no layout yet: `begin_round` must run before any key is indexed, and
+            // a peg count no board can have makes forgetting it fail the assertions
+            // in `index` rather than silently mis-rank.
+            pegs: usize::MAX,
         }
+    }
+
+    /// Empties the map and switches it to the layer of keys with `pegs` pegs, which
+    /// is what makes [`Self::index`] a bijection for the round about to run.
+    ///
+    /// Clears rather than requiring the caller to: the stored bits are positions in
+    /// the *old* layer's ranking, so carrying them across a change of `pegs` would
+    /// silently reinterpret them as other boards. Making the clear part of the switch
+    /// removes the chance of getting that order wrong. Clearing an already-empty map
+    /// costs one scan of the (35 KiB) summary.
+    pub(crate) fn begin_round(&mut self, pegs: usize) {
+        self.clear();
+        let c = binomials();
+        assert!(pegs <= KEY_BITS, "a board cannot hold {pegs} pegs");
+        assert!(
+            c[KEY_BITS][pegs] as usize <= NUM_WORDS * 64,
+            "layer of {pegs} pegs needs {} bits, map holds {}",
+            c[KEY_BITS][pegs],
+            NUM_WORDS * 64
+        );
+        // high_cum[h] = keys with this peg count below prefix h. A prefix that has
+        // already used more than `pegs` bits, or too few to be completed by the low
+        // half, contributes nothing.
+        let mut acc = 0u64;
+        for (h, slot) in self.high_cum.iter_mut().enumerate() {
+            *slot = acc as u32;
+            let used = (h as u64).count_ones() as usize;
+            if used <= pegs && pegs - used <= LOW_BITS as usize {
+                acc += c[LOW_BITS as usize][pegs - used];
+            }
+        }
+        debug_assert_eq!(acc, c[KEY_BITS][pegs], "high_cum must total C(33, pegs)");
+        self.pegs = pegs;
+    }
+
+    /// Position of `key` in this round's layer: its rank among the keys of the same
+    /// popcount, which is dense in `0..C(33, pegs)` where the raw key is spread over
+    /// `2^33`. See [`LOW_BITS`] for the two-table form.
+    #[inline]
+    fn index(&self, key: u64) -> u64 {
+        debug_assert!(key < 1 << KEY_BITS, "key {key:#x} is wider than the board");
+        debug_assert_eq!(
+            key.count_ones() as usize,
+            self.pegs,
+            "key {key:#x} is not from this round's layer - its rank would collide \
+             with another board's"
+        );
+        self.high_cum[(key >> LOW_BITS) as usize] as u64
+            + self.low_rank[(key & LOW_MASK) as usize] as u64
+    }
+
+    /// Inverse of [`Self::index`], as a free function so that
+    /// [`Self::extract_sorted_by_key`] - which has the fields borrowed apart - and
+    /// the tests share one implementation. See [`unindex`].
+    #[cfg(test)]
+    fn unindex_key(&self, index: u64, hint: usize) -> (u64, usize) {
+        unindex(&self.high_cum, &self.low_unrank, self.pegs, index, hint)
     }
 
     /// Marks `key` present. Safe to call from many threads at once, but must never
@@ -169,8 +351,9 @@ impl DenseKeySet {
     /// relied on.
     #[inline]
     pub(crate) fn set(&self, key: u64) {
-        let word_idx = (key >> 6) as usize;
-        let mask = 1u64 << (key & 63);
+        let bit = self.index(key);
+        let word_idx = (bit >> 6) as usize;
+        let mask = 1u64 << (bit & 63);
         // Written unconditionally, on purpose. Guarding this with a `load` first
         // looks attractive (~85% of the raw moves per round are duplicates of a
         // key already set, so most of these RMWs are redundant) but measured
@@ -214,8 +397,8 @@ impl DenseKeySet {
     ///
     /// This is the counterpart to the "don't guard the `fetch_or` with a load"
     /// comment above, and the reason that guard lost while this wins. `set` scatters
-    /// randomly over a 1 GiB bitmap at ~0.3% occupancy, so essentially every call
-    /// misses to DRAM - but the cost that dominates is not the miss, it is that a
+    /// randomly over a map far larger than cache, so most calls still miss - but the
+    /// cost that dominates is not the miss, it is that a
     /// `lock`ed RMW is a full barrier: it drains the store buffer, so consecutive
     /// independent misses cannot overlap in the core's line-fill buffers and each
     /// one pays the full latency in series. A guard load does not fix that (it is
@@ -254,9 +437,9 @@ impl DenseKeySet {
     fn prefetch_word(&self, key: u64) {
         #[cfg(target_arch = "x86_64")]
         {
-            // `key` is a `Board::to_compressed_repr` output, so `key < 2^KEY_BITS`
-            // and `word_idx < NUM_WORDS` - the same bound `set`/`test` index under.
-            let word_idx = (key >> 6) as usize;
+            // `index` maps into this round's layer, whose size `begin_round` has
+            // checked against the map - the same bound `set`/`test` index under.
+            let word_idx = (self.index(key) >> 6) as usize;
             debug_assert!(word_idx < NUM_WORDS);
             // SAFETY: `word_idx` is in bounds per the above, so the pointer is within
             // the `words` allocation. A prefetch is a hint with no architectural
@@ -274,9 +457,9 @@ impl DenseKeySet {
 
     #[inline]
     pub(crate) fn test(&self, key: u64) -> bool {
-        let word_idx = (key >> 6) as usize;
-        let bit = (key & 63) as u32;
-        (self.words[word_idx].load(Ordering::Relaxed) >> bit) & 1 != 0
+        let bit = self.index(key);
+        let word_idx = (bit >> 6) as usize;
+        (self.words[word_idx].load(Ordering::Relaxed) >> (bit & 63)) & 1 != 0
     }
 
     /// Reinterprets an exclusively-borrowed atomic slice as plain `u64`s.
@@ -297,12 +480,13 @@ impl DenseKeySet {
         unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr().cast::<u64>(), v.len()) }
     }
 
-    /// clears every key that was set. Cheaper than a flat 1 GiB clear when occupancy
-    /// is low (it always is here - even the biggest round sets ~24M of ~8.6B keys):
+    /// clears every key that was set. Cheaper than clearing the whole map when
+    /// occupancy is low (it always is here - even the biggest round sets ~5M of the
+    /// 1.17G bits its layer spans):
     /// the summary tells us exactly which blocks need clearing, so untouched blocks
     /// (the vast majority) are skipped entirely.
     pub(crate) fn clear(&mut self) {
-        let Self { words, summary } = self;
+        let Self { words, summary, .. } = self;
         let words = Self::as_plain(words);
         let summary = Self::as_plain(summary);
         // One chunk per summary word (64 blocks). That keeps the summary's
@@ -325,13 +509,23 @@ impl DenseKeySet {
     ///
     /// This is a valid, consistent total order for every use in this codebase (see
     /// the plan's audit of `Board`'s `Ord` usage) - it just isn't `Board`'s own `Ord`.
-    /// Skips whole zero blocks via the summary rather than scanning all 1 GiB.
+    /// Rank order and key order agree - the rank counts the keys below its own -
+    /// so this is still ascending by compressed key. Skips whole zero blocks via the
+    /// summary rather than scanning the entire map.
     pub(crate) fn extract_sorted_by_key(&mut self) -> Vec<Board> {
         // `&mut` lets this read plain `u64`s rather than `Relaxed` atomics; see
         // `as_plain`. It matters most for the counting pass below, which is a
         // popcount over every word of every touched block - vectorizable as plain
         // loads, not as atomic ones.
-        let Self { words, summary } = self;
+        let Self {
+            words,
+            summary,
+            high_cum,
+            low_unrank,
+            pegs,
+            ..
+        } = self;
+        let pegs = *pegs;
         let words: &[u64] = Self::as_plain(words);
         let summary: &[u64] = Self::as_plain(summary);
         let chunks: Vec<Vec<Board>> = summary
@@ -356,6 +550,16 @@ impl DenseKeySet {
                     b &= b - 1;
                 }
                 let mut out = Vec::with_capacity(count);
+                // Set bits are positions in this layer's ranking, so each one has to
+                // be turned back into a key. Indices within a chunk only ever
+                // increase and `high_cum` is monotone, so instead of searching it per
+                // key a cursor walks forward - O(1) amortised, with one search to
+                // find where this chunk starts. Total cursor travel across all chunks
+                // is bounded by `high_cum`'s length, not by the number of keys.
+                let first_index = (sword_idx * CHUNK_WORDS * 64) as u64;
+                let mut h = high_cum
+                    .partition_point(|&c| c as u64 <= first_index)
+                    .saturating_sub(1);
                 let mut b = bits;
                 while b != 0 {
                     let block = sword_idx * 64 + b.trailing_zeros() as usize;
@@ -367,7 +571,9 @@ impl DenseKeySet {
                         while wbits != 0 {
                             let bit = wbits.trailing_zeros();
                             let word_idx = block * BLOCK_WORDS + wi;
-                            let key = ((word_idx as u64) << 6) | bit as u64;
+                            let index = ((word_idx as u64) << 6) | bit as u64;
+                            let key;
+                            (key, h) = unindex(high_cum, low_unrank, pegs, index, h);
                             out.push(Board::from_compressed_repr(key));
                             wbits &= wbits - 1;
                         }
@@ -388,148 +594,246 @@ impl DenseKeySet {
 mod tests {
     use super::*;
 
+    /// Next value with the same popcount, ascending (Gosper's hack). Successive keys
+    /// of one layer have successive *ranks*, which is what makes these useful for
+    /// exercising same-word collisions.
+    fn next_in_layer(v: u64) -> u64 {
+        let c = v & v.wrapping_neg();
+        let r = v + c;
+        (((r ^ v) >> 2) / c) | r
+    }
+
+    /// every key of the `pegs` layer, ascending. Only tractable for small `pegs`.
+    fn layer_keys(pegs: usize) -> Vec<u64> {
+        assert!(pegs > 0);
+        let mut out = Vec::new();
+        let mut v = (1u64 << pegs) - 1;
+        while v < 1 << KEY_BITS {
+            out.push(v);
+            v = next_in_layer(v);
+        }
+        out
+    }
+
+    /// `n` keys of the `pegs` layer, `stride` apart in rank, from the bottom.
+    fn layer_sample(pegs: usize, n: usize, stride: usize) -> Vec<u64> {
+        let mut out = Vec::with_capacity(n);
+        let mut v = (1u64 << pegs) - 1;
+        'outer: while out.len() < n {
+            out.push(v);
+            for _ in 0..stride {
+                v = next_in_layer(v);
+                if v >= 1 << KEY_BITS {
+                    break 'outer;
+                }
+            }
+        }
+        out
+    }
+
+    /// The textbook rank: sum `C(p, i)` over the set bits, `i` counting from 1. An
+    /// independent implementation of what the two-table form computes.
+    fn colex_rank(mut key: u64, c: &[[u64; KEY_BITS + 1]; KEY_BITS + 1]) -> u64 {
+        let mut rank = 0;
+        let mut i = 1;
+        while key != 0 {
+            rank += c[key.trailing_zeros() as usize][i];
+            key &= key - 1;
+            i += 1;
+        }
+        rank
+    }
+
+    #[test]
+    fn binomials_are_right() {
+        let c = binomials();
+        assert_eq!(c[KEY_BITS][0], 1);
+        assert_eq!(c[KEY_BITS][1], 33);
+        assert_eq!(c[KEY_BITS][2], 528);
+        assert_eq!(c[16][8], 12_870);
+        // the sizing constant, and the claim that 16 is the peak layer
+        assert_eq!(c[KEY_BITS][16] as usize, MAX_LAYER_KEYS);
+        assert_eq!(c[KEY_BITS][17] as usize, MAX_LAYER_KEYS);
+        assert_eq!(
+            (0..=KEY_BITS).map(|k| c[KEY_BITS][k]).max().unwrap() as usize,
+            MAX_LAYER_KEYS,
+            "MAX_LAYER_KEYS must bound every layer, or the map is too small"
+        );
+        // and the row must account for the whole key space
+        assert_eq!(
+            (0..=KEY_BITS).map(|k| c[KEY_BITS][k]).sum::<u64>(),
+            1u64 << KEY_BITS
+        );
+    }
+
+    #[test]
+    fn map_holds_every_layer() {
+        let c = binomials();
+        for pegs in 0..=KEY_BITS {
+            assert!(
+                c[KEY_BITS][pegs] <= (NUM_WORDS * 64) as u64,
+                "layer of {pegs} pegs does not fit"
+            );
+        }
+    }
+
+    #[test]
+    fn index_is_a_bijection_onto_the_layer() {
+        // exhaustive for the layers small enough to enumerate: every key must get a
+        // distinct index, and together they must cover 0..C(33, pegs) exactly. A
+        // collision here would silently merge two boards in the map.
+        let c = binomials();
+        for pegs in [1usize, 2, 3] {
+            let mut set = DenseKeySet::new();
+            set.begin_round(pegs);
+            let keys = layer_keys(pegs);
+            assert_eq!(keys.len() as u64, c[KEY_BITS][pegs]);
+            let mut seen: Vec<u64> = keys.iter().map(|&k| set.index(k)).collect();
+            assert!(
+                seen.windows(2).all(|w| w[0] < w[1]),
+                "index must be strictly increasing in the key, so rank order is key order"
+            );
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), keys.len(), "indices collide for pegs={pegs}");
+            assert_eq!(*seen.first().unwrap(), 0);
+            assert_eq!(*seen.last().unwrap(), c[KEY_BITS][pegs] - 1);
+        }
+    }
+
+    #[test]
+    fn index_matches_the_textbook_rank_and_round_trips() {
+        let c = binomials();
+        for pegs in [1usize, 2, 5, 16, 17, 32, 33] {
+            let mut set = DenseKeySet::new();
+            set.begin_round(pegs);
+            for key in layer_sample(pegs, 500, 977) {
+                let index = set.index(key);
+                assert_eq!(index, colex_rank(key, &c), "pegs={pegs} key={key:#x}");
+                assert!(index < c[KEY_BITS][pegs]);
+                // both from the bottom and with a hint, since extraction uses hints
+                assert_eq!(set.unindex_key(index, 0).0, key, "round trip from 0");
+                let hint = (key >> LOW_BITS) as usize;
+                assert_eq!(set.unindex_key(index, hint).0, key, "round trip from hint");
+            }
+        }
+    }
+
     #[test]
     fn set_test_roundtrip() {
-        let set = DenseKeySet::new();
-        let keys: Vec<u64> = [0, 1, 63, 64, 65, 1 << 20, (1u64 << 33) - 1, 12345, 12345 + 64]
-            .into_iter()
-            .collect();
+        let pegs = 16;
+        let mut set = DenseKeySet::new();
+        set.begin_round(pegs);
+        let keys = layer_sample(pegs, 64, 1);
         for &k in &keys {
             set.set(k);
         }
         for &k in &keys {
-            assert!(set.test(k), "key {k} should be set");
+            assert!(set.test(k), "key {k:#x} should be set");
         }
-        assert!(!set.test(2), "key 2 was never set");
-        assert!(!set.test(66), "key 66 was never set");
+        // absent keys of the same layer, past the ones written
+        for k in layer_sample(pegs, 4, 1_000_000).into_iter().skip(1) {
+            assert!(!set.test(k), "key {k:#x} was never set");
+        }
     }
 
     #[test]
     fn concurrent_set_loses_no_bits() {
-        let mut set = DenseKeySet::new();
-        // many threads set overlapping/adjacent keys (including keys that land in
-        // the same word, to exercise fetch_or races) - none should be lost.
         let keys_per_thread = 5000;
         let nthreads = 8;
+        let pegs = 16;
+        let mut set = DenseKeySet::new();
+        set.begin_round(pegs);
+        // one dense run of the layer: consecutive keys have consecutive ranks, so
+        // many land in the same 64-bit word and race on the same `fetch_or`
+        let keys = layer_sample(pegs, keys_per_thread * nthreads, 1);
         std::thread::scope(|s| {
             for t in 0..nthreads {
                 let set = &set;
+                let keys = &keys;
                 s.spawn(move || {
-                    for i in 0..keys_per_thread {
-                        // interleave keys across threads so many land in the same
-                        // 64-bit word (t + i*nthreads covers a dense contiguous range).
-                        set.set((t + i * nthreads) as u64);
+                    // interleaved so the threads' writes are spread over the run
+                    for k in keys.iter().skip(t).step_by(nthreads) {
+                        set.set(*k);
                     }
                 });
             }
         });
-        for t in 0..nthreads {
-            for i in 0..keys_per_thread {
-                let key = (t + i * nthreads) as u64;
-                assert!(set.test(key), "key {key} lost under concurrent set()");
-            }
+        for &k in &keys {
+            assert!(set.test(k), "key {k:#x} lost under concurrent set()");
         }
-        let extracted = set.extract_sorted_by_key();
-        assert_eq!(extracted.len(), nthreads * keys_per_thread);
+        assert_eq!(set.extract_sorted_by_key().len(), keys.len());
     }
-
-    /// keys per block, i.e. how far apart two keys must be to land in different
-    /// blocks (and therefore need different summary bits).
-    const KEYS_PER_BLOCK: u64 = (BLOCK_WORDS * 64) as u64;
 
     #[test]
     fn concurrent_set_spanning_many_blocks_loses_no_bits() {
-        // The dense variant above keeps every key inside ~2 blocks of a single
-        // summary word, so it barely exercises `set()`'s word-bit/summary-bit
-        // invariant. Spread the keys over many blocks AND many summary words, so
-        // that a dropped summary update makes whole runs of keys disappear from
-        // extraction, while still having several threads collide within each word.
+        // The dense run above stays within a few blocks of one summary word. Spread
+        // the keys over many blocks and many summary words instead, so a dropped
+        // summary update makes whole runs vanish from extraction.
+        let pegs = 16;
         let mut set = DenseKeySet::new();
-        let nthreads = 8;
-        let blocks_per_thread = 400usize; // 3200 blocks => spans 50 summary words
+        set.begin_round(pegs);
+        // stride in rank so consecutive samples fall in different blocks
+        let keys = layer_sample(pegs, 4000, BLOCK_WORDS * 64 + 1);
+        let blocks: std::collections::HashSet<u64> = keys.iter().map(|&k| set.index(k) >> 12).collect();
+        assert!(blocks.len() > 100, "want many distinct blocks, got {}", blocks.len());
         std::thread::scope(|s| {
-            for t in 0..nthreads {
+            for t in 0..8 {
                 let set = &set;
+                let keys = &keys;
                 s.spawn(move || {
-                    for b in 0..blocks_per_thread {
-                        let block = t + b * nthreads;
-                        let base = block as u64 * KEYS_PER_BLOCK;
-                        // a few keys in the block, two of them in the same word so
-                        // concurrent fetch_or on one word is still covered
-                        for off in [0u64, 1, 63, 64, KEYS_PER_BLOCK - 1] {
-                            set.set(base + off);
-                        }
+                    for k in keys.iter().skip(t).step_by(8) {
+                        set.set(*k);
                     }
                 });
             }
         });
-        let mut expected = Vec::new();
-        for t in 0..nthreads {
-            for b in 0..blocks_per_thread {
-                let base = (t + b * nthreads) as u64 * KEYS_PER_BLOCK;
-                for off in [0u64, 1, 63, 64, KEYS_PER_BLOCK - 1] {
-                    expected.push(base + off);
-                }
-            }
-        }
-        expected.sort_unstable();
         let extracted: Vec<u64> = set
             .extract_sorted_by_key()
             .into_iter()
             .map(|b| b.to_compressed_repr())
             .collect();
-        // extraction is summary-driven, so this fails if any summary bit was lost
+        let mut expected = keys.clone();
+        expected.sort_unstable();
         assert_eq!(extracted, expected);
     }
 
     #[test]
     fn word_bit_set_implies_summary_bit_set() {
-        // Deterministic guard on the invariant that `set()`'s conditional summary
-        // update depends on, without relying on a race being hit. Covers both the
-        // first write to a block and a repeat write (which takes the branch that
-        // skips the summary RMW because the bit is already set).
-        let set = DenseKeySet::new();
+        // Deterministic guard on the invariant `set()`'s conditional summary update
+        // depends on, without relying on a race. Covers the first write to a block
+        // and a repeat write (which skips the summary RMW).
+        let pegs = 16;
+        let mut set = DenseKeySet::new();
+        set.begin_round(pegs);
         let summary_bit_set = |key: u64| {
-            let block = (key >> 6) as usize / BLOCK_WORDS;
+            let block = (set.index(key) >> 6) as usize / BLOCK_WORDS;
             set.summary[block / 64].load(Ordering::Relaxed) & (1u64 << (block % 64)) != 0
         };
-        for key in [
-            0u64,
-            63,
-            64,
-            KEYS_PER_BLOCK - 1,
-            KEYS_PER_BLOCK,
-            KEYS_PER_BLOCK * 64, // first block of the second summary word
-            KEYS_PER_BLOCK * 12345,
-            (1u64 << KEY_BITS) - 1,
-        ] {
+        let mut keys = layer_sample(pegs, 8, BLOCK_WORDS * 64 * 37 + 1);
+        // include the extremes of the layer, whose indices are 0 and C(33,pegs)-1
+        keys.push((1u64 << pegs) - 1);
+        keys.push(((1u64 << pegs) - 1) << (KEY_BITS - pegs));
+        for key in keys {
             set.set(key);
-            assert!(set.test(key), "word bit missing for {key}");
-            assert!(summary_bit_set(key), "summary bit missing for {key}");
-            // repeat set() takes the early return; the invariant must still hold
+            assert!(set.test(key), "word bit missing for {key:#x}");
+            assert!(summary_bit_set(key), "summary bit missing for {key:#x}");
             set.set(key);
-            assert!(set.test(key), "word bit lost on repeat set of {key}");
-            assert!(summary_bit_set(key), "summary bit lost on repeat set of {key}");
+            assert!(set.test(key), "word bit lost on repeat set of {key:#x}");
+            assert!(summary_bit_set(key), "summary bit lost on repeat set of {key:#x}");
         }
     }
 
     #[test]
     fn extract_sorted_by_key_matches_and_is_ordered() {
+        let pegs = 12;
         let mut set = DenseKeySet::new();
-        // spans multiple blocks and multiple summary words. The pair straddling a
-        // block boundary is written in terms of `KEYS_PER_BLOCK` rather than a
-        // literal, so it keeps straddling one if `BLOCK_WORDS` is retuned again.
-        let mut keys: Vec<u64> = vec![
-            0,
-            5,
-            63,
-            64,
-            KEYS_PER_BLOCK - 1,
-            KEYS_PER_BLOCK,
-            1 << 20,
-            1 << 25,
-            (1u64 << 33) - 1,
-        ];
+        set.begin_round(pegs);
+        // spans many blocks and summary words, plus a pair straddling a block edge
+        let mut keys = layer_sample(pegs, 300, CHUNK_WORDS * 64 / 7 + 1);
+        let straddle = layer_sample(pegs, 2, 1);
+        keys.extend(straddle);
+        keys.push((1u64 << pegs) - 1);
         for &k in &keys {
             set.set(k);
         }
@@ -541,19 +845,51 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(extracted, keys);
-        assert!(extracted.is_sorted());
+        assert!(extracted.is_sorted(), "rank order must be key order");
+    }
+
+    #[test]
+    fn begin_round_clears_the_previous_layer() {
+        // Bits are positions in the layer that wrote them, so they must not survive
+        // into a round that would read them as different boards.
+        let mut set = DenseKeySet::new();
+        set.begin_round(16);
+        let old = layer_sample(16, 50, 3);
+        for &k in &old {
+            set.set(k);
+        }
+        assert_eq!(set.extract_sorted_by_key().len(), old.len());
+
+        set.begin_round(15);
+        assert!(
+            set.extract_sorted_by_key().is_empty(),
+            "the previous layer's bits survived a begin_round"
+        );
+        let new = layer_sample(15, 10, 5);
+        for &k in &new {
+            set.set(k);
+        }
+        let extracted: Vec<u64> = set
+            .extract_sorted_by_key()
+            .into_iter()
+            .map(|b| b.to_compressed_repr())
+            .collect();
+        assert_eq!(extracted, new);
     }
 
     #[test]
     fn clear_removes_everything() {
+        let pegs = 16;
         let mut set = DenseKeySet::new();
-        for k in [0u64, 100, 1 << 20, 1 << 26] {
+        set.begin_round(pegs);
+        let keys = layer_sample(pegs, 16, 1_000);
+        for &k in &keys {
             set.set(k);
         }
         assert!(!set.extract_sorted_by_key().is_empty());
         set.clear();
         assert!(set.extract_sorted_by_key().is_empty());
-        for k in [0u64, 100, 1 << 20, 1 << 26] {
+        for k in keys {
             assert!(!set.test(k));
         }
     }
@@ -561,6 +897,7 @@ mod tests {
     #[test]
     fn empty_set_extracts_nothing() {
         let mut set = DenseKeySet::new();
+        set.begin_round(16);
         assert!(set.extract_sorted_by_key().is_empty());
     }
 }

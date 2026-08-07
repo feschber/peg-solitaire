@@ -4,11 +4,15 @@ use std::num::NonZero;
 
 use log::info;
 
-// the dense-bitset path (see keyset.rs) is off on wasm32 (a flat 1 GiB
-// allocation is a non-starter in a browser) and, for now, on Android too:
+// the dense-bitset path (see keyset.rs) is off on wasm32 (its flat 139 MiB
+// allocation is still a poor citizen in a browser) and, for now, on Android too:
 // solitaire-game calls calculate_feasible_set on startup on a real,
 // potentially memory-constrained device that hasn't been tested against this
 // allocation - revisit once that's been measured on a representative device.
+// Worth revisiting: that allocation used to be 1 GiB, and ranking the key space
+// (see keyset.rs) brought it down to 139 MiB, of which ~167 MiB peak resident
+// across the whole process - which makes the Android case a lot more plausible
+// than when this was written.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use rayon::prelude::*;
 
@@ -274,11 +278,22 @@ fn try_bitset_shrink_round(
         return None;
     }
 
-    let already_initialized = keyset.is_some();
+    // a forward move removes the jumped peg, so the keys this round stores - and the
+    // `visited[remaining - 1]` side it probes with them - are one peg lighter than
+    // the boards generating them. `begin_round` needs that count to rank by, and
+    // clears the map as part of switching to it (see `keyset.rs`).
+    let pegs = visited[remaining][0].count_pegs() - 1;
+    debug_assert!(
+        visited[remaining]
+            .iter()
+            .all(|b| b.count_pegs() == pegs + 1)
+            && visited[remaining - 1]
+                .iter()
+                .all(|b| b.count_pegs() == pegs),
+        "a BFS round must hold one peg count throughout, or ranking aliases boards"
+    );
     let set = keyset.get_or_insert_with(DenseKeySet::new);
-    if already_initialized {
-        set.clear();
-    }
+    set.begin_round(pegs);
 
     let num_moves = generate_into_bitset(&visited[remaining], set, true);
     // see the matching comment in the pre-existing sort+dedup path below: this
@@ -326,11 +341,15 @@ fn try_bitset_growth_round(
         return None;
     }
 
-    let already_initialized = keyset.is_some();
+    // a reverse move puts a peg back, so this round's keys are one peg heavier than
+    // the boards generating them; see the shrink round's matching comment.
+    let pegs = states[0].count_pegs() + 1;
+    debug_assert!(
+        states.iter().all(|b| b.count_pegs() == pegs - 1),
+        "a BFS round must hold one peg count throughout, or ranking aliases boards"
+    );
     let set = keyset.get_or_insert_with(DenseKeySet::new);
-    if already_initialized {
-        set.clear();
-    }
+    set.begin_round(pegs);
 
     let num_moves = generate_into_bitset(states, set, false);
     timer.round("reverse".into());
@@ -644,6 +663,15 @@ mod tests {
     fn assert_matches_reference(states: &[Board], forward: bool) {
         let mut pipelined = DenseKeySet::new();
         let mut reference = DenseKeySet::new();
+        // the map is ranked within one peg count, so it has to be told which; a
+        // forward move takes a peg off the generating boards, a reverse one adds it
+        let pegs = if forward {
+            states[0].count_pegs() - 1
+        } else {
+            states[0].count_pegs() + 1
+        };
+        pipelined.begin_round(pegs);
+        reference.begin_round(pegs);
         let n = generate_into_bitset(states, &pipelined, forward);
         let n_ref = generate_reference(states, &reference, forward);
         assert_eq!(n, n_ref, "move count differs ({} boards)", states.len());
@@ -695,7 +723,9 @@ mod tests {
     #[test]
     fn intersect_chunk_matches_straight_line_filter() {
         let states = states_after(6);
-        let set = DenseKeySet::new();
+        let mut set = DenseKeySet::new();
+        // these keys are the boards themselves, so the layer is their own peg count
+        set.begin_round(states[0].count_pegs());
         // put half the boards in the set, so the filter has to both keep and drop,
         // and interleaved so it cannot pass by accident on a contiguous run
         for board in states.iter().step_by(2) {
