@@ -15,6 +15,24 @@ struct Args {
     /// number of threads to use for all solutions
     #[arg(short, long)]
     threads: Option<NonZero<usize>>,
+    /// repeat `calculate-all` this many times in one process
+    ///
+    /// For profiling and benchmarking a computation that takes ~100ms: sampling one
+    /// run yields few samples, and repeating the *process* instead charges every
+    /// iteration for startup, first-touch faulting ~40MB, and mimalloc's teardown
+    /// purge - which together are a couple of percent of a run, all of it noise
+    /// relative to the loops one is usually trying to measure. Repeating in-process
+    /// keeps the allocator and page tables warm, so iterations after the first
+    /// measure steady state.
+    ///
+    /// Each iteration logs its own internal timing at `RUST_LOG=info`. Discard the
+    /// first *two*: measured over repeated 10-12 iteration runs, they come in around
+    /// 111/134 and 101/120 ms against a steady state of 93-99, so the warm-up is
+    /// two iterations rather than one. Steady state does come out ~2-3% under
+    /// separate processes of the same binary (93-99 vs 98-105 ms), which is the
+    /// startup and teardown this exists to stop paying.
+    #[arg(short, long, default_value_t = 1)]
+    repeat: usize,
     /// subcommands
     #[command(subcommand)]
     command: Option<Command>,
@@ -93,8 +111,15 @@ fn main() {
             }
             match command {
                 Command::CalculateAll => {
-                    let vec = solitaire_solver::calculate_feasible_set(args.threads);
-                    println!("solutions: {}", vec.len());
+                    // `black_box` so nothing about the repetition lets the optimizer
+                    // conclude that later iterations are redundant, and so the result
+                    // has to be materialized rather than folded into a length
+                    let mut solutions = 0;
+                    for _ in 0..args.repeat.max(1) {
+                        let vec = solitaire_solver::calculate_feasible_set(args.threads);
+                        solutions = std::hint::black_box(&vec).len();
+                    }
+                    println!("solutions: {solutions}");
                 }
                 Command::CalculateAllNaive => {
                     solitaire_solver::calculate_all_solutions_naive();
