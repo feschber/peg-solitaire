@@ -21,11 +21,29 @@ use crate::{
 };
 
 /// boards-in-round threshold above which a shrink-phase round uses the dense
-/// bitset (see `keyset.rs`) instead of sort+dedup+merge-intersect. Tuned from the
-/// real per-round trace (`RUST_LOG=info`): starts by capturing only the single
-/// biggest round, which alone accounts for most of the sort+dedup time.
+/// bitset (see `keyset.rs`) instead of sort+dedup+merge-intersect.
+///
+/// This was 1_000_000 - deliberately conservative, capturing only the single
+/// biggest round of each phase. Once `generate_into_bitset` got its prefetch
+/// pipeline (~36% off the generation step, which is most of what the bitset path
+/// costs), the crossover moved a long way down. Re-swept end to end, 9 interleaved
+/// reps per point, internal timer medians:
+///
+/// ```text
+/// 1_000_000    203.9 ms        50_000    181.3 ms
+///   400_000    191.7 ms        25_000    182.4 ms
+///   200_000    183.5 ms        10_000    179.3 ms
+///   100_000    182.6 ms         2_000    182.3 ms
+///                                  100    185.7 ms
+/// ```
+///
+/// Flat from roughly 10k to 200k and worth ~10% against the old value; it only
+/// turns back up near 100, where a round's fixed bitset cost (the full-summary
+/// scan in `clear`/extraction, plus rayon dispatch) stops being amortized.
+/// 50_000 sits in the middle of the flat region rather than at its measured
+/// minimum, which is inside the noise.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-const BITSET_THRESHOLD: usize = 1_000_000;
+const BITSET_THRESHOLD: usize = 50_000;
 
 /// generates every forward (or, if `!forward`, reverse) move from `states`,
 /// normalizes, and sets each result's compressed key directly in `set` - fusing
