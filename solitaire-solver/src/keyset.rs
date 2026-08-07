@@ -512,7 +512,24 @@ impl DenseKeySet {
     /// Rank order and key order agree - the rank counts the keys below its own -
     /// so this is still ascending by compressed key. Skips whole zero blocks via the
     /// summary rather than scanning the entire map.
-    pub(crate) fn extract_sorted_by_key(&mut self) -> Vec<Board> {
+    ///
+    /// Only boards satisfying `keep` are emitted. Taking the predicate here rather
+    /// than leaving the caller to filter afterwards saves a whole pass over the
+    /// result and, more to the point, the buffer that pass would write into: the
+    /// caller's alternative is `par::par_filter`, which allocates and copies the
+    /// full set a second time. It also evaluates `keep` once per board where
+    /// `par_filter` evaluates it twice, since that has to count survivors before it
+    /// can size its output.
+    ///
+    /// This does mean the per-chunk `Vec`s are sized by the bit count rather than
+    /// the survivor count, so they over-allocate by whatever `keep` rejects (up to
+    /// ~16% for the pagoda pruning this exists for). That is the cheaper side of the
+    /// trade - they are short-lived and `par::par_join` copies out only what was
+    /// filled - and it is exactly the double evaluation being avoided.
+    pub(crate) fn extract_sorted_by_key(
+        &mut self,
+        keep: impl Fn(Board) -> bool + Send + Sync,
+    ) -> Vec<Board> {
         // `&mut` lets this read plain `u64`s rather than `Relaxed` atomics; see
         // `as_plain`. It matters most for the counting pass below, which is a
         // popcount over every word of every touched block - vectorizable as plain
@@ -535,11 +552,11 @@ impl DenseKeySet {
                 if bits == 0 {
                     return Vec::new();
                 }
-                // count first so this chunk's `Vec` is allocated exactly once, at
-                // its final size: pushing into a `Vec::new()` here would otherwise
-                // grow it via repeated reallocation, on top of this already being
-                // one of many (one per set summary word) small per-chunk
-                // allocations that `par_join` below has to then copy out of again.
+                // count first so this chunk's `Vec` is allocated exactly once,
+                // without growing it by repeated reallocation - one of many (one per
+                // set summary word) small per-chunk allocations that `par_join`
+                // below has to copy out of again. This counts set bits, not
+                // survivors of `keep`, so it is an upper bound; see the doc comment.
                 let mut count = 0usize;
                 let mut b = bits;
                 while b != 0 {
@@ -574,7 +591,10 @@ impl DenseKeySet {
                             let index = ((word_idx as u64) << 6) | bit as u64;
                             let key;
                             (key, h) = unindex(high_cum, low_unrank, pegs, index, h);
-                            out.push(Board::from_compressed_repr(key));
+                            let board = Board::from_compressed_repr(key);
+                            if keep(board) {
+                                out.push(board);
+                            }
                             wbits &= wbits - 1;
                         }
                     }
@@ -762,7 +782,7 @@ mod tests {
         for &k in &keys {
             assert!(set.test(k), "key {k:#x} lost under concurrent set()");
         }
-        assert_eq!(set.extract_sorted_by_key().len(), keys.len());
+        assert_eq!(set.extract_sorted_by_key(|_| true).len(), keys.len());
     }
 
     #[test]
@@ -775,8 +795,13 @@ mod tests {
         set.begin_round(pegs);
         // stride in rank so consecutive samples fall in different blocks
         let keys = layer_sample(pegs, 4000, BLOCK_WORDS * 64 + 1);
-        let blocks: std::collections::HashSet<u64> = keys.iter().map(|&k| set.index(k) >> 12).collect();
-        assert!(blocks.len() > 100, "want many distinct blocks, got {}", blocks.len());
+        let blocks: std::collections::HashSet<u64> =
+            keys.iter().map(|&k| set.index(k) >> 12).collect();
+        assert!(
+            blocks.len() > 100,
+            "want many distinct blocks, got {}",
+            blocks.len()
+        );
         std::thread::scope(|s| {
             for t in 0..8 {
                 let set = &set;
@@ -789,7 +814,7 @@ mod tests {
             }
         });
         let extracted: Vec<u64> = set
-            .extract_sorted_by_key()
+            .extract_sorted_by_key(|_| true)
             .into_iter()
             .map(|b| b.to_compressed_repr())
             .collect();
@@ -820,7 +845,10 @@ mod tests {
             assert!(summary_bit_set(key), "summary bit missing for {key:#x}");
             set.set(key);
             assert!(set.test(key), "word bit lost on repeat set of {key:#x}");
-            assert!(summary_bit_set(key), "summary bit lost on repeat set of {key:#x}");
+            assert!(
+                summary_bit_set(key),
+                "summary bit lost on repeat set of {key:#x}"
+            );
         }
     }
 
@@ -838,7 +866,7 @@ mod tests {
             set.set(k);
         }
         let extracted: Vec<u64> = set
-            .extract_sorted_by_key()
+            .extract_sorted_by_key(|_| true)
             .into_iter()
             .map(|b| b.to_compressed_repr())
             .collect();
@@ -858,11 +886,11 @@ mod tests {
         for &k in &old {
             set.set(k);
         }
-        assert_eq!(set.extract_sorted_by_key().len(), old.len());
+        assert_eq!(set.extract_sorted_by_key(|_| true).len(), old.len());
 
         set.begin_round(15);
         assert!(
-            set.extract_sorted_by_key().is_empty(),
+            set.extract_sorted_by_key(|_| true).is_empty(),
             "the previous layer's bits survived a begin_round"
         );
         let new = layer_sample(15, 10, 5);
@@ -870,7 +898,7 @@ mod tests {
             set.set(k);
         }
         let extracted: Vec<u64> = set
-            .extract_sorted_by_key()
+            .extract_sorted_by_key(|_| true)
             .into_iter()
             .map(|b| b.to_compressed_repr())
             .collect();
@@ -886,9 +914,9 @@ mod tests {
         for &k in &keys {
             set.set(k);
         }
-        assert!(!set.extract_sorted_by_key().is_empty());
+        assert!(!set.extract_sorted_by_key(|_| true).is_empty());
         set.clear();
-        assert!(set.extract_sorted_by_key().is_empty());
+        assert!(set.extract_sorted_by_key(|_| true).is_empty());
         for k in keys {
             assert!(!set.test(k));
         }
@@ -898,6 +926,6 @@ mod tests {
     fn empty_set_extracts_nothing() {
         let mut set = DenseKeySet::new();
         set.begin_round(16);
-        assert!(set.extract_sorted_by_key().is_empty());
+        assert!(set.extract_sorted_by_key(|_| true).is_empty());
     }
 }

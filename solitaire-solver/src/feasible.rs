@@ -92,6 +92,20 @@ fn bitset_threshold() -> usize {
     })
 }
 
+/// pagoda-function pruning for the growth phase (see `pagoda.rs`): a board whose
+/// inverse cannot reach the solved position is unreachable from it too, so it can
+/// never contribute.
+///
+/// A `fn` rather than a closure so both round paths can share it without either
+/// having to thread a capture around. `pagoda(Board::solved())` is a constant of
+/// the pagoda function, computed once here rather than per element.
+fn growth_survives_pagoda(board: Board) -> bool {
+    use std::sync::OnceLock;
+    static SOLVED_WEIGHT: OnceLock<i64> = OnceLock::new();
+    let solved = *SOLVED_WEIGHT.get_or_init(|| crate::pagoda::pagoda(Board::solved()));
+    crate::pagoda::pagoda(board.inverse()) >= solved
+}
+
 /// generates every forward (or, if `!forward`, reverse) move from `states`,
 /// normalizes, and sets each result's compressed key directly in `set` - fusing
 /// generation + normalize + dedup into a single pass with no intermediate `Vec`.
@@ -397,7 +411,9 @@ fn try_bitset_growth_round(
     let num_moves = generate_into_bitset(states, set, false);
     timer.round("reverse".into());
 
-    let deduped = set.extract_sorted_by_key();
+    // pruned during extraction rather than by a second pass over the result - see
+    // `DenseKeySet::extract_sorted_by_key`, which explains what that saves
+    let deduped = set.extract_sorted_by_key(growth_survives_pagoda);
     timer.round("dedup".into());
 
     Some((num_moves, deduped))
@@ -502,22 +518,31 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
                 timer.round("sort".into());
 
                 let constellations = constellations.par_dedup(threads);
+
+                // pagoda-function pruning (see pagoda.rs), applied to the DEDUPED
+                // set rather than fused into generation: checking pagoda per raw
+                // move instead measurably regressed wall time - the check was then
+                // paid for every one of the 55-85% of raw moves that turn out to be
+                // duplicates of an already-seen board, instead of once per distinct
+                // board. Parallel filter rather than `Vec::retain`, which is
+                // single-threaded.
+                //
+                // The bitset path prunes inside its extraction instead, which avoids
+                // both this pass and the buffer it writes into; this path has no
+                // equivalent hook. It only runs for rounds under
+                // `bitset_threshold` now, so the difference is small either way.
+                //
+                // Purely an optimization, on both paths: it shrinks the intermediate
+                // sets, but the shrink phase overwrites every `visited` index it
+                // feeds with an exact intersection, so dropping it entirely still
+                // yields 1679072 - verified. What it buys is smaller intermediates,
+                // not correctness.
+                let constellations =
+                    par::par_filter(&constellations, threads, |&b| growth_survives_pagoda(b));
                 timer.round("dedup".into());
 
                 (num_moves, constellations)
             };
-
-        // pagoda-function pruning (see pagoda.rs), applied to the DEDUPED set
-        // rather than fused into generation: checking pagoda per-raw-move instead
-        // (before dedup) measurably regressed wall time - the check was then paid
-        // for every one of the 55-85% of raw moves that turn out to be duplicates
-        // of an already-seen board, instead of once per distinct board. Parallel
-        // filter instead of Vec::retain (single-threaded) - up to ~2.6M elements
-        // on the biggest rounds is enough for that gap to matter on its own.
-        let solved_weight = crate::pagoda::pagoda(Board::solved());
-        let constellations = par::par_filter(&constellations, threads, |&b| {
-            crate::pagoda::pagoda(b.inverse()) >= solved_weight
-        });
 
         let deduped = constellations.len();
         visited.push(constellations);
@@ -724,8 +749,8 @@ mod tests {
         let n_ref = generate_reference(states, &reference, forward);
         assert_eq!(n, n_ref, "move count differs ({} boards)", states.len());
         assert_eq!(
-            pipelined.extract_sorted_by_key(),
-            reference.extract_sorted_by_key(),
+            pipelined.extract_sorted_by_key(|_| true),
+            reference.extract_sorted_by_key(|_| true),
             "key set differs ({} boards, forward={forward})",
             states.len()
         );
