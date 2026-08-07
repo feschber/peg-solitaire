@@ -212,7 +212,7 @@ pub(crate) struct DenseKeySet {
     /// Independent of the round, so built once.
     low_rank: Vec<u16>,
     /// `low_unrank[j]` = the 16-bit values with popcount `j`, ascending; the inverse
-    /// of `low_rank`, needed only by [`DenseKeySet::extract_sorted_by_key`].
+    /// of `low_rank`, needed only by [`DenseKeySet::drain_sorted_by_key`].
     low_unrank: Vec<Vec<u16>>,
     /// `high_cum[h]` = keys below the prefix `h << LOW_BITS` that have this round's
     /// peg count. Depends on that count, so rebuilt by [`DenseKeySet::begin_round`].
@@ -333,7 +333,7 @@ impl DenseKeySet {
     }
 
     /// Inverse of [`Self::index`], as a free function so that
-    /// [`Self::extract_sorted_by_key`] - which has the fields borrowed apart - and
+    /// [`Self::drain_sorted_by_key`] - which has the fields borrowed apart - and
     /// the tests share one implementation. See [`unindex`].
     #[cfg(test)]
     fn unindex_key(&self, index: u64, hint: usize) -> (u64, usize) {
@@ -345,7 +345,7 @@ impl DenseKeySet {
     /// region first (see `feasible.rs`, where `clear()` is its own joined region
     /// that runs before generation starts).
     ///
-    /// INVARIANT, relied on by [`Self::clear`] and [`Self::extract_sorted_by_key`],
+    /// INVARIANT, relied on by [`Self::clear`] and [`Self::drain_sorted_by_key`],
     /// both of which skip whole zero summary
     /// words: if a bit in `words` is set then that bit's block is marked in
     /// `summary`. Every call reaches the summary code below, so each setter either
@@ -533,6 +533,20 @@ impl DenseKeySet {
     /// so this is still ascending by compressed key. Skips whole zero blocks via the
     /// summary rather than scanning the entire map.
     ///
+    /// *Drains*: the map is empty afterwards, because each block is zeroed as soon as
+    /// it has been read. That is nearly free here and is not free in `clear`. This
+    /// already reads every touched word, so the line is in L1 when the zero store
+    /// lands; `clear` running later has to fetch each line back from DRAM first, only
+    /// to overwrite it. Both pay the same writeback, so what fusing removes is the
+    /// re-read - measured at 83.5 MiB of the 201 MiB a run's clears move, since only
+    /// rounds that extract can donate their reads this way (the shrink phase probes
+    /// instead, and never walks the map).
+    ///
+    /// `begin_round` still calls `clear`, which is now a cheap summary scan for any
+    /// round following an extraction. Keeping that call rather than relying on this
+    /// one is deliberate: it is what makes a stale layer impossible if some future
+    /// path stops extracting.
+    ///
     /// Only boards satisfying `keep` are emitted. Taking the predicate here rather
     /// than leaving the caller to filter afterwards saves a whole pass over the
     /// result and, more to the point, the buffer that pass would write into: the
@@ -546,7 +560,7 @@ impl DenseKeySet {
     /// ~16% for the pagoda pruning this exists for). That is the cheaper side of the
     /// trade - they are short-lived and `par::par_join` copies out only what was
     /// filled - and it is exactly the double evaluation being avoided.
-    pub(crate) fn extract_sorted_by_key(
+    pub(crate) fn drain_sorted_by_key(
         &mut self,
         keep: impl Fn(Board) -> bool + Send + Sync,
     ) -> Vec<Board> {
@@ -563,12 +577,16 @@ impl DenseKeySet {
             ..
         } = self;
         let pegs = *pegs;
-        let words: &[u64] = Self::as_plain(words);
-        let summary: &[u64] = Self::as_plain(summary);
-        let chunks: Vec<Vec<Board>> = summary
-            .par_iter()
+        let words: &mut [u64] = Self::as_plain(words);
+        let summary: &mut [u64] = Self::as_plain(summary);
+        // One chunk per summary word, as `clear` takes them, so each worker owns the
+        // words its summary word covers and can zero them.
+        let chunks: Vec<Vec<Board>> = words
+            .par_chunks_mut(CHUNK_WORDS)
+            .zip(summary.par_iter_mut())
             .enumerate()
-            .map(|(sword_idx, &bits)| {
+            .map(|(sword_idx, (chunk, sword))| {
+                let bits = std::mem::replace(sword, 0);
                 if bits == 0 {
                     return Vec::new();
                 }
@@ -580,8 +598,8 @@ impl DenseKeySet {
                 let mut count = 0usize;
                 let mut b = bits;
                 while b != 0 {
-                    let block = sword_idx * 64 + b.trailing_zeros() as usize;
-                    for w in &words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS] {
+                    let block = b.trailing_zeros() as usize * BLOCK_WORDS;
+                    for w in &chunk[block..block + BLOCK_WORDS] {
                         count += w.count_ones() as usize;
                     }
                     b &= b - 1;
@@ -599,12 +617,17 @@ impl DenseKeySet {
                     .saturating_sub(1);
                 let mut b = bits;
                 while b != 0 {
+                    let block_in_chunk = b.trailing_zeros() as usize * BLOCK_WORDS;
                     let block = sword_idx * 64 + b.trailing_zeros() as usize;
-                    for (wi, w) in words[block * BLOCK_WORDS..(block + 1) * BLOCK_WORDS]
-                        .iter()
+                    for (wi, w) in chunk[block_in_chunk..block_in_chunk + BLOCK_WORDS]
+                        .iter_mut()
                         .enumerate()
                     {
                         let mut wbits = *w;
+                        // drained: zeroing here rather than leaving it to the next
+                        // round's `clear` is most of the point of this method - see
+                        // the doc comment
+                        *w = 0;
                         while wbits != 0 {
                             let bit = wbits.trailing_zeros();
                             let word_idx = block * BLOCK_WORDS + wi;
@@ -802,7 +825,7 @@ mod tests {
         for &k in &keys {
             assert!(set.test(k), "key {k:#x} lost under concurrent set()");
         }
-        assert_eq!(set.extract_sorted_by_key(|_| true).len(), keys.len());
+        assert_eq!(set.drain_sorted_by_key(|_| true).len(), keys.len());
     }
 
     #[test]
@@ -834,7 +857,7 @@ mod tests {
             }
         });
         let extracted: Vec<u64> = set
-            .extract_sorted_by_key(|_| true)
+            .drain_sorted_by_key(|_| true)
             .into_iter()
             .map(|b| b.to_compressed_repr())
             .collect();
@@ -873,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_sorted_by_key_matches_and_is_ordered() {
+    fn drain_sorted_by_key_matches_and_is_ordered() {
         let pegs = 12;
         let mut set = DenseKeySet::new();
         set.begin_round(pegs);
@@ -886,7 +909,7 @@ mod tests {
             set.set(k);
         }
         let extracted: Vec<u64> = set
-            .extract_sorted_by_key(|_| true)
+            .drain_sorted_by_key(|_| true)
             .into_iter()
             .map(|b| b.to_compressed_repr())
             .collect();
@@ -906,11 +929,13 @@ mod tests {
         for &k in &old {
             set.set(k);
         }
-        assert_eq!(set.extract_sorted_by_key(|_| true).len(), old.len());
+        // deliberately NOT drained first - draining would empty the map and leave the
+        // assertion below passing for the wrong reason
+        assert!(old.iter().all(|&k| set.test(k)));
 
         set.begin_round(15);
         assert!(
-            set.extract_sorted_by_key(|_| true).is_empty(),
+            set.drain_sorted_by_key(|_| true).is_empty(),
             "the previous layer's bits survived a begin_round"
         );
         let new = layer_sample(15, 10, 5);
@@ -918,7 +943,7 @@ mod tests {
             set.set(k);
         }
         let extracted: Vec<u64> = set
-            .extract_sorted_by_key(|_| true)
+            .drain_sorted_by_key(|_| true)
             .into_iter()
             .map(|b| b.to_compressed_repr())
             .collect();
@@ -934,18 +959,54 @@ mod tests {
         for &k in &keys {
             set.set(k);
         }
-        assert!(!set.extract_sorted_by_key(|_| true).is_empty());
+        // checked without draining, so that `clear` is what empties the map here
+        assert!(keys.iter().all(|&k| set.test(k)));
         set.clear();
-        assert!(set.extract_sorted_by_key(|_| true).is_empty());
+        assert!(set.drain_sorted_by_key(|_| true).is_empty());
         for k in keys {
             assert!(!set.test(k));
         }
+    }
+
+    /// The drain is what lets `feasible.rs` skip a `clear` pass, so an incomplete
+    /// one would leave a stale layer for the next round to misread as its own keys.
+    #[test]
+    fn drain_leaves_the_map_empty() {
+        let pegs = 14;
+        let mut set = DenseKeySet::new();
+        set.begin_round(pegs);
+        // spans many blocks and summary words, plus a dense run inside one block
+        let mut keys = layer_sample(pegs, 200, CHUNK_WORDS * 64 / 5 + 1);
+        keys.extend(layer_sample(pegs, 8, 1));
+        keys.sort_unstable();
+        keys.dedup();
+        for &k in &keys {
+            set.set(k);
+        }
+        let drained: Vec<u64> = set
+            .drain_sorted_by_key(|_| true)
+            .into_iter()
+            .map(|b| b.to_compressed_repr())
+            .collect();
+        assert_eq!(drained, keys, "drain must yield everything that was set");
+        assert!(
+            set.drain_sorted_by_key(|_| true).is_empty(),
+            "a second drain must find nothing"
+        );
+        for k in keys {
+            assert!(!set.test(k), "key {k:#x} survived the drain");
+        }
+        // the summary has to be cleared too, or a later drain would skip live blocks
+        assert!(
+            set.summary.iter().all(|w| w.load(Ordering::Relaxed) == 0),
+            "summary not cleared by the drain"
+        );
     }
 
     #[test]
     fn empty_set_extracts_nothing() {
         let mut set = DenseKeySet::new();
         set.begin_round(16);
-        assert!(set.extract_sorted_by_key(|_| true).is_empty());
+        assert!(set.drain_sorted_by_key(|_| true).is_empty());
     }
 }

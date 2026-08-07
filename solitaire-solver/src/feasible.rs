@@ -433,8 +433,8 @@ fn try_bitset_growth_round(
     timer.round("reverse".into());
 
     // pruned during extraction rather than by a second pass over the result - see
-    // `DenseKeySet::extract_sorted_by_key`, which explains what that saves
-    let deduped = set.extract_sorted_by_key(growth_survives_pagoda);
+    // `DenseKeySet::drain_sorted_by_key`, which explains what that saves
+    let deduped = set.drain_sorted_by_key(growth_survives_pagoda);
     timer.round("dedup".into());
 
     Some((num_moves, deduped))
@@ -770,8 +770,8 @@ mod tests {
         let n_ref = generate_reference(states, &reference, forward);
         assert_eq!(n, n_ref, "move count differs ({} boards)", states.len());
         assert_eq!(
-            pipelined.extract_sorted_by_key(|_| true),
-            reference.extract_sorted_by_key(|_| true),
+            pipelined.drain_sorted_by_key(|_| true),
+            reference.drain_sorted_by_key(|_| true),
             "key set differs ({} boards, forward={forward})",
             states.len()
         );
