@@ -538,30 +538,35 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
 
     timer.round("reverse step".into());
 
-    let mut inverted = inverse_normalized_par(&visited[(Board::SLOTS - 1) / 2], threads);
-    // This sort looks dead and is not. Nothing *requires* this vector ordered: it
-    // is only ever a generation source (the first shrink round below reads it and
-    // then frees it), and the final collect takes indices 0..=(SLOTS - 1) / 2, so
-    // it is dropped without being read again. Deleting the line leaves the answer
-    // correct.
+    let inverted = inverse_normalized_par(&visited[(Board::SLOTS - 1) / 2], threads);
+    // Deliberately NOT sorted, and it used to be. Nothing requires this vector
+    // ordered: it is only ever a generation source (the first shrink round below
+    // reads it and then frees it), and the final collect takes indices
+    // 0..=(SLOTS - 1) / 2, so it is dropped without being read again. That holds
+    // whatever `bitset_threshold` is - the sort path sorts the moves it derives
+    // from this, and the `visited[16]` it merges against comes from the growth
+    // phase already ordered - so no setting of that knob needs this ordered either.
     //
-    // It pays for itself in the locality of the round that consumes it, which is
-    // the largest of the run: 2.0M boards generating 19.7M keys into the 1 GiB
-    // bitmap. `inverse` and `normalize` are not monotonic in the compressed key,
-    // so without this the source is unordered with respect to its own keys and
-    // those writes scatter over the whole GiB instead of sweeping it. Measured,
-    // 12 interleaved reps, medians:
+    // The sort was here for the *locality* of the round that consumes it, which is
+    // the largest of the run: 2.0M boards generating 19.7M keys. `inverse` and
+    // `normalize` are not monotonic in the compressed key, so without it the source
+    // is unordered with respect to its own keys and those writes scatter over the
+    // map instead of sweeping it. That was worth keeping when the map was 1 GiB,
+    // and ranking the key space is what killed it - a 5.4x smaller touched
+    // footprint means scattered writes cost much less to begin with. Measured
+    // across the two regimes, medians:
     //
-    //     without the sort   inverse step -3.07 ms, that round's generate +2.62 ms
-    //     net                -0.76 ms median, +0.45 ms on minima, 6 of 12 reps
+    //     map          sort costs   locality buys back   net        reps
+    //     1 GiB          3.07 ms          2.62 ms        -0.76 ms   6 of 12
+    //     139 MiB        3.36 ms          1.55 ms        -1.81 ms   14 of 14
     //
-    // i.e. ~85% self-financing and a wash overall, so it stays: a wash is not
-    // worth trading a smaller peak allocation of sorted state for, and the margin
-    // is the wrong side of noise to call a win. Note the penalty used to be far
-    // larger - hash-ordered input once cost a comparable round 28 -> 54 ms - and
-    // `generate_into_bitset`'s prefetch pipeline is what shrank it, by hiding most
-    // of the miss latency that ordering was previously the only defence against.
-    inverted.fast_sort_unstable_mt(threads);
+    // So it went from ~85% self-financing (a wash, kept) to ~46% (a clear loss,
+    // removed): -1.81 ms median, -2.26 ms on minima. The penalty it defends against
+    // has now shrunk twice - `generate_into_bitset`'s prefetch pipeline first hid
+    // most of the miss latency (a comparable round once went 28 -> 54 ms unsorted),
+    // then ranking shrank the misses themselves.
+    //
+    // Worth restoring if the map ever grows again, since that reverses the trade.
     visited.push(inverted);
 
     timer.round("inverse step".into());
