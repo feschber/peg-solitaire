@@ -150,7 +150,7 @@ fn growth_survives_pagoda(board: Board) -> bool {
 ///
 /// Generation and the bitset writes are software-pipelined `PREFETCH_DISTANCE`
 /// keys apart, via the ring buffer below: each key is prefetched (see
-/// [`DenseKeySet::prefetch_for_set`]) as soon as it is computed, and only
+/// [`DenseKeySet::prefetch_at`]) as soon as it is computed, and only
 /// `set()` once that many further keys have been generated. Profiling the
 /// straight-line version put ~70% of this function's cycles on the single
 /// `lock or` inside `set` - a serialized DRAM round trip per call, because the
@@ -208,23 +208,28 @@ fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> u
                     };
                     for idx in mask {
                         let moved = Board::normalize_after_move(&syms, idx, dir);
-                        let key = moved.to_compressed_repr();
-                        set.prefetch_for_set(key);
+                        // the ring holds bit positions rather than keys so that the
+                        // rank is computed once per move: the prefetch and the `set`
+                        // both need it, and having each derive it from the key made
+                        // `index` and its two bounds-checked table reads ~5.9% of a
+                        // run instead of ~3%.
+                        let bit = set.index(moved.to_compressed_repr());
+                        set.prefetch_at(bit);
                         let slot = n & (PREFETCH_DISTANCE - 1);
                         // once the ring is full, the slot about to be overwritten
-                        // holds the key prefetched exactly PREFETCH_DISTANCE keys ago
+                        // holds the bit prefetched exactly PREFETCH_DISTANCE moves ago
                         if n >= PREFETCH_DISTANCE {
-                            set.set(ring[slot]);
+                            set.set_at(ring[slot]);
                         }
-                        ring[slot] = key;
+                        ring[slot] = bit;
                         n += 1;
                     }
                 }
             }
-            // drain the tail: the last min(n, PREFETCH_DISTANCE) keys are prefetched
+            // drain the tail: the last min(n, PREFETCH_DISTANCE) bits are prefetched
             // but not yet set.
             for i in n.saturating_sub(PREFETCH_DISTANCE)..n {
-                set.set(ring[i & (PREFETCH_DISTANCE - 1)]);
+                set.set_at(ring[i & (PREFETCH_DISTANCE - 1)]);
             }
             n
         })
@@ -263,20 +268,23 @@ fn try_bitset_shrink_round(
 /// Software-pipelined the same way `generate_into_bitset` pipelines its writes:
 /// each board's probe is issued `PREFETCH_DISTANCE` boards before it is needed,
 /// so the DRAM round trips overlap instead of serializing. See
-/// [`DenseKeySet::prefetch_for_test`] for why the read side needs this even
+/// [`DenseKeySet::prefetch_at`] for why the read side needs this even
 /// though, unlike `set`, it is not a barrier.
 ///
-/// `to_compressed_repr` is evaluated twice per board (once to prefetch, once to
-/// probe) rather than carried in a ring buffer as the write side does. It is a
-/// single `pext`, and this loop is bound on 1 GiB-scale misses, so the second
-/// one is free next to the bookkeeping a ring would add - and the pipeline can
-/// then be expressed as a `zip` of the slice against itself offset by the
-/// distance, with no index arithmetic or bounds checks in the body.
+/// Carries each board's bit position in a ring buffer, as the write side does, so
+/// that the position is derived once per board rather than once to prefetch it and
+/// again to probe it. This used to recompute instead, on the argument that
+/// `to_compressed_repr` is a single `pext` and therefore free next to the misses
+/// this loop is bound on. That argument was right about the `pext` and missed what
+/// came to sit behind it: ranking the key space (see `keyset.rs`) put two
+/// bounds-checked table reads between the key and the bit, and profiling showed
+/// that duplicated work at ~5.9% of a run rather than ~3%.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
     /// how many boards ahead of the probe the prefetch runs. Matches
     /// `generate_into_bitset`'s distance; the two loops are covering the same
-    /// latency against comparable amounts of per-item work.
+    /// latency against comparable amounts of per-item work. Must be a power of two
+    /// (the ring index is masked, not divided).
     const PREFETCH_DISTANCE: usize = 16;
 
     // Pre-sized rather than grown. The filter keeps 12-20% of its input, so this
@@ -286,10 +294,16 @@ fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
     // keep flowing.
     let mut out = Vec::with_capacity(chunk.len());
 
+    // board `j`'s bit position lives in `ring[j % PREFETCH_DISTANCE]` from the
+    // moment it is prefetched until it is probed.
+    let mut ring = [0u64; PREFETCH_DISTANCE];
+
     // warm-up: the first `PREFETCH_DISTANCE` probes have nobody ahead of them to
     // have issued their fetch, so issue it here.
-    for board in chunk.iter().take(PREFETCH_DISTANCE) {
-        set.prefetch_for_test(board.to_compressed_repr());
+    for (slot, board) in chunk.iter().take(PREFETCH_DISTANCE).enumerate() {
+        let bit = set.index(board.to_compressed_repr());
+        set.prefetch_at(bit);
+        ring[slot] = bit;
     }
 
     // body: probe board `i` while fetching board `i + PREFETCH_DISTANCE`. Both
@@ -305,17 +319,24 @@ fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
     // theoretical one - it was one, until the test below caught it.
     let split = chunk.len().saturating_sub(PREFETCH_DISTANCE);
     let ahead_of = chunk.get(PREFETCH_DISTANCE..).unwrap_or(&[]);
-    for (board, ahead) in chunk[..split].iter().zip(ahead_of) {
-        set.prefetch_for_test(ahead.to_compressed_repr());
-        if set.test(board.to_compressed_repr()) {
+    for (i, (board, ahead)) in chunk[..split].iter().zip(ahead_of).enumerate() {
+        // board `i` and board `i + PREFETCH_DISTANCE` share a ring slot, since the
+        // distance is a power of two - so read the one being probed out before the
+        // one being prefetched overwrites it.
+        let slot = i & (PREFETCH_DISTANCE - 1);
+        let bit = ring[slot];
+        let ahead_bit = set.index(ahead.to_compressed_repr());
+        set.prefetch_at(ahead_bit);
+        ring[slot] = ahead_bit;
+        if set.test_at(bit) {
             out.push(*board);
         }
     }
 
     // drain: the last `PREFETCH_DISTANCE` boards were prefetched by the body (or
-    // the warm-up) and only need probing.
-    for board in &chunk[split..] {
-        if set.test(board.to_compressed_repr()) {
+    // the warm-up), so their bits are already in the ring and only need probing.
+    for (i, board) in chunk[split..].iter().enumerate() {
+        if set.test_at(ring[(split + i) & (PREFETCH_DISTANCE - 1)]) {
             out.push(*board);
         }
     }

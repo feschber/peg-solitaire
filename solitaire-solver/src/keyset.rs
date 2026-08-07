@@ -1,5 +1,5 @@
 //! A dense, fixed-size concurrent bitset over `Board`'s compressed key space, used
-//! as a replacement for sort+dedup (and, via [`DenseKeySet::test`], sorted-merge
+//! as a replacement for sort+dedup (and, via [`DenseKeySet::test_at`], sorted-merge
 //! intersection) in the hottest rounds of `calculate_feasible_set`.
 //!
 //! Indexed by a key's *rank within its round*, not by the key itself. Every board
@@ -114,7 +114,7 @@ fn binomials() -> [[u64; KEY_BITS + 1]; KEY_BITS + 1] {
 /// words per summary bit: each summary bit says "is this whole 64-word (4 Kbit)
 /// span of `words` entirely zero?", so extraction/clear can skip it in O(1).
 ///
-/// This trades directly against [`DenseKeySet::set`]'s summary update. Coarser
+/// This trades directly against [`DenseKeySet::set_at`]'s summary update. Coarser
 /// blocks mean a smaller summary, which keeps that update in L1; finer blocks mean
 /// [`DenseKeySet::clear`] zeroes less untouched memory around each set bit. Keys
 /// are extremely sparse here (a round sets ~2M of 8.6B), so a block is almost
@@ -314,8 +314,13 @@ impl DenseKeySet {
     /// Position of `key` in this round's layer: its rank among the keys of the same
     /// popcount, which is dense in `0..C(33, pegs)` where the raw key is spread over
     /// `2^33`. See [`LOW_BITS`] for the two-table form.
+    ///
+    /// `pub(crate)` so a caller that both prefetches and then acts on the same key
+    /// can compute this once and pass the result to the `*_at` methods, rather than
+    /// having each of them re-derive it. That duplication is not free: the two table
+    /// reads and their bounds checks profile at ~5.9% of a run when done twice.
     #[inline]
-    fn index(&self, key: u64) -> u64 {
+    pub(crate) fn index(&self, key: u64) -> u64 {
         debug_assert!(key < 1 << KEY_BITS, "key {key:#x} is wider than the board");
         debug_assert_eq!(
             key.count_ones() as usize,
@@ -349,9 +354,17 @@ impl DenseKeySet {
     /// region has joined, and that join supplies the happens-before edge making
     /// these `Relaxed` writes visible; that is what the surrounding code already
     /// relied on.
-    #[inline]
+    /// Convenience for tests, which think in keys; every hot path ranks the key
+    /// itself and calls [`Self::set_at`] so the rank is computed once.
+    #[cfg(test)]
     pub(crate) fn set(&self, key: u64) {
-        let bit = self.index(key);
+        self.set_at(self.index(key));
+    }
+
+    /// Marks the bit at a position already obtained from [`Self::index`]; the
+    /// concurrency contract is the same as `set`'s below.
+    #[inline]
+    pub(crate) fn set_at(&self, bit: u64) {
         let word_idx = (bit >> 6) as usize;
         let mask = 1u64 << (bit & 63);
         // Written unconditionally, on purpose. Guarding this with a `load` first
@@ -392,54 +405,38 @@ impl DenseKeySet {
         }
     }
 
-    /// Starts fetching the cache line [`Self::set`] would touch for `key`, without
-    /// waiting for it.
+    /// Starts fetching the cache line [`Self::set_at`]/[`Self::test_at`] would
+    /// touch for `bit`, without waiting for it. Takes a position from
+    /// [`Self::index`] so a caller doing both does not rank the key twice.
     ///
-    /// This is the counterpart to the "don't guard the `fetch_or` with a load"
-    /// comment above, and the reason that guard lost while this wins. `set` scatters
-    /// randomly over a map far larger than cache, so most calls still miss - but the
-    /// cost that dominates is not the miss, it is that a
-    /// `lock`ed RMW is a full barrier: it drains the store buffer, so consecutive
-    /// independent misses cannot overlap in the core's line-fill buffers and each
-    /// one pays the full latency in series. A guard load does not fix that (it is
-    /// dependent, and touches the same line); issuing the fetch some distance ahead
-    /// of the RMW does, restoring the memory-level parallelism the `lock` prefix
-    /// otherwise destroys. `generate_into_bitset` is the only caller and pipelines
-    /// it against its own key generation - see the ring buffer there.
+    /// It earns its keep on the *write* side because a `lock`ed RMW is a full
+    /// barrier: it drains the store buffer, so consecutive independent misses
+    /// cannot overlap in the core's line-fill buffers and each pays the full
+    /// latency in series. Guarding the `fetch_or` with a load does not fix that (it
+    /// is dependent, and touches the same line) - which is why that guard lost
+    /// while this wins; issuing the fetch some distance ahead of the RMW restores
+    /// the memory-level parallelism the `lock` prefix destroys.
     ///
-    /// `_MM_HINT_ET0` would be the natural hint (write intent -> line arrives
-    /// Modified, so the RMW needs no second round trip for ownership), but LLVM's
-    /// x86 backend lowers it to a plain `prefetcht0` anyway. That is close enough
-    /// in practice here: nothing else is writing these lines concurrently in the
+    /// On the *read* side the argument is different, since `test_at` is a plain
+    /// `Relaxed` load and no barrier at all - the core will overlap probes on its
+    /// own. What limits it there is how far ahead the out-of-order window can run,
+    /// and `intersect_chunk` puts a thoroughly unpredictable data-dependent branch
+    /// on every probe, so the window keeps being spent on mispredicted work instead
+    /// of starting the next miss. Both callers pipeline this against their own work
+    /// via a ring buffer; see them for the distance.
+    ///
+    /// `_MM_HINT_ET0` would be the natural hint for the write side (write intent ->
+    /// line arrives Modified, so the RMW needs no second round trip for ownership),
+    /// but LLVM's x86 backend lowers it to a plain `prefetcht0` anyway. That is
+    /// close enough here: nothing else is writing these lines concurrently in the
     /// common case, so they arrive Exclusive and the RMW can upgrade locally.
     #[inline]
-    pub(crate) fn prefetch_for_set(&self, key: u64) {
-        self.prefetch_word(key);
-    }
-
-    /// Starts fetching the cache line [`Self::test`] would read for `key`.
-    ///
-    /// Same single line as [`Self::prefetch_for_set`] - `set` and `test` index
-    /// `words` identically - but it earns its keep for a different reason, so the
-    /// two are named apart at the call sites. `test` is a plain `Relaxed` load
-    /// with no `lock` prefix, so unlike `set` it is not itself a barrier and the
-    /// core is free to overlap consecutive probes on its own. What limits that is
-    /// how far ahead the out-of-order window can run, and the caller
-    /// (`try_bitset_shrink_round`'s filter) puts a thoroughly unpredictable
-    /// data-dependent branch on every probe - so the window keeps being spent on
-    /// mispredicted work instead of on getting the next miss started.
-    #[inline]
-    pub(crate) fn prefetch_for_test(&self, key: u64) {
-        self.prefetch_word(key);
-    }
-
-    #[inline]
-    fn prefetch_word(&self, key: u64) {
+    pub(crate) fn prefetch_at(&self, bit: u64) {
         #[cfg(target_arch = "x86_64")]
         {
             // `index` maps into this round's layer, whose size `begin_round` has
             // checked against the map - the same bound `set`/`test` index under.
-            let word_idx = (self.index(key) >> 6) as usize;
+            let word_idx = (bit >> 6) as usize;
             debug_assert!(word_idx < NUM_WORDS);
             // SAFETY: `word_idx` is in bounds per the above, so the pointer is within
             // the `words` allocation. A prefetch is a hint with no architectural
@@ -452,19 +449,25 @@ impl DenseKeySet {
             }
         }
         #[cfg(not(target_arch = "x86_64"))]
-        let _ = key;
+        let _ = bit;
     }
 
-    #[inline]
+    /// Convenience for tests; see [`Self::set`].
+    #[cfg(test)]
     pub(crate) fn test(&self, key: u64) -> bool {
-        let bit = self.index(key);
+        self.test_at(self.index(key))
+    }
+
+    /// Tests the bit at a position already obtained from [`Self::index`].
+    #[inline]
+    pub(crate) fn test_at(&self, bit: u64) -> bool {
         let word_idx = (bit >> 6) as usize;
         (self.words[word_idx].load(Ordering::Relaxed) >> (bit & 63)) & 1 != 0
     }
 
     /// Reinterprets an exclusively-borrowed atomic slice as plain `u64`s.
     ///
-    /// Atomics are only needed while [`Self::set`] is running concurrently. The
+    /// Atomics are only needed while [`Self::set_at`] is running concurrently. The
     /// bulk operations below run between joined parallel regions, and `&mut`
     /// proves it - so they can use plain loads and stores. That is not just
     /// cosmetic: even a `Relaxed` atomic access is opaque to LLVM's loop
