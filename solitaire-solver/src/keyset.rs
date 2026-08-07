@@ -124,6 +124,29 @@ impl DenseKeySet {
         // only `words` is worth advising; `summary` is 256 KiB, still well below
         // the 2 MiB a transparent huge page would need.
         disable_transparent_hugepages(&words);
+        // Deliberately NOT prefaulted, and this is worth stating because a profile
+        // of the whole process makes it look like it should be: 13.1% of cycles sit
+        // under `exc_page_fault`/`handle_mm_fault` and 3.7% in `kernel_init_pages`,
+        // spread through the run, which is first touch of this mapping arriving one
+        // 4 KiB page at a time (4 KiB because of the advice above).
+        //
+        // Populating it up front with `MADV_POPULATE_WRITE`, issued from parallel
+        // chunks so as not to serialize what the lazy faults do across all workers,
+        // measured *worse* by 38 ms (+25.8%, slower in 14 of 14 interleaved reps).
+        //
+        // Because only a quarter of this mapping is ever touched: peak RSS of the
+        // 1 GiB region is 261 MiB, reproducibly. The keys are not spread over the
+        // space uniformly - `normalize` returns the minimum of each board's
+        // 8-symmetry orbit, and a minimum-of-8 leaves the high bits of the
+        // compressed key clear far more often than not, so the keys crowd into the
+        // low quarter of the range. Prefaulting therefore commits and zeroes ~760
+        // MiB that nothing will ever read, which is the whole of the regression.
+        //
+        // So the fault cost in the profile is first touch of memory the run
+        // genuinely uses, not waste, and the untouched three quarters of the
+        // mapping costs nothing but address space. Shrinking the key space - e.g.
+        // ranking each round's boards within `C(33, pegs)` instead of `2^33` - is
+        // the lever that would actually cut it, at the price of computing the rank.
         Self {
             words,
             summary: zeroed_atomic_vec(SUMMARY_WORDS),
