@@ -477,6 +477,28 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     timer.round("reverse step".into());
 
     let mut inverted = inverse_normalized_par(&visited[(Board::SLOTS - 1) / 2], threads);
+    // This sort looks dead and is not. Nothing *requires* this vector ordered: it
+    // is only ever a generation source (the first shrink round below reads it and
+    // then frees it), and the final collect takes indices 0..=(SLOTS - 1) / 2, so
+    // it is dropped without being read again. Deleting the line leaves the answer
+    // correct.
+    //
+    // It pays for itself in the locality of the round that consumes it, which is
+    // the largest of the run: 2.0M boards generating 19.7M keys into the 1 GiB
+    // bitmap. `inverse` and `normalize` are not monotonic in the compressed key,
+    // so without this the source is unordered with respect to its own keys and
+    // those writes scatter over the whole GiB instead of sweeping it. Measured,
+    // 12 interleaved reps, medians:
+    //
+    //     without the sort   inverse step -3.07 ms, that round's generate +2.62 ms
+    //     net                -0.76 ms median, +0.45 ms on minima, 6 of 12 reps
+    //
+    // i.e. ~85% self-financing and a wash overall, so it stays: a wash is not
+    // worth trading a smaller peak allocation of sorted state for, and the margin
+    // is the wrong side of noise to call a win. Note the penalty used to be far
+    // larger - hash-ordered input once cost a comparable round 28 -> 54 ms - and
+    // `generate_into_bitset`'s prefetch pipeline is what shrank it, by hiding most
+    // of the miss latency that ordering was previously the only defence against.
     inverted.fast_sort_unstable_mt(threads);
     visited.push(inverted);
 
