@@ -401,6 +401,96 @@ fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
     out
 }
 
+/// Marks each board of `states` present in `set`, which must already be on their
+/// layer. Pipelined exactly as the move loops are - the keys of an unsorted round
+/// scatter over the map, so these are the same DRAM round trips, just one per board
+/// instead of one per move.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn fill_bitset(states: &[Board], set: &DenseKeySet) -> usize {
+    const PREFETCH_DISTANCE: usize = 16;
+    const CHUNK: usize = 2048;
+
+    states.par_chunks(CHUNK).for_each(|chunk| {
+        let mut ring = [0u64; PREFETCH_DISTANCE];
+        for (slot, board) in chunk.iter().take(PREFETCH_DISTANCE).enumerate() {
+            let bit = set.index(board.to_compressed_repr());
+            set.prefetch_at(bit);
+            ring[slot] = bit;
+        }
+        let split = chunk.len().saturating_sub(PREFETCH_DISTANCE);
+        let ahead_of = chunk.get(PREFETCH_DISTANCE..).unwrap_or(&[]);
+        for (i, ahead) in ahead_of.iter().enumerate() {
+            let slot = i & (PREFETCH_DISTANCE - 1);
+            let bit = ring[slot];
+            let ahead_bit = set.index(ahead.to_compressed_repr());
+            set.prefetch_at(ahead_bit);
+            ring[slot] = ahead_bit;
+            set.set_at(bit);
+        }
+        for i in split..chunk.len() {
+            set.set_at(ring[i & (PREFETCH_DISTANCE - 1)]);
+        }
+    });
+    states.len()
+}
+
+/// Keeps the boards of `chunk` that have at least one predecessor in `set` - one
+/// chunk of the reversed shrink round described on [`try_bitset_shrink_round`].
+///
+/// `set` holds the *source* layer, so this asks each candidate directly whether any
+/// board that could move onto it is present, instead of asking every source board
+/// where it can move to. A board's reverse moves are exactly its predecessors: a
+/// reverse move at `(idx, dir)` puts back the peg a forward move would have jumped,
+/// so `c`'s reverse-move images are precisely the boards with a forward move to `c`.
+///
+/// Deliberately no early exit on the first hit. It looks free - a kept board could
+/// stop after one probe - but only ~11% of candidates are kept here, so the average
+/// barely moves, and stopping early means the next probe's address is not known
+/// until the current one returns. That is exactly the serialization the prefetch
+/// pipeline exists to avoid, so all of a board's predecessors are issued and then
+/// tested, and `keep` is ORed into rather than short-circuited.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn reverse_probe_chunk(set: &DenseKeySet, chunk: &[Board]) -> (Vec<Board>, usize) {
+    const PREFETCH_DISTANCE: usize = 16;
+
+    let mut keep = vec![false; chunk.len()];
+    // a predecessor's bit position, plus which candidate it belongs to - the ring
+    // defers each probe past the end of its own board's moves, so the owner has to
+    // travel with it
+    let mut ring = [(0u64, 0usize); PREFETCH_DISTANCE];
+    let mut n = 0usize;
+    for (i, board) in chunk.iter().enumerate() {
+        let syms = board.symmetries();
+        for dir in Dir::enumerate() {
+            for idx in board.rev_mov_pattern_mask(dir) {
+                let bit = set.index(Board::normalize_after_move(&syms, idx, dir).to_compressed_repr());
+                set.prefetch_at(bit);
+                let slot = n & (PREFETCH_DISTANCE - 1);
+                if n >= PREFETCH_DISTANCE {
+                    let (deferred, owner) = ring[slot];
+                    keep[owner] |= set.test_at(deferred);
+                }
+                ring[slot] = (bit, i);
+                n += 1;
+            }
+        }
+    }
+    for j in n.saturating_sub(PREFETCH_DISTANCE)..n {
+        let (deferred, owner) = ring[j & (PREFETCH_DISTANCE - 1)];
+        keep[owner] |= set.test_at(deferred);
+    }
+
+    let mut out = Vec::with_capacity(keep.iter().filter(|k| **k).count());
+    out.extend(
+        chunk
+            .iter()
+            .zip(&keep)
+            .filter(|(_, k)| **k)
+            .map(|(b, _)| *b),
+    );
+    (out, n)
+}
+
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn try_bitset_shrink_round(
     keyset: &mut Option<DenseKeySet>,
@@ -411,6 +501,32 @@ fn try_bitset_shrink_round(
 ) -> Option<(usize, usize)> {
     if visited[remaining].len() < bitset_threshold() {
         return None;
+    }
+
+    // Which way round to run the round.
+    //
+    // The round has to connect two sets one move apart, and either side can be the
+    // one put in the map. The default fills it with every forward move of
+    // `visited[remaining]` and probes `visited[remaining - 1]` once per board; the
+    // reversed form fills it with `visited[remaining]` itself and probes once per
+    // *predecessor* of each `visited[remaining - 1]` board. Both answer the same
+    // question and the results are identical.
+    //
+    // Boards average ~10 moves either way, so the totals are ~10a + b against
+    // a + 10b for set sizes a and b: the reversed form is the cheaper one exactly
+    // when `a >= b`. That is a single round here - the first, where the inverse step
+    // has just made the two sides the same size - and the later rounds, whose source
+    // side has been cut to a fraction of the side it probes, keep the default.
+    //
+    // At equal sizes the operation counts tie, and what breaks the tie is the mix:
+    // filling costs one `lock or` per board and probing one load per move, so the
+    // reversed form turns ~17.6M read-modify-writes into loads. That matters beyond
+    // their latency, which the prefetch pipeline already hides on both paths - an
+    // RMW takes the line exclusively and dirties it, so it costs a fetch and an
+    // eventual writeback where a load costs only the fetch, and it contends with the
+    // other 15 threads for ownership of lines they are also touching.
+    if visited[remaining].len() >= visited[remaining - 1].len() {
+        return try_bitset_shrink_round_reversed(keyset, visited, remaining, threads, timer);
     }
 
     // a forward move removes the jumped peg, so the keys this round stores - and the
@@ -450,6 +566,58 @@ fn try_bitset_shrink_round(
     timer.round("intersect".into());
 
     Some((num_moves, intersection))
+}
+
+/// One shrink round run with the sides swapped - see the dispatch comment in
+/// [`try_bitset_shrink_round`] for when and why this is the cheaper direction.
+///
+/// The map holds `visited[remaining]` itself, on *its* layer rather than the layer
+/// below, and each `visited[remaining - 1]` board asks whether any of its
+/// predecessors is present. No moves are generated into the map at all.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn try_bitset_shrink_round_reversed(
+    keyset: &mut Option<DenseKeySet>,
+    visited: &mut [Vec<Board>],
+    remaining: usize,
+    threads: usize,
+    timer: &mut Timer,
+) -> Option<(usize, usize)> {
+    // the map holds the source boards unchanged, so it ranks by *their* peg count -
+    // one heavier than the candidates probing it, and the opposite of the default
+    // path's choice
+    let pegs = visited[remaining][0].count_pegs();
+    debug_assert!(
+        visited[remaining].iter().all(|b| b.count_pegs() == pegs)
+            && visited[remaining - 1]
+                .iter()
+                .all(|b| b.count_pegs() == pegs - 1),
+        "a BFS round must hold one peg count throughout, or ranking aliases boards"
+    );
+    let set = keyset.get_or_insert_with(DenseKeySet::new);
+    set.begin_round(pegs);
+
+    fill_bitset(&visited[remaining], set);
+    // same early free as the default path: this index is dead once the round has
+    // read it, except for the final flatten, which stops below it
+    if remaining == (Board::SLOTS - 1) / 2 + 1 {
+        visited[remaining] = Vec::new();
+    }
+    timer.round("moves".into());
+
+    let probed = std::sync::atomic::AtomicUsize::new(0);
+    visited[remaining - 1] = par::parallel(&visited[remaining - 1], threads, |chunk| {
+        let (kept, n) = reverse_probe_chunk(set, chunk);
+        // one add per chunk, not per probe
+        probed.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        kept
+    });
+    let intersection = visited[remaining - 1].len();
+    timer.round("intersect".into());
+
+    // the moves this round considered are the predecessors it probed, which is the
+    // same quantity the default path reports (moves examined, pre-dedup) counted on
+    // the other side of the round
+    Some((probed.into_inner(), intersection))
 }
 
 /// attempts the bitset path for one growth-phase round; see [`try_bitset_shrink_round`].
@@ -859,6 +1027,57 @@ mod tests {
             reference.drain_sorted_by_key(|_| true),
             "key set differs ({} boards, forward={forward})",
             states.len()
+        );
+    }
+
+    /// The reversed round is taken by exactly one round of a real run, so a defect
+    /// in it would be a single wrong intersection buried in the middle of the
+    /// pipeline - the kind that surfaces as a wrong final count with nothing to
+    /// point at. Both directions answer the same question, so they can simply be
+    /// run against identical inputs and compared.
+    #[test]
+    fn reversed_shrink_round_matches_the_default() {
+        // `src` is deliberately only part of its round, so that a good fraction of
+        // the candidates have no predecessor in it and the filter actually filters -
+        // comparing two implementations that both keep everything proves nothing. A
+        // quarter also keeps it under the round below, which is what sends
+        // `try_bitset_shrink_round` down the default path rather than dispatching
+        // straight back to the one being compared against.
+        let full = states_after(10);
+        let src = full[..full.len() / 4].to_vec();
+        let candidates = states_after(9);
+        let pegs = src[0].count_pegs();
+        assert_eq!(candidates[0].count_pegs(), pegs - 1);
+        assert!(src.len() >= bitset_threshold(), "round too small for either path");
+        assert!(
+            src.len() < candidates.len(),
+            "sizes must send `try_bitset_shrink_round` down its default path"
+        );
+
+        let mut default = vec![Vec::new(); pegs + 1];
+        default[pegs] = src.clone();
+        default[pegs - 1] = candidates.clone();
+        let mut reversed = default.clone();
+
+        // one map for both: `begin_round` clears it and switches layers, which is
+        // exactly the transition being relied on here
+        let mut keyset = None;
+        let a = try_bitset_shrink_round(&mut keyset, &mut default, pegs, 1, &mut Timer::new());
+        let b =
+            try_bitset_shrink_round_reversed(&mut keyset, &mut reversed, pegs, 1, &mut Timer::new());
+
+        let (a, b) = (a.expect("default path declined"), b.expect("reversed path declined"));
+        assert_eq!(
+            default[pegs - 1],
+            reversed[pegs - 1],
+            "reversed round kept a different set ({} vs {})",
+            default[pegs - 1].len(),
+            reversed[pegs - 1].len()
+        );
+        assert_eq!(a.1, b.1, "reported intersection sizes differ");
+        assert!(
+            default[pegs - 1].len() < candidates.len(),
+            "filter kept everything, so this would pass even if it did nothing"
         );
     }
 
