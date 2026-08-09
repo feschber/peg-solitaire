@@ -200,6 +200,26 @@ fn zeroed_atomic_vec(len: usize) -> Vec<AtomicU64> {
 /// randomly across 1 GiB - but hardware counters bound that upside at ~4.5% of
 /// cycles, against a measured downside of several hundred percent. So opt out
 /// rather than leave it to how the host happens to be tuned.
+///
+/// `MADV_COLLAPSE` is the obvious rejoinder - it is the one mechanism here that is
+/// *not* on the fault path, collapsing already-mapped memory once on request, so
+/// none of the above applies to it - and it was tried. It changes nothing: the
+/// process still reports `AnonHugePages: 0 kB`, and `dTLB-load-misses` move from
+/// 18.0M to 17.8M, i.e. not at all. The call returns success because it attempted
+/// and gave up, and the reason is visible in the host rather than in the program:
+///
+/// ```text
+///   /proc/buddyinfo, Normal zone, order 9 (2 MiB) free blocks: 0
+///   /proc/vmstat: compact_fail 101782 of compact_stall 106589   (95.5% fail)
+///                 thp_collapse_alloc 30
+/// ```
+///
+/// There is no 2 MiB block to be had on a machine in this state, so no advice can
+/// produce one. That does not mean the ~3M dTLB misses a run are not worth
+/// attacking - only that THP cannot be the thing that attacks them here. Reserving
+/// pages up front (`vm.nr_hugepages` + hugetlbfs) is the mechanism that would
+/// actually work, and it is a system configuration decision rather than something
+/// this allocation can ask for.
 #[cfg(target_os = "linux")]
 fn disable_transparent_hugepages(region: &[AtomicU64]) {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
