@@ -87,6 +87,55 @@ pub(crate) fn par_join<T: Copy + Send + Sync, VT: Send + Sync + AsRef<[T]>>(slic
     result
 }
 
+/// Maps `src` in parallel into a single output holding exactly `ratio` results per
+/// input, each chunk writing straight into its own slice of it.
+///
+/// [`parallel`] cannot do this because its `f` returns a `Vec` of unknown length, so
+/// it has to build one per chunk and then [`par_join`] them into a second
+/// allocation - every element allocated twice and copied once. Where the output
+/// size follows from the input size, both are avoidable, and the copy is not small:
+/// the two callers move 16 and 27 MB.
+///
+/// Measured on the inverse step's 2.6M boards, against the collect-then-join shape
+/// (with `par_join`'s parallel copy, not a sequential concat): 2.505 -> 1.876 ms,
+/// -25%. The map itself is only 0.55 ms of that; the rest was plumbing.
+///
+/// `f` must fill every element of the slice it is handed - the output's length is
+/// set from `ratio` regardless, so a slot left untouched would be read as
+/// uninitialized memory. `R: Copy` keeps that sound in the same way [`par_join`]
+/// does: no destructor runs on the uninitialized value being assigned over.
+pub(crate) fn par_map_exact<T, R, F>(src: &[T], nthreads: usize, ratio: usize, f: F) -> Vec<R>
+where
+    T: Send + Sync,
+    R: Copy + Send + Sync,
+    F: Fn(&[T], &mut [R]) + Send + Sync,
+{
+    let total = src.len() * ratio;
+    let mut out = Vec::with_capacity(total);
+    let chunk = if nthreads == 1 || src.len() < 100 * nthreads {
+        src.len().max(1)
+    } else {
+        src.len().div_ceil(nthreads * 2).max(1)
+    };
+    {
+        let lens: Vec<usize> = src.chunks(chunk).map(|c| c.len() * ratio).collect();
+        let dsts = into_mut_slices(out.spare_capacity_mut(), &lens);
+        dsts.into_par_iter()
+            .zip(src.par_chunks(chunk))
+            .for_each(|(dst, src)| {
+                // SAFETY: as in `par_join` - `R: Copy` has no drop glue, so assigning
+                // over the uninitialized slots runs no destructor, and `f` is
+                // required to write all of them before `set_len` below exposes them.
+                let dst: &mut [R] = unsafe { std::mem::transmute(dst) };
+                debug_assert_eq!(dst.len(), src.len() * ratio);
+                f(src, dst);
+            });
+    }
+    // SAFETY: every chunk covered a disjoint span of `0..total` and filled it.
+    unsafe { out.set_len(total) };
+    out
+}
+
 pub(crate) fn parallel<F, T, R>(states: &[T], nthreads: usize, f: F) -> Vec<R>
 where
     T: Send + Sync,

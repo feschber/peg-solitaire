@@ -697,6 +697,9 @@ fn reverse_moves_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     par::parallel(states, num_threads, reverse_moves)
 }
 
+/// only the wasm fallback builds its output as a fresh `Vec`; elsewhere
+/// `inverse_normalized_par` writes into the final one directly
+#[cfg(target_arch = "wasm32")]
 fn inverse_normalized(states: &[Board]) -> Vec<Board> {
     let mut inverted: Vec<Board> = states.iter().map(|b| b.inverse()).collect();
     Board::normalize_all(&mut inverted);
@@ -710,7 +713,13 @@ fn inverse_normalized_par(states: &[Board], _: usize) -> Vec<Board> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn inverse_normalized_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    par::parallel(states, num_threads, inverse_normalized)
+    // one output per input, so it can be written straight into the final vector -
+    // see `par::par_map_exact` for what that saves over `par::parallel`
+    par::par_map_exact(states, num_threads, 1, |src, dst| {
+        for (d, b) in dst.iter_mut().zip(src) {
+            *d = b.inverse().normalize();
+        }
+    })
 }
 
 /// concatenates the finished BFS layers into one vector.
@@ -734,6 +743,8 @@ fn flatten_layers(layers: &[Vec<Board>]) -> Vec<Board> {
     par::par_join(layers)
 }
 
+/// as `inverse_normalized`: the non-wasm path writes straight into its output
+#[cfg(target_arch = "wasm32")]
 fn expand_with_inverse(states: &[Board]) -> Vec<Board> {
     states
         .iter()
@@ -748,7 +759,14 @@ fn expand_with_inverse_par(states: &[Board], _: usize) -> Vec<Board> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn expand_with_inverse_par(states: &[Board], num_threads: usize) -> Vec<Board> {
-    par::parallel(states, num_threads, expand_with_inverse)
+    // exactly two outputs per input, in the same order `expand_with_inverse`
+    // produces them
+    par::par_map_exact(states, num_threads, 2, |src, dst| {
+        for (pair, b) in dst.chunks_exact_mut(2).zip(src) {
+            pair[0] = *b;
+            pair[1] = b.inverse().normalize();
+        }
+    })
 }
 
 pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
