@@ -97,13 +97,18 @@ fn bitset_threshold() -> usize {
 /// never contribute.
 ///
 /// A `fn` rather than a closure so both round paths can share it without either
-/// having to thread a capture around. `pagoda(Board::solved())` is a constant of
-/// the pagoda function, computed once here rather than per element.
+/// having to thread a capture around.
+///
+/// Stated without materializing the inverse: every valid cell is occupied in the
+/// full board and invalid cells weigh nothing, so `pagoda(b.inverse())` is just
+/// `FULL_WEIGHT - pagoda(b)` (asserted by a test in `pagoda.rs`). Both weights are
+/// `const`, which also retires the `OnceLock` that used to hold `pagoda(solved)`.
+///
+/// A simplification, not a speedup - measured neutral (7 of 15 interleaved reps,
+/// medians within noise) even though it runs ~5.1M times a run. The `OnceLock` was
+/// evidently already being hoisted out of the filter loops.
 fn growth_survives_pagoda(board: Board) -> bool {
-    use std::sync::OnceLock;
-    static SOLVED_WEIGHT: OnceLock<i64> = OnceLock::new();
-    let solved = *SOLVED_WEIGHT.get_or_init(|| crate::pagoda::pagoda(Board::solved()));
-    crate::pagoda::pagoda(board.inverse()) >= solved
+    crate::pagoda::FULL_WEIGHT - crate::pagoda::pagoda(board) >= crate::pagoda::SOLVED_WEIGHT
 }
 
 /// generates every forward (or, if `!forward`, reverse) move from `states`,

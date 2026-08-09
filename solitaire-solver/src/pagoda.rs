@@ -55,7 +55,17 @@ const ROW_WEIGHTS: [[i64; 256]; 8] = {
     tables
 };
 
-pub(crate) fn pagoda(board: Board) -> i64 {
+/// `pagoda(Board::solved())`, the bar every board that can still reach the solved
+/// position must clear.
+pub(crate) const SOLVED_WEIGHT: i64 = pagoda(Board::solved());
+
+/// `pagoda(Board::full())`. Every valid cell is occupied in the full board and
+/// invalid cells weigh nothing, so `pagoda(b.inverse()) == FULL_WEIGHT - pagoda(b)`
+/// for any `b` - which is what lets the growth phase's reachability test (stated on
+/// the inverse) be evaluated without materializing the inverse.
+pub(crate) const FULL_WEIGHT: i64 = pagoda(Board::full());
+
+pub(crate) const fn pagoda(board: Board) -> i64 {
     let bits = board.0;
     let mut sum = 0i64;
     let mut row = 0usize;
@@ -110,4 +120,16 @@ fn test_pagoda_is_valid() {
         }
     }
     assert!(checked > 0);
+}
+
+#[test]
+fn inverse_weight_is_the_complement() {
+    // what lets the growth phase test reachability - stated on a board's inverse -
+    // without ever materializing that inverse
+    let samples = [Board::empty(), Board::full(), Board::solved(), Board::default()]
+        .into_iter()
+        .chain((0..100_000).map(|_| Board(rand::random::<u64>() & Board::full().0)));
+    for board in samples {
+        assert_eq!(pagoda(board.inverse()), FULL_WEIGHT - pagoda(board));
+    }
 }
