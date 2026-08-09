@@ -152,7 +152,12 @@ fn main() {
     // sanity check: the existing pagoda.rs weighting (center=1, orbit2=1, rest=0)
     // must be valid and must never exclude a positive - if this fails, something in
     // our orbit/triple derivation is wrong.
-    let existing = [1i64, 0, 1, 0, 0, 0, 0];
+    // The weighting actually in `pagoda.rs` today, read off its PAGODA table in
+    // orbit form: center(27)=3, orbit1(3)=0, orbit2(11)=2, orbit3(18)=0,
+    // orbit4(19)=2, orbit5(2)=-2, orbit6(10)=2. This used to be [1,0,1,0,0,0,0],
+    // which is the *superseded* weighting - it prunes ~3.5% where production prunes
+    // ~21%, so comparing a family against it would overstate the gain by 6x.
+    let existing = [3i64, 0, 2, 0, 2, -2, 2];
     assert!(is_valid_weighting(&existing, &triples), "existing pagoda weighting failed our own validity check - derivation bug");
     let existing_center = existing[0];
     let existing_false_prune = pos_counts.iter().filter(|c| dot(c, &existing) < existing_center).count();
@@ -164,9 +169,21 @@ fn main() {
         100.0 * existing_pruned as f64 / neg_counts.len() as f64
     );
 
-    println!("\nsearching weight space...");
-    const RANGE: i64 = 3;
-    let range: Vec<i64> = (-RANGE..=RANGE).collect();
+    // ---------------------------------------------------------------------------
+    // Phase 1: every weighting that is *usable*, not just the single best one.
+    //
+    // A weighting is usable if it is a valid pagoda (weight non-increasing along
+    // every legal move) and excludes no true positive. The original search
+    // collapsed this set to its best member; the whole point here is that its
+    // members reject *different* boards, so their union is strictly stronger than
+    // any one of them.
+    // ---------------------------------------------------------------------------
+    let range_max: i64 = std::env::var("PAGODA_RANGE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    println!("\nsearching weight space (range +-{range_max})...");
+    let range: Vec<i64> = (-range_max..=range_max).collect();
     let mut candidates = vec![];
     for &a in &range {
         for &b in &range {
@@ -185,96 +202,171 @@ fn main() {
     }
     println!("{} candidate weightings to check", candidates.len());
 
-    let best = candidates
+    let mut usable: Vec<(usize, [i64; NUM_ORBITS])> = candidates
         .par_iter()
         .filter(|w| is_valid_weighting(w, &triples))
         .filter_map(|w| {
             let center = w[0];
-            let false_prune = pos_counts.iter().any(|c| dot(c, w) < center);
-            if false_prune {
+            if pos_counts.iter().any(|c| dot(c, w) < center) {
                 return None;
             }
             let pruned = neg_counts.iter().filter(|c| dot(c, w) < center).count();
-            Some((pruned, *w))
+            (pruned > 0).then_some((pruned, *w))
         })
-        .max_by_key(|(pruned, _)| *pruned);
-
-    match best {
-        Some((pruned, w)) => {
-            println!(
-                "\nBEST FOUND (on {}-sample): weights={w:?} prunes {pruned}/{} sampled negatives ({:.2}%)",
-                RANGE,
-                neg_counts.len(),
-                100.0 * pruned as f64 / neg_counts.len() as f64
-            );
-            println!("(orbit reprs: 0=center 1=dist3-axis 2=dist2-axis(existing) 3=diag1 4=dist1-axis 5=dist(1,3) 6=dist(1,2))");
-
-            // re-verify against the FULL dataset (not just the search sample) for a
-            // trustworthy final number, and re-confirm validity + zero false-prune
-            // independently of the search loop above.
-            assert!(is_valid_weighting(&w, &triples));
-            let center = w[0];
-            let full_neg_counts: Vec<[i32; NUM_ORBITS]> =
-                labeled.iter().filter(|(_, l)| !*l).map(|(b, _)| orbit_counts(b.inverse())).collect();
-            let full_false_prune = pos_counts.iter().any(|c| dot(c, &w) < center);
-            let full_pruned = full_neg_counts.iter().filter(|c| dot(c, &w) < center).count();
-            println!(
-                "FULL-DATA VERIFICATION: false_prune_any_positive={full_false_prune}, prunes {full_pruned}/{} negatives ({:.2}%)",
-                full_neg_counts.len(),
-                100.0 * full_pruned as f64 / full_neg_counts.len() as f64
-            );
-
-            println!("\nper-round pruning rate (existing vs found), applied to EVERY round (not just 10-14):");
-            for (round, boards) in per_round.iter().enumerate() {
-                let n = boards.len();
-                let existing_pruned = boards
-                    .iter()
-                    .filter(|&&b| dot(&orbit_counts(b.inverse()), &existing) < existing_center)
-                    .count();
-                let found_pruned =
-                    boards.iter().filter(|&&b| dot(&orbit_counts(b.inverse()), &w) < center).count();
-                println!(
-                    "  round {round:>2} ({n:>8} boards): existing {existing_pruned:>8} ({:>5.1}%)  found {found_pruned:>8} ({:>5.1}%)",
-                    100.0 * existing_pruned as f64 / n as f64,
-                    100.0 * found_pruned as f64 / n as f64,
-                );
-            }
-
-            // the REAL test: apply the found weighting PROGRESSIVELY - prune each
-            // round's survivors before using them to generate the next round - and
-            // see the actual resulting sizes, not an extrapolation from
-            // independently-measured per-round rates (which isn't valid once
-            // earlier rounds have already been pruned).
-            println!("\nprogressive pruning simulation (found weighting applied every round):");
-            let mut pruned_frontier = vec![Board::solved()];
-            let mut any_lost_positive = false;
-            for round in 0..15 {
-                pruned_frontier = growth_round(&pruned_frontier);
-                let before = pruned_frontier.len();
-                pruned_frontier.retain(|&b| dot(&orbit_counts(b.inverse()), &w) >= center);
-                let after = pruned_frontier.len();
-                // cross-check against ground truth: every board in this round that's
-                // truly feasible must have survived the prune.
-                let survivors: StdHashSet<Board> = pruned_frontier.iter().copied().collect();
-                let lost_positive = per_round[round]
-                    .iter()
-                    .filter(|b| feasible.contains(b))
-                    .any(|b| !survivors.contains(b));
-                any_lost_positive |= lost_positive;
-                println!(
-                    "  round {round:>2}: unpruned would be {before:>8}, pruned to {after:>8} ({:>5.1}% reduction){}",
-                    100.0 * (1.0 - after as f64 / before as f64),
-                    if lost_positive { "  !!! LOST A TRUE POSITIVE !!!" } else { "" }
-                );
-            }
-            println!(
-                "\nfinal round size WITH progressive pruning: {} (vs {} unpruned - {:.1}% smaller)",
-                pruned_frontier.len(),
-                per_round[14].len(),
-                100.0 * (1.0 - pruned_frontier.len() as f64 / per_round[14].len() as f64)
-            );
-            println!("any true positive ever lost during progressive pruning: {any_lost_positive}");
+        .collect();
+    usable.sort_unstable_by_key(|(pruned, _)| std::cmp::Reverse(*pruned));
+    println!(
+        "{} usable weightings (valid + exclude no positive + prune something)",
+        usable.len()
+    );
+    match usable.first() {
+        Some((pruned, w)) => println!(
+            "best single: weights={w:?} prunes {pruned}/{} sampled negatives ({:.2}%)",
+            neg_counts.len(),
+            100.0 * *pruned as f64 / neg_counts.len() as f64
+        ),
+        None => {
+            println!("no usable weighting found - nothing to do");
+            return;
         }
-        None => println!("\nno valid weighting found in range (unexpected)"),
     }
+    println!("(orbit reprs: 0=center 1=dist3-axis 2=dist2-axis(existing) 3=diag1 4=dist1-axis 5=dist(1,3) 6=dist(1,2))");
+
+    // ---------------------------------------------------------------------------
+    // Phase 2: greedy set cover over the negatives.
+    //
+    // Restricted to the strongest POOL weightings by individual coverage, purely to
+    // bound the memory of the rejection bitsets - a weighting that rejects very few
+    // negatives cannot contribute much marginal coverage either.
+    // ---------------------------------------------------------------------------
+    const POOL: usize = 512;
+    const MAX_FAMILY: usize = 8;
+    let pool: Vec<[i64; NUM_ORBITS]> = usable.iter().take(POOL).map(|(_, w)| *w).collect();
+    let words = neg_counts.len().div_ceil(64);
+    let masks: Vec<Vec<u64>> = pool
+        .par_iter()
+        .map(|w| {
+            let center = w[0];
+            let mut bits = vec![0u64; words];
+            for (i, c) in neg_counts.iter().enumerate() {
+                if dot(c, w) < center {
+                    bits[i >> 6] |= 1 << (i & 63);
+                }
+            }
+            bits
+        })
+        .collect();
+
+    println!("\ngreedy family selection (pool of {}):", pool.len());
+    let mut covered = vec![0u64; words];
+    let mut family: Vec<[i64; NUM_ORBITS]> = vec![];
+    let total_negs = neg_counts.len();
+    while family.len() < MAX_FAMILY {
+        let best = masks
+            .par_iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let gain: usize = m
+                    .iter()
+                    .zip(&covered)
+                    .map(|(a, b)| (a & !b).count_ones() as usize)
+                    .sum();
+                (gain, i)
+            })
+            .max();
+        let Some((gain, i)) = best else { break };
+        // stop once a further member buys less than half a percent of the negatives:
+        // every member costs a dot product on every extracted board at runtime
+        if gain * 200 < total_negs {
+            println!("  stopping: best marginal gain {gain} is under 0.5% of negatives");
+            break;
+        }
+        for (c, m) in covered.iter_mut().zip(&masks[i]) {
+            *c |= m;
+        }
+        family.push(pool[i]);
+        let now: usize = covered.iter().map(|w| w.count_ones() as usize).sum();
+        println!(
+            "  +{:?}  marginal {gain:>7} -> cumulative {now:>7}/{total_negs} ({:.2}%)",
+            pool[i],
+            100.0 * now as f64 / total_negs as f64
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 3: re-verify the chosen family against the FULL data, independently of
+    // the sampled search above. A single missed positive invalidates the family, so
+    // this is checked per member as well as for the union.
+    // ---------------------------------------------------------------------------
+    let survives_family = |b: Board, fam: &[[i64; NUM_ORBITS]]| -> bool {
+        let c = orbit_counts(b.inverse());
+        fam.iter().all(|w| dot(&c, w) >= w[0])
+    };
+    let full_negs: Vec<Board> = labeled.iter().filter(|(_, l)| !*l).map(|(b, _)| *b).collect();
+    for (i, w) in family.iter().enumerate() {
+        assert!(is_valid_weighting(w, &triples), "family member {i} is not a valid pagoda");
+        assert!(
+            !all_pos.iter().any(|&b| dot(&orbit_counts(b.inverse()), w) < w[0]),
+            "family member {i} excludes a true positive"
+        );
+    }
+    let existing_full = full_negs
+        .iter()
+        .filter(|&&b| dot(&orbit_counts(b.inverse()), &existing) < existing_center)
+        .count();
+    let family_full = full_negs.iter().filter(|&&b| !survives_family(b, &family)).count();
+    println!(
+        "\nFULL-DATA: existing prunes {existing_full}/{} ({:.2}%), family of {} prunes {family_full} ({:.2}%)",
+        full_negs.len(),
+        100.0 * existing_full as f64 / full_negs.len() as f64,
+        family.len(),
+        100.0 * family_full as f64 / full_negs.len() as f64
+    );
+
+    // ---------------------------------------------------------------------------
+    // Phase 4: the number that actually decides this - progressive pruning. Prune
+    // each round before it generates the next, so the compounding is measured
+    // rather than extrapolated from independent per-round rates.
+    // ---------------------------------------------------------------------------
+    println!("\nprogressive pruning (existing single vs family), applied every round:");
+    let simulate = |fam: &[[i64; NUM_ORBITS]]| -> (Vec<usize>, bool) {
+        let mut frontier = vec![Board::solved()];
+        let mut sizes = vec![];
+        let mut lost = false;
+        for round in 0..15 {
+            frontier = growth_round(&frontier);
+            frontier.retain(|&b| survives_family(b, fam));
+            let survivors: StdHashSet<Board> = frontier.iter().copied().collect();
+            lost |= per_round[round]
+                .iter()
+                .filter(|b| feasible.contains(b))
+                .any(|b| !survivors.contains(b));
+            sizes.push(frontier.len());
+        }
+        (sizes, lost)
+    };
+    let (base_sizes, base_lost) = simulate(&[existing]);
+    // ties this simulation to reality: the real solver's `visited[16]` is 2046865,
+    // so if the orbit form of the production weighting is right, round 14 of the
+    // baseline simulation must land on exactly that
+    assert_eq!(
+        base_sizes[14], 2_046_865,
+        "baseline simulation does not reproduce the real solver's final growth round - \
+         the orbit form of the production weighting is wrong"
+    );
+    let (fam_sizes, fam_lost) = simulate(&family);
+    assert!(!base_lost, "the existing weighting lost a positive - harness bug");
+    assert!(!fam_lost, "THE FAMILY LOST A TRUE POSITIVE - it is not sound");
+
+    println!("  {:>5} {:>10} {:>10} {:>10}", "round", "today", "family", "reduction");
+    let (mut tot_a, mut tot_b) = (0usize, 0usize);
+    for (round, (a, b)) in base_sizes.iter().zip(&fam_sizes).enumerate() {
+        tot_a += a;
+        tot_b += b;
+        println!("  {round:>5} {a:>10} {b:>10} {:>9.1}%", 100.0 * (1.0 - *b as f64 / *a as f64));
+    }
+    println!("  {:>5} {tot_a:>10} {tot_b:>10} {:>9.1}%", "total", 100.0 * (1.0 - tot_b as f64 / tot_a as f64));
+    println!("\nboards carried by the growth phase: {tot_a} -> {tot_b}");
+    println!("family: {family:?}");
+    println!("no true positive lost: {}", !fam_lost);
 }

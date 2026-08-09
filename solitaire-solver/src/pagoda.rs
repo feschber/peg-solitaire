@@ -14,6 +14,33 @@ use crate::Board;
 /// (~21% vs ~3.5% of growth-phase negatives pruned at the biggest round) - the
 /// weighting search plateaued here even with a much wider integer range, so this
 /// is close to the ceiling for this class of technique on this board.
+///
+/// That ceiling has since been probed properly, and it holds for *sets* of
+/// weightings and not merely for single ones - which was the obvious remaining
+/// idea, since each valid weighting rejects a different set of boards and a board
+/// must satisfy all of them to survive. `find_pagoda.rs` now enumerates every
+/// usable weighting and greedily stacks them; the result is that this avenue is
+/// closed on three separate counts:
+///
+/// - **The class saturates at three.** Greedy selection picks this weighting, the
+///   one it superseded, and `[2, 3, 0, 0, 3, -3, 3]`; a fourth adds *zero* boards
+///   over a pool of 301. Widening the search from `-3..=3` to `-5..=5` - 3162 usable
+///   weightings, 10x more - reselects the same three up to scaling and rejects an
+///   identical 1,251,563 of 5,342,989 negatives.
+/// - **What it buys is small.** Applied progressively (each round pruned before it
+///   generates the next, so the compounding is real), boards carried by the growth
+///   phase go 5,141,583 -> 4,999,809, i.e. 2.8%, and the largest round 2,046,865 ->
+///   1,968,952.
+/// - **2.8% is not measurable.** Implemented and benchmarked (three weightings
+///   packed into one table so evaluating all of them costs the same 8 lookups as
+///   one), 25 interleaved reps put it inside the noise: median-of-medians -0.58 ms,
+///   paired median +0.08 ms, faster in 11 of 25. Statistics that disagree on the
+///   sign are the signature of no effect, so it was not kept.
+///
+/// Going further needs weightings that are *not* orbit-constant. Those are a
+/// strictly larger class, but a sound test then has to take the minimum over all 8
+/// orientations of each board, so they cost 8x here and cannot use the orbit form
+/// at all.
 #[rustfmt::skip]
 const PAGODA: [i64; 64] = [
      0,  0, -2,  0, -2,  0,  0,  0,
