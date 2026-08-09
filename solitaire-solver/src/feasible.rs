@@ -279,6 +279,29 @@ fn try_bitset_shrink_round(
 /// came to sit behind it: ranking the key space (see `keyset.rs`) put two
 /// bounds-checked table reads between the key and the bit, and profiling showed
 /// that duplicated work at ~5.9% of a run rather than ~3%.
+///
+/// The obvious next step from there is to stop deriving the bit at all - to store
+/// `visited` as the `u32` ranks themselves rather than as `Board`s. This loop is
+/// where that pays most: the stored value would *be* the bit position, so the
+/// `pext`, both table reads and the ring buffer all disappear, and the scan reads 4
+/// bytes per board instead of 8. Measured in isolation on the largest round's real
+/// data (`examples/probe_width_bench.rs`), that is worth **-46.6%** where nearly
+/// everything survives the filter and **-39.2%** at a 76% survival rate, trending
+/// down as fewer survive because the narrower output matters less.
+///
+/// It is still not worth doing, for a reason no amount of tuning this loop changes:
+/// the intersect totals **3.76 ms** across the whole run (1.35 ms on its largest
+/// round, then 0.95, 0.57, 0.36, and a tail under 0.25), out of ~74 ms. Cutting 40%
+/// off that is ~1.5 ms. Against it, a rank only means anything relative to one
+/// layer, so every *generation* source - ~5.1M boards over the run - would have to
+/// be decoded back through `unrank` + `pdep` before `possible_moves` could touch
+/// it, as would the 1.68M-board final flatten, which additionally needs a
+/// `high_cum` rebuilt per layer. That is the same order as the win, before counting
+/// the standing risk that a rank read against the wrong layer aliases silently onto
+/// a different board rather than failing.
+///
+/// The general lesson is in the 3.76 ms, not in the 46%: this loop was already too
+/// small a share of the run to be worth restructuring the data for.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
     /// how many boards ahead of the probe the prefetch runs. Matches
