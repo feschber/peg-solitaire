@@ -124,6 +124,35 @@ fn growth_survives_pagoda(board: Board) -> bool {
 /// at the wrong granularity outweighed what it saved. Callers apply pagoda to
 /// the deduped/extracted result instead, where the cost/benefit ratio is right.
 ///
+/// That reasoning has since been tested against its own strongest counter-argument
+/// and survived, which is worth recording because it kills the whole idea rather
+/// than one instance of it. The objection above is a cost objection - the check is
+/// too expensive per move - and it is removable: a move is an XOR with a fixed
+/// three-cell mask and pagoda is a sum over occupied cells, so a move's effect on
+/// the weight is a *constant of the move*. Tabulating it (`pagoda::MOVE_DELTA` as
+/// was) turns the test into one L1 read and an add against a weight computed once
+/// per source board, evaluated *before* `normalize_after_move`'s eight symmetries,
+/// the `pext`, the rank lookups and the `lock or` - so a pruned move costs almost
+/// nothing and skips everything. It prunes a real fraction of the stream:
+///
+/// ```text
+///   shrink round 17   2,613,363 of 19,672,499 moves   13.3%
+///   largest growth    1,781,496 of 14,274,701 moves   12.5%
+///   whole run         ~6,200,000 of 59,193,176        10.5%
+/// ```
+///
+/// It is still a loss: +1.58 ms on the internal timer (+2.2%), +1.86 ms wall,
+/// faster in only 3 of 15 interleaved reps. Per round, *every* round of any size
+/// came out flat or worse - including the 13.3% one, at +0.18 ms - so there is no
+/// subset worth gating it to either.
+///
+/// The mechanism is the same one that sank the recently-seen filter documented
+/// below, and it is really a statement about this loop: the `lock or`s are already
+/// latency-hidden by the prefetch pipeline, so removing a tenth of them recovers
+/// almost nothing, while a test on the critical path is paid by all ten tenths.
+/// Anything that filters the move stream in flight has to beat that, and the
+/// cheapest possible such filter does not.
+///
 /// It also cannot avoid generating the duplicates in the first place, which is
 /// worth recording because the idea keeps looking plausible. Measured on the two
 /// biggest rounds:
