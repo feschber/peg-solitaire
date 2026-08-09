@@ -205,21 +205,111 @@ fn disable_transparent_hugepages(region: &[AtomicU64]) {
 #[cfg(not(target_os = "linux"))]
 fn disable_transparent_hugepages(_region: &[AtomicU64]) {}
 
+/// The bijection between the boards of one layer - all the keys of a given peg
+/// count - and `0..C(33, pegs)`, in both directions.
+///
+/// Its own type rather than four fields on [`DenseKeySet`] because the ranking is a
+/// separable concern from the bitmap, and because it is what a caller would need a
+/// second instance of to store *ranks* instead of boards - see the note on
+/// `feasible.rs`'s `intersect_chunk` for why that was measured and dropped.
+pub(crate) struct LayerRanks {
+    /// `low_rank[l]` = how many 16-bit values below `l` share its popcount.
+    /// Independent of the layer, so built once.
+    low_rank: Vec<u16>,
+    /// `low_unrank[j]` = the 16-bit values with popcount `j`, ascending; the inverse
+    /// of `low_rank`, needed only by the unranking direction.
+    low_unrank: Vec<Vec<u16>>,
+    /// `high_cum[h]` = keys below the prefix `h << LOW_BITS` that have this layer's
+    /// peg count. Depends on that count, so rebuilt by [`Self::retarget`].
+    high_cum: Vec<u32>,
+    /// peg count shared by every key of this layer; the ranking is only a bijection
+    /// within one such layer.
+    pegs: usize,
+}
+
+impl LayerRanks {
+    fn new() -> Self {
+        let c = binomials();
+        // low_rank / low_unrank are inverses of each other, built in one pass: walking
+        // `l` upwards visits the values of each popcount in ascending order, so the
+        // running counter per popcount *is* the rank, and the position it is pushed
+        // to is that rank.
+        let mut low_rank = vec![0u16; 1 << LOW_BITS];
+        let mut low_unrank: Vec<Vec<u16>> = (0..=LOW_BITS as usize)
+            .map(|j| Vec::with_capacity(c[LOW_BITS as usize][j] as usize))
+            .collect();
+        for l in 0..(1u32 << LOW_BITS) {
+            let j = l.count_ones() as usize;
+            low_rank[l as usize] = low_unrank[j].len() as u16;
+            low_unrank[j].push(l as u16);
+        }
+        Self {
+            low_rank,
+            low_unrank,
+            high_cum: vec![0u32; HIGH_ENTRIES],
+            // no layer yet: `retarget` must run before any key is ranked, and a peg
+            // count no board can have makes forgetting it fail the assertions in
+            // `rank` rather than silently mis-rank.
+            pegs: usize::MAX,
+        }
+    }
+
+    /// Switches to the layer of keys with `pegs` pegs.
+    pub(crate) fn retarget(&mut self, pegs: usize) {
+        let c = binomials();
+        assert!(pegs <= KEY_BITS, "a board cannot hold {pegs} pegs");
+        // high_cum[h] = keys with this peg count below prefix h. A prefix that has
+        // already used more than `pegs` bits, or too few to be completed by the low
+        // half, contributes nothing.
+        let mut acc = 0u64;
+        for (h, slot) in self.high_cum.iter_mut().enumerate() {
+            *slot = acc as u32;
+            let used = (h as u64).count_ones() as usize;
+            if used <= pegs && pegs - used <= LOW_BITS as usize {
+                acc += c[LOW_BITS as usize][pegs - used];
+            }
+        }
+        debug_assert_eq!(acc, c[KEY_BITS][pegs], "high_cum must total C(33, pegs)");
+        self.pegs = pegs;
+    }
+
+    /// Position of `key` within its layer: its rank among the keys of the same
+    /// popcount, which is dense in `0..C(33, pegs)` where the raw key is spread over
+    /// `2^33`. See [`LOW_BITS`] for the two-table form.
+    #[inline]
+    pub(crate) fn rank(&self, key: u64) -> u64 {
+        debug_assert!(key < 1 << KEY_BITS, "key {key:#x} is wider than the board");
+        debug_assert_eq!(
+            key.count_ones() as usize,
+            self.pegs,
+            "key {key:#x} is not from this layer - its rank would collide with \
+             another board's"
+        );
+        self.high_cum[(key >> LOW_BITS) as usize] as u64
+            + self.low_rank[(key & LOW_MASK) as usize] as u64
+    }
+
+    /// Inverse of [`Self::rank`]; see [`unindex`] for what `hint` is for.
+    #[inline]
+    pub(crate) fn unrank(&self, index: u64, hint: usize) -> (u64, usize) {
+        unindex(&self.high_cum, &self.low_unrank, self.pegs, index, hint)
+    }
+
+    /// The `hint` to start [`Self::unrank`] from when the first index to be decoded is
+    /// `first_index` - the one search that lets a run of ascending indices walk
+    /// `high_cum` forward instead of searching it per key.
+    pub(crate) fn cursor_at(&self, first_index: u64) -> usize {
+        self.high_cum
+            .partition_point(|&c| c as u64 <= first_index)
+            .saturating_sub(1)
+    }
+}
+
 pub(crate) struct DenseKeySet {
     words: Vec<AtomicU64>,
     summary: Vec<AtomicU64>,
-    /// `low_rank[l]` = how many 16-bit values below `l` share its popcount.
-    /// Independent of the round, so built once.
-    low_rank: Vec<u16>,
-    /// `low_unrank[j]` = the 16-bit values with popcount `j`, ascending; the inverse
-    /// of `low_rank`, needed only by [`DenseKeySet::drain_sorted_by_key`].
-    low_unrank: Vec<Vec<u16>>,
-    /// `high_cum[h]` = keys below the prefix `h << LOW_BITS` that have this round's
-    /// peg count. Depends on that count, so rebuilt by [`DenseKeySet::begin_round`].
-    high_cum: Vec<u32>,
-    /// peg count shared by every key in the map this round; `index` is only a
-    /// bijection within one such layer.
-    pegs: usize,
+    /// the layer the map is currently holding; see [`Self::begin_round`].
+    ranks: LayerRanks,
 }
 
 impl DenseKeySet {
@@ -251,32 +341,13 @@ impl DenseKeySet {
         // mapping costs nothing but address space. Shrinking the key space - e.g.
         // ranking each round's boards within `C(33, pegs)` instead of `2^33` - is
         // the lever that would actually cut it, at the price of computing the rank.
-        let c = binomials();
-        // low_rank / low_unrank are inverses of each other, built in one pass: walking
-        // `l` upwards visits the values of each popcount in ascending order, so the
-        // running counter per popcount *is* the rank, and the position it is pushed
-        // to is that rank.
-        let mut low_rank = vec![0u16; 1 << LOW_BITS];
-        let mut low_unrank: Vec<Vec<u16>> = (0..=LOW_BITS as usize)
-            .map(|j| Vec::with_capacity(c[LOW_BITS as usize][j] as usize))
-            .collect();
-        for l in 0..(1u32 << LOW_BITS) {
-            let j = l.count_ones() as usize;
-            low_rank[l as usize] = low_unrank[j].len() as u16;
-            low_unrank[j].push(l as u16);
-        }
         Self {
             words,
             summary: zeroed_atomic_vec(SUMMARY_WORDS),
-            low_rank,
-            low_unrank,
-            high_cum: vec![0u32; HIGH_ENTRIES],
-            // no layout yet: `begin_round` must run before any key is indexed, and
-            // a peg count no board can have makes forgetting it fail the assertions
-            // in `index` rather than silently mis-rank.
-            pegs: usize::MAX,
+            ranks: LayerRanks::new(),
         }
     }
+
 
     /// Empties the map and switches it to the layer of keys with `pegs` pegs, which
     /// is what makes [`Self::index`] a bijection for the round about to run.
@@ -288,27 +359,13 @@ impl DenseKeySet {
     /// costs one scan of the (35 KiB) summary.
     pub(crate) fn begin_round(&mut self, pegs: usize) {
         self.clear();
-        let c = binomials();
-        assert!(pegs <= KEY_BITS, "a board cannot hold {pegs} pegs");
         assert!(
-            c[KEY_BITS][pegs] as usize <= NUM_WORDS * 64,
+            binomials()[KEY_BITS][pegs] as usize <= NUM_WORDS * 64,
             "layer of {pegs} pegs needs {} bits, map holds {}",
-            c[KEY_BITS][pegs],
+            binomials()[KEY_BITS][pegs],
             NUM_WORDS * 64
         );
-        // high_cum[h] = keys with this peg count below prefix h. A prefix that has
-        // already used more than `pegs` bits, or too few to be completed by the low
-        // half, contributes nothing.
-        let mut acc = 0u64;
-        for (h, slot) in self.high_cum.iter_mut().enumerate() {
-            *slot = acc as u32;
-            let used = (h as u64).count_ones() as usize;
-            if used <= pegs && pegs - used <= LOW_BITS as usize {
-                acc += c[LOW_BITS as usize][pegs - used];
-            }
-        }
-        debug_assert_eq!(acc, c[KEY_BITS][pegs], "high_cum must total C(33, pegs)");
-        self.pegs = pegs;
+        self.ranks.retarget(pegs);
     }
 
     /// Position of `key` in this round's layer: its rank among the keys of the same
@@ -321,15 +378,7 @@ impl DenseKeySet {
     /// reads and their bounds checks profile at ~5.9% of a run when done twice.
     #[inline]
     pub(crate) fn index(&self, key: u64) -> u64 {
-        debug_assert!(key < 1 << KEY_BITS, "key {key:#x} is wider than the board");
-        debug_assert_eq!(
-            key.count_ones() as usize,
-            self.pegs,
-            "key {key:#x} is not from this round's layer - its rank would collide \
-             with another board's"
-        );
-        self.high_cum[(key >> LOW_BITS) as usize] as u64
-            + self.low_rank[(key & LOW_MASK) as usize] as u64
+        self.ranks.rank(key)
     }
 
     /// Inverse of [`Self::index`], as a free function so that
@@ -337,7 +386,7 @@ impl DenseKeySet {
     /// the tests share one implementation. See [`unindex`].
     #[cfg(test)]
     fn unindex_key(&self, index: u64, hint: usize) -> (u64, usize) {
-        unindex(&self.high_cum, &self.low_unrank, self.pegs, index, hint)
+        self.ranks.unrank(index, hint)
     }
 
     /// Marks `key` present. Safe to call from many threads at once, but must never
@@ -571,12 +620,8 @@ impl DenseKeySet {
         let Self {
             words,
             summary,
-            high_cum,
-            low_unrank,
-            pegs,
-            ..
+            ranks,
         } = self;
-        let pegs = *pegs;
         let words: &mut [u64] = Self::as_plain(words);
         let summary: &mut [u64] = Self::as_plain(summary);
         // One chunk per summary word, as `clear` takes them, so each worker owns the
@@ -612,9 +657,7 @@ impl DenseKeySet {
                 // find where this chunk starts. Total cursor travel across all chunks
                 // is bounded by `high_cum`'s length, not by the number of keys.
                 let first_index = (sword_idx * CHUNK_WORDS * 64) as u64;
-                let mut h = high_cum
-                    .partition_point(|&c| c as u64 <= first_index)
-                    .saturating_sub(1);
+                let mut h = ranks.cursor_at(first_index);
                 let mut b = bits;
                 while b != 0 {
                     let block_in_chunk = b.trailing_zeros() as usize * BLOCK_WORDS;
@@ -633,7 +676,7 @@ impl DenseKeySet {
                             let word_idx = block * BLOCK_WORDS + wi;
                             let index = ((word_idx as u64) << 6) | bit as u64;
                             let key;
-                            (key, h) = unindex(high_cum, low_unrank, pegs, index, h);
+                            (key, h) = ranks.unrank(index, h);
                             let board = Board::from_compressed_repr(key);
                             if keep(board) {
                                 out.push(board);
