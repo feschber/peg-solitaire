@@ -511,6 +511,27 @@ fn inverse_normalized_par(states: &[Board], num_threads: usize) -> Vec<Board> {
     par::parallel(states, num_threads, inverse_normalized)
 }
 
+/// concatenates the finished BFS layers into one vector.
+///
+/// `layers.iter().flatten().collect()` would do it in one line and was what stood
+/// here, but it is the worst available shape for this: `Flatten` cannot report a
+/// useful lower bound to `size_hint`, so `collect` cannot pre-size and instead grows
+/// the destination by repeated reallocation - copying the prefix again each time -
+/// all on one thread while the other fifteen idle.
+///
+/// [`par::par_join`] is the operation this actually is, and already exists for the
+/// same reason in `keyset.rs`'s extraction: sum the lengths, allocate once, then
+/// have rayon copy the layers into their slots concurrently.
+#[cfg(target_arch = "wasm32")]
+fn flatten_layers(layers: &[Vec<Board>]) -> Vec<Board> {
+    layers.concat()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn flatten_layers(layers: &[Vec<Board>]) -> Vec<Board> {
+    par::par_join(layers)
+}
+
 fn expand_with_inverse(states: &[Board]) -> Vec<Board> {
     states
         .iter()
@@ -724,7 +745,14 @@ pub fn calculate_feasible_set(threads: Option<NonZero<usize>>) -> Vec<Board> {
     timer.round("forward".into());
 
     let take_n = (Board::SLOTS - 1) / 2 + 1;
-    let flattened: Vec<Board> = visited.into_iter().take(take_n).flatten().collect();
+    let flattened = flatten_layers(&visited[..take_n]);
+    // freed before `expand_with_inverse_par` allocates its (2x larger) output rather
+    // than at the end of the function: borrowing the layers to flatten them, instead
+    // of consuming them as `into_iter().flatten()` did, otherwise keeps all ~41 MB
+    // of them alive across that allocation for no reason.
+    drop(visited);
+    timer.round("flatten".into());
+
     let solvable = expand_with_inverse_par(&flattened, threads);
 
     timer.round("collect".into());
