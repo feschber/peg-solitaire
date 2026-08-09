@@ -22,9 +22,6 @@ rayon = "1.11.0"
 opt-level = 2
 debug = false
 
-[profile.release.build-override]
-opt-level = 2
-
 [features]
 default = ["game"]
 game = ["dep:solitaire-game"]
