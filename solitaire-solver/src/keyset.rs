@@ -62,6 +62,33 @@ const NUM_WORDS: usize = MAX_LAYER_KEYS.div_ceil(64).next_multiple_of(CHUNK_WORD
 /// 16 balances the two tables against the cache: `low_rank` is `2^16` u16s
 /// (128 KiB) and `high_cum` is `2^17` u32s (512 KiB), so both sit in L2 while
 /// `high_cum`'s values stay under `C(33,16) < 2^32`.
+///
+/// Re-swept on a verified native build, since the original choice predates the
+/// discovery that the dev shell's `RUSTFLAGS` can silently drop `target-cpu`.
+/// Raising this halves `high_cum` and doubles `low_rank`, so it trades the two
+/// tables against each other rather than shrinking both:
+///
+/// ```text
+///   LOW_BITS   low_rank   high_cum      total   internal (13 reps, order rotated)
+///         14     32 KiB   2048 KiB   2080 KiB   72.69 ms   (+2.39)
+///         15     64 KiB   1024 KiB   1088 KiB   71.39 ms   (+1.09)
+///         16    128 KiB    512 KiB    640 KiB   70.30 ms   <- kept
+///         17    256 KiB    256 KiB    512 KiB   70.02 ms   (-0.28)
+///         18    512 KiB    128 KiB    640 KiB   69.76 ms   (-0.54)
+/// ```
+///
+/// 14 and 15 are reliably worse: a 1-2 MiB `high_cum` stops fitting the cache the
+/// hot ranking path needs it in, and that is the table read on every one of the
+/// ~59M keys a run ranks. Above 16 the sweep hints at a small gain, but it does not
+/// survive a focused test - 16 against 18 over 25 paired reps came out the *other*
+/// way, +1.92 ms median with 18 ahead in only 5 of 25. Two experiments disagreeing
+/// on the sign is what no effect looks like when run-to-run drift exceeds the gap,
+/// so 16 stays.
+///
+/// Raising it is not a free constant change in any case: `low_unrank` holds the low
+/// half's *values*, which stop fitting `u16` past 16 bits, so it has to widen to
+/// `u32` and double. That was implemented to run the sweep and is deliberately not
+/// in the tree, since it buys nothing.
 const LOW_BITS: u32 = 16;
 const LOW_MASK: u64 = (1 << LOW_BITS) - 1;
 const HIGH_ENTRIES: usize = 1 << (KEY_BITS as u32 - LOW_BITS);

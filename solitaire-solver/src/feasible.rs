@@ -56,6 +56,19 @@ use crate::{
 /// i.e. inside the noise - so 2_000 is picked as the middle of it rather than the
 /// measured minimum of 3_000, which is not meaningfully better than its neighbours.
 ///
+/// Re-swept once more on a verified native build (11 reps per point, order reversed
+/// every other rep), because the tuning above predates the discovery that the dev
+/// shell's `RUSTFLAGS` can silently drop `target-cpu`:
+///
+/// ```text
+///      200  68.99 ms      2_000  69.70 ms      20_000  71.27 ms
+///      500  69.60 ms      5_000  69.85 ms      50_000  73.66 ms
+///    1_000  69.85 ms     10_000  69.49 ms
+/// ```
+///
+/// Same shape on the right hardware: flat within noise from 200 to 10_000, then a
+/// real climb once the mid-size rounds fall back to sort+dedup. 2_000 stays.
+///
 /// Worth ~5% against 50_000, give or take: the sweep above puts the two 4.1 ms
 /// apart, and a dedicated paired run (14 interleaved reps of just those two values)
 /// gave -6.3 ms on medians but only -1.5 ms on minima, faster in 14 of 14. The
