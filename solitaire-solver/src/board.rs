@@ -396,6 +396,39 @@ fn test_normalize_after_move_matches_direct_normalize() {
 }
 
 #[test]
+fn test_decompress_matches_reference() {
+    // Same shape as `test_compressed_repr_matches_portable`, for the other
+    // direction: pin the shift/mask chain against an independent reference that
+    // scatters the in-play cells one at a time, and check it really does undo
+    // compression - the property `keyset.rs` relies on when it unranks a key.
+    fn reference(compressed: u64) -> u64 {
+        let mut out = 0u64;
+        let mut in_bit = 0;
+        for bit in 0..64 {
+            if Board::full().0 >> bit & 1 == 1 {
+                out |= (compressed >> in_bit & 1) << bit;
+                in_bit += 1;
+            }
+        }
+        out
+    }
+    let samples = [0u64, (1 << Board::SLOTS) - 1, 1, 0xAAAA_AAAA]
+        .into_iter()
+        .chain((0..100_000).map(|_| rand::random::<u64>() & ((1 << Board::SLOTS) - 1)));
+    for c in samples {
+        assert_eq!(
+            Board::from_compressed_repr(c).0,
+            reference(c),
+            "from_compressed_repr mismatch for {c:#x}"
+        );
+        // and it must undo compression exactly, which is the property the solver
+        // actually depends on when it unranks a key back into a board
+        let board = Board::from_compressed_repr(c);
+        assert_eq!(board.to_compressed_repr(), c, "round trip failed for {c:#x}");
+    }
+}
+
+#[test]
 fn test_compression() {
     let board = Board::default().set((3, 3));
     let compressed = board.to_compressed_repr();
@@ -437,16 +470,9 @@ impl Board {
     /// `-C target-cpu=x86-64-v3` (see `.cargo/config.toml`) to get the fast one.
     #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
     pub fn to_compressed_repr(&self) -> u64 {
-        const MASK: u64 = (0x7 << 2)
-            | (0x7 << 10)
-            | (0x7f << 16)
-            | (0x7f << 24)
-            | (0x7f << 32)
-            | (0x7 << 42)
-            | (0x7 << 50);
         // SAFETY: this arm only exists when the `bmi2` target feature is enabled,
         // which is exactly `_pext_u64`'s requirement.
-        unsafe { core::arch::x86_64::_pext_u64(self.0, MASK) }
+        unsafe { core::arch::x86_64::_pext_u64(self.0, Self::full().0) }
     }
 
     /// Portable equivalent of the BMI2 path above; see its documentation.
@@ -463,6 +489,23 @@ impl Board {
             | (board & (0x7 << 50)) >> (50 - (6 + 21 + 3))
     }
 
+    /// Scatters a compressed key back to board layout - the exact inverse of
+    /// [`Self::to_compressed_repr`].
+    ///
+    /// Deliberately *not* the `pdep` mirror of that function's `pext`, which is the
+    /// obvious thing to reach for and was tried: one instruction against the seven
+    /// mask-shift pairs below, on a CPU (Zen 4) where `pdep` is the fast 3-cycle
+    /// kind rather than the microcoded Zen 1/2 kind. It measured consistently
+    /// *slower* - paired medians +2.01 ms over 21 reps and +1.33 ms over 31, faster
+    /// in 7/21 and 8/31, with minima and p25 agreeing - so it was reverted.
+    ///
+    /// The likely reason is that this runs inside `keyset.rs`'s drain, where its
+    /// result feeds straight into `pagoda`, which immediately picks the board apart
+    /// again one byte at a time. The mask-and-shift form leaves the bit positions
+    /// visible to the optimizer, which can fold that consumer into it and spread the
+    /// work over many ports; `pdep` returns an opaque value on a single port and
+    /// sits on the dependency chain instead. So the instruction count is not what
+    /// this loop is paying for.
     pub fn from_compressed_repr(compressed: u64) -> Self {
         let board = (compressed & 0x7) << 2
             | (compressed & (0x7 << 3)) << (8 + 2 - 3)
