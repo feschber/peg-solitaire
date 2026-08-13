@@ -8,6 +8,7 @@ use bevy::{
 use crate::{
     GameCamera, Selected,
     board::{BoardPosition, Peg},
+    graph::ShowGraph,
     viewport_to_world,
 };
 
@@ -25,7 +26,12 @@ impl Plugin for Input {
             release_peg.run_if(input_just_released(MouseButton::Left)),
         );
         app.add_systems(PreUpdate, peg_selection_touch);
-        app.add_systems(PreUpdate, keyboard_input);
+        // WASD moves the graph camera while that scene is up, so it must not also be
+        // nudging the peg under the cursor
+        app.add_systems(
+            PreUpdate,
+            keyboard_input.run_if(not(resource_exists::<ShowGraph>)),
+        );
         app.add_systems(PreUpdate, wake_on_touch_release);
     }
 }

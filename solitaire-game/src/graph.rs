@@ -18,6 +18,9 @@
 //!
 //! which is 129_207 nodes up to 12 pegs. The next layers are 112_788 / 162_319 /
 //! 204_992 / 230_230, and the full graph is 1_679_072 nodes - see [`MAX_PEGS`].
+//!
+//! Toggled with the graph button or `G`. Left-drag orbits, right-drag pans, the wheel
+//! zooms, and `WASD` + `space`/`shift` flies.
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -59,6 +62,12 @@ const NODE_SPACING: f32 = 0.06;
 /// Kept well under [`NODE_SPACING`] so a dense layer still reads as separate boards.
 const NODE_RADIUS: f32 = 0.015;
 
+/// Keyboard fly speed, as a fraction of the orbit distance per second.
+///
+/// Relative to the distance rather than absolute so that a keypress covers the same
+/// part of the screen whether you are looking at the whole funnel or at one board.
+const FLY_SPEED: f32 = 0.8;
+
 pub struct GraphPlugin;
 
 impl Plugin for GraphPlugin {
@@ -74,7 +83,7 @@ impl Plugin for GraphPlugin {
         );
         app.add_systems(
             Update,
-            (orbit_camera, highlight_current).run_if(resource_exists::<ShowGraph>),
+            (orbit_camera, fly_camera, highlight_current).run_if(resource_exists::<ShowGraph>),
         );
         app.add_systems(Update, toggle_on_key);
         app.add_observer(toggle_graph);
@@ -346,19 +355,26 @@ fn layout(graph: &mut ConstellationGraph) {
     }
 }
 
-/// Re-centres one layer on the axis and spreads it evenly over [`layer_radius`].
+/// Fraction of a layer allowed inside [`layer_radius`] when scaling it.
+///
+/// The remaining tail is clamped to the rim. Set from the shape of the data: the
+/// barycentric radii are heavily skewed, so scaling on the largest radius would size
+/// the disc for a handful of far-out boards and squash the rest into the middle.
+const SPREAD_PERCENTILE: f32 = 0.98;
+
+/// Re-centres one layer on the axis and scales it out to fill [`layer_radius`].
 ///
 /// Averaging ~10 predecessors pulls every node towards the layer centroid by roughly
 /// `1/sqrt(10)`, which compounds: without this each layer is about three times
 /// narrower than the one above it and everything below the top few layers collapses
 /// into a spike along the axis.
 ///
-/// Each node keeps the *angle* the barycentric pass gave it - that is what carries
-/// "which nodes are graph neighbours" - and its radius is reassigned by rank, so the
-/// layer fills its disc evenly. Rank rather than a scale factor because the
-/// barycentric radii are wildly uneven: the bulk of a layer sits in a tight clump
-/// with a few boards far outside it, so any single multiplier either flings those
-/// outliers right out of the scene or squashes the clump into a dot.
+/// Scaling is uniform, so the clustering the barycentric pass found survives: boards
+/// that share predecessors stay bunched, and a layer shows its real density - a dense
+/// core with a thinner rim - rather than being flattened into an even disc. The
+/// scale comes from a high percentile rather than the maximum, with the tail past it
+/// clamped to the rim, which is what stops the far-out boards from being flung
+/// outside the scene entirely.
 fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
     let layer = graph.layer(pegs);
     let count = layer.len();
@@ -371,21 +387,22 @@ fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
     }
 
     let centroid = layer.clone().map(|i| graph.nodes[i]).sum::<Vec3>() / count as f32;
-    let mut by_radius: Vec<(usize, f32)> = layer
-        .map(|i| {
-            let offset = graph.nodes[i] - centroid;
-            (i, offset.length())
-        })
+    let mut radii: Vec<f32> = layer
+        .clone()
+        .map(|i| (graph.nodes[i] - centroid).length())
         .collect();
-    by_radius.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    radii.sort_unstable_by(f32::total_cmp);
 
+    let pivot = radii[((count as f32 * SPREAD_PERCENTILE) as usize).min(count - 1)];
+    if pivot <= f32::EPSILON {
+        return;
+    }
     let radius = layer_radius(count);
-    for (rank, (node, _)) in by_radius.into_iter().enumerate() {
-        let offset = graph.nodes[node] - centroid;
-        // an even disc needs radius to grow with sqrt of the rank, not the rank
-        let r = radius * ((rank as f32 + 0.5) / count as f32).sqrt();
-        let angle = offset.z.atan2(offset.x);
-        graph.nodes[node] = Vec3::new(r * angle.cos(), 0.0, r * angle.sin());
+    let scale = radius / pivot;
+
+    for node in layer {
+        let offset = (graph.nodes[node] - centroid) * scale;
+        graph.nodes[node] = offset.clamp_length_max(radius).with_y(0.0);
     }
 }
 
@@ -563,6 +580,53 @@ fn toggle_on_key(input: Res<ButtonInput<KeyCode>>, mut commands: Commands) {
     if input.just_pressed(KeyCode::KeyG) {
         commands.trigger(ToggleGraph);
     }
+}
+
+/// Flies the camera with `WASD`, `space` up and `shift` down.
+///
+/// Moves the point the camera orbits, so the direction you are looking is preserved
+/// and the mouse controls keep working unchanged around the new position. `W`/`S` run
+/// along the ground rather than along the view direction, so looking down at the
+/// funnel and pressing `W` moves over it instead of into it.
+fn fly_camera(
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    camera: Single<(&mut Orbit, &mut Transform), With<GraphCamera>>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
+) {
+    let (mut orbit, mut transform) = camera.into_inner();
+
+    let forward = transform.forward();
+    let ground_forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+    let right = Vec3::new(-ground_forward.z, 0.0, ground_forward.x);
+
+    let mut direction = Vec3::ZERO;
+    if keys.pressed(KeyCode::KeyW) {
+        direction += ground_forward;
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        direction -= ground_forward;
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        direction += right;
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        direction -= right;
+    }
+    if keys.pressed(KeyCode::Space) {
+        direction += Vec3::Y;
+    }
+    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        direction -= Vec3::Y;
+    }
+
+    let Some(direction) = direction.try_normalize() else {
+        return;
+    };
+    let step = orbit.radius * FLY_SPEED * time.delta_secs();
+    orbit.focus += direction * step;
+    *transform = orbit.transform();
+    request_redraw.write(RequestRedraw);
 }
 
 /// Swaps which camera is active.
