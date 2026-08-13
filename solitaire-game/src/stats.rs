@@ -5,7 +5,7 @@ use bevy::{
 use num_format::{Locale, ToFormattedString};
 
 use crate::{
-    CurrentBoard, WorldSpaceViewPort,
+    CurrentBoard, GameCamera, WorldSpaceViewPort,
     solver::{FeasibleConstellations, RandomMoveChances, UniquePaths, UniqueSolutions},
     total_progress::{PossibleUniqueSolutions, TotalProgress},
 };
@@ -217,7 +217,7 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 fn update_solution_text_pos(
     ws_view_port: Res<WorldSpaceViewPort>,
-    camera: Single<&Camera>,
+    camera: Single<&Camera, With<GameCamera>>,
     text: Query<(&mut Transform, &TextPosition)>,
 ) {
     let camera = *camera;

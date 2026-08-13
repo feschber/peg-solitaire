@@ -4,7 +4,7 @@ use bevy::{
 };
 
 use crate::{
-    Selected,
+    GameCamera, Selected,
     board::{BoardPosition, PEG_POS, PEG_POS_RAISED, Peg},
     viewport_to_world,
 };
@@ -44,7 +44,7 @@ fn snap_to_board_grid(
 
 fn follow_mouse(
     window: Single<&Window, With<PrimaryWindow>>,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     transforms: Query<&mut Transform, With<Selected>>,
 ) {
     let (camera, camera_transform) = *camera_query;
@@ -62,7 +62,7 @@ fn follow_mouse(
 }
 
 fn follow_touch(
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     mut transforms: Query<&mut Transform, With<Selected>>,
     touches: Res<Touches>,
 ) {

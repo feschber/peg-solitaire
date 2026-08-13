@@ -1,7 +1,7 @@
 use bevy::{prelude::*, sprite::Anchor};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 
-use crate::{CurrentSolution, viewport_to_world};
+use crate::{CurrentSolution, GameCamera, viewport_to_world};
 
 pub struct StatusPlugin;
 
@@ -50,7 +50,7 @@ fn update_text(moves: Query<(&mut Text2d, &MoveText)>, solution: Res<CurrentSolu
 fn update_text_pos(
     moves: Query<(&mut Transform, &MoveText)>,
     solution: Res<CurrentSolution>,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
 ) {
     let (cam, gt) = &*camera_query;
     if let Some(view_port) = cam.logical_viewport_rect() {
@@ -64,7 +64,7 @@ fn update_text_pos(
 fn draw_solution(
     solution: Res<CurrentSolution>,
     mut painter: ShapePainter,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
 ) {
     let (cam, gt) = &*camera_query;
     if let Some(view_port) = cam.logical_viewport_rect() {

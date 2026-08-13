@@ -6,7 +6,7 @@ use bevy::{
 };
 
 use crate::{
-    Selected,
+    GameCamera, Selected,
     board::{BoardPosition, Peg},
     viewport_to_world,
 };
@@ -39,7 +39,7 @@ pub struct RequestPegMove {
 fn grab_peg(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
@@ -58,7 +58,7 @@ fn grab_peg(
 fn release_peg(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     selected_pegs: Query<(Entity, &BoardPosition), (With<Peg>, With<Selected>)>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
@@ -77,7 +77,7 @@ fn release_peg(
 fn peg_selection_touch(
     mut commands: Commands,
     touches: Res<Touches>,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,
     selected_pegs: Query<(Entity, &BoardPosition), (With<Peg>, With<Selected>)>,
     mut request_redraw: MessageWriter<RequestRedraw>,
@@ -131,7 +131,7 @@ fn move_peg(commands: &mut Commands, selected: Entity, src: BoardPosition, dst: 
 fn keyboard_input(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
-    camera_query: Single<(&Camera, &GlobalTransform)>,
+    camera_query: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     pegs: Query<(Entity, &BoardPosition), With<Peg>>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {

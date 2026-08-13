@@ -7,7 +7,7 @@ use bevy::{
 use bevy_vector_shapes::prelude::*;
 
 use crate::{
-    CurrentBoard, CurrentSolution, PegMoved, WorldSpaceViewPort,
+    CurrentBoard, CurrentSolution, GameCamera, PegMoved, WorldSpaceViewPort,
     board::BoardPosition,
     hints::ToggleHints,
     stats::{ToggleBookMarks, ToggleStats},
@@ -215,7 +215,7 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 fn handle_button_press<'a, T, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
-    camera: Single<(&Camera, &GlobalTransform)>,
+    camera: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     mut button: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
     mut commands: Commands,
 ) where
@@ -247,7 +247,7 @@ where
 
 fn handle_toggle_press<'a, T, U: Default + Event>(
     window: Single<&Window, With<PrimaryWindow>>,
-    camera: Single<(&Camera, &GlobalTransform)>,
+    camera: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     mut button: Query<(&CircleButton, &mut ToggleState, &Transform), With<T>>,
     mut commands: Commands,
 ) where
@@ -269,7 +269,7 @@ fn handle_toggle_press<'a, T, U: Default + Event>(
 }
 
 fn handle_touch_press<'a, T, U: Default + Event>(
-    camera: Single<(&Camera, &GlobalTransform)>,
+    camera: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     mut buttons: Query<(&CircleButton, &mut ButtonState, &Transform), With<T>>,
     mut commands: Commands,
     touches: Res<Touches>,
@@ -307,7 +307,7 @@ where
 }
 
 fn handle_touch_toggle<'a, T, U: Default + Event>(
-    camera: Single<(&Camera, &GlobalTransform)>,
+    camera: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
     mut button: Query<(&CircleButton, &mut ToggleState, &Transform), With<T>>,
     mut commands: Commands,
     touches: Res<Touches>,

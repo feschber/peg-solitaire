@@ -50,11 +50,20 @@ struct CurrentBoard(Board);
 #[derive(Component)]
 struct Selected;
 
+/// Marks the orthographic camera the 2d board is drawn with.
+///
+/// Every system that wants *the* board camera has to say so explicitly: a bare
+/// `Single<&Camera>` matches nothing at all as soon as a second camera exists, and it
+/// does so silently, because a `Single` that matches zero or many entities skips its
+/// system without logging.
+#[derive(Component)]
+pub struct GameCamera;
+
 fn camera_setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    commands.spawn((Camera2d, GameCamera));
 }
 
-fn scale_viewport(mut camera_query: Query<(&mut Projection, &Camera)>) {
+fn scale_viewport(mut camera_query: Query<(&mut Projection, &Camera), With<GameCamera>>) {
     let Ok((mut projection, camera)) = camera_query.single_mut() else {
         return;
     };
@@ -159,7 +168,10 @@ pub struct WorldSpaceViewPort {
     pub bottom_right: Vec3,
 }
 
-fn calc_view_port(mut commands: Commands, camera: Single<(&Camera, &GlobalTransform)>) {
+fn calc_view_port(
+    mut commands: Commands,
+    camera: Single<(&Camera, &GlobalTransform), With<GameCamera>>,
+) {
     let (camera, transform) = *camera;
     if let Some(view_port) = camera.logical_viewport_rect() {
         let top_left = view_port.min;
