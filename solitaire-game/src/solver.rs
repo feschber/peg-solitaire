@@ -44,9 +44,12 @@ pub struct UniqueSolutions(pub Vec<SolutionMultiset>);
 #[derive(Resource)]
 pub struct UniquePaths(pub HashMap<Board, u64>);
 
+/// A unit of work running on the async pool, polled by [`poll_task`].
+///
+/// Shared with `graph.rs` so its build stage gets polled by the same system.
 #[derive(Component)]
-struct BackgroundTask {
-    task: Task<CommandQueue>,
+pub struct BackgroundTask {
+    pub task: Task<CommandQueue>,
 }
 
 fn create_solution_dag(mut commands: Commands, wake: Res<EventLoopProxyWrapper>) {

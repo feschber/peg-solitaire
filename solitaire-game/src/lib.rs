@@ -7,6 +7,7 @@ use crate::{
     board::{BoardPlugin, BoardPosition, PEG_RADIUS},
     buttons::Buttons,
     fps_overlay::FpsOverlay,
+    graph::GraphPlugin,
     hints::HintsPlugin,
     input::Input,
     solver::Solver,
@@ -20,6 +21,7 @@ mod animation;
 mod board;
 mod buttons;
 mod fps_overlay;
+mod graph;
 mod hints;
 mod input;
 mod solver;
@@ -52,10 +54,11 @@ struct Selected;
 
 /// Marks the orthographic camera the 2d board is drawn with.
 ///
-/// Every system that wants *the* board camera has to say so explicitly: a bare
-/// `Single<&Camera>` matches nothing at all as soon as a second camera exists, and it
-/// does so silently, because a `Single` that matches zero or many entities skips its
-/// system without logging.
+/// The graph scene (see [`graph`]) spawns a second, perspective camera, so every
+/// system that wants *the* board camera has to say so explicitly: a bare
+/// `Single<&Camera>` matches nothing at all once two cameras exist, and it does so
+/// silently, because a `Single` that matches zero or many entities skips its system
+/// without logging.
 #[derive(Component)]
 pub struct GameCamera;
 
@@ -131,6 +134,7 @@ impl Plugin for PegSolitaire {
         app.add_plugins(PegAnimation);
         app.add_plugins(Input);
         app.add_plugins(Buttons);
+        app.add_plugins(GraphPlugin);
 
         app.add_observer(update_solution);
         app.add_systems(Startup, (camera_setup, scale_viewport).chain());

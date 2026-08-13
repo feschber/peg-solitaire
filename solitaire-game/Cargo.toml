@@ -34,7 +34,10 @@ bevy = { version = "0.18.1", default-features = false, features = [
   "bevy_input_focus",
   "bevy_log",
   "mesh_picking",
-  # "bevy_pbr",
+  # required by the 3d constellation graph scene - see src/graph.rs. Note that
+  # "hdr"/"tonemapping_luts" stay off to keep the wasm bundle small, so the graph
+  # camera has to pick a tonemapper that needs no LUT.
+  "bevy_pbr",
   "bevy_picking",
   "bevy_render",
   "bevy_scene",
@@ -42,7 +45,7 @@ bevy = { version = "0.18.1", default-features = false, features = [
   # "bevy_mesh",
   # "bevy_mikktspace",
   "bevy_camera",
-  # "bevy_light",
+  "bevy_light",
   # # "bevy_shader",
   # "bevy_sprite",
   # "sprite_picking",

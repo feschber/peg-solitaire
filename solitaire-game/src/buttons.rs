@@ -9,6 +9,7 @@ use bevy_vector_shapes::prelude::*;
 use crate::{
     CurrentBoard, CurrentSolution, GameCamera, PegMoved, WorldSpaceViewPort,
     board::BoardPosition,
+    graph::{ShowGraph, ToggleGraph},
     hints::ToggleHints,
     stats::{ToggleBookMarks, ToggleStats},
     total_progress::TotalProgress,
@@ -35,6 +36,8 @@ impl Plugin for Buttons {
                     .run_if(input_just_pressed(MouseButton::Left)),
                 handle_toggle_press::<BookMark, ToggleBookMarks>
                     .run_if(input_just_pressed(MouseButton::Left)),
+                handle_toggle_press::<Graph, ToggleGraph>
+                    .run_if(input_just_pressed(MouseButton::Left)),
                 handle_touch_press::<Undo, UndoEvent>,
                 handle_touch_press::<Reset, ResetEvent>,
                 handle_touch_release::<Undo>,
@@ -42,6 +45,7 @@ impl Plugin for Buttons {
                 handle_touch_toggle::<Hints, ToggleHints>,
                 handle_touch_toggle::<Stats, ToggleStats>,
                 handle_touch_toggle::<BookMark, ToggleBookMarks>,
+                handle_touch_toggle::<Graph, ToggleGraph>,
             ),
         );
         app.add_systems(Update, (draw_buttons, update_button_pos));
@@ -53,6 +57,7 @@ impl Plugin for Buttons {
             Update,
             draw_bookmark.run_if(resource_changed::<CurrentBoard>),
         );
+        app.add_systems(Update, sync_graph_toggle);
     }
 }
 
@@ -105,6 +110,9 @@ struct Stats;
 
 #[derive(Component)]
 struct BookMark;
+
+#[derive(Component)]
+struct Graph;
 
 fn update_button_pos(
     buttons: Query<(&ViewPortRelativeTranslation, &mut Transform), With<CircleButton>>,
@@ -210,6 +218,22 @@ fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
         TextColor(Color::WHITE),
         font_awesome.clone(),
         BookMark,
+    ));
+    // constellation graph toggle
+    commands.spawn((
+        ViewPortRelativeTranslation(Pos::BottomRight, Vec3::new(-1.0, 1.0, 0.0)),
+        Transform::from_scale(Vec3::new(0.003, 0.003, 0.003)),
+        CircleButton {
+            fg_color: Color::WHITE,
+            bg_color: Color::BLACK,
+            radius: 0.4,
+        },
+        ToggleState(false),
+        // fa-diagram-project
+        Text2d::new("\u{e5e3}".to_string()),
+        TextColor(Color::WHITE),
+        font_awesome.clone(),
+        Graph,
     ));
 }
 
@@ -425,6 +449,20 @@ fn draw_toggles(
             painter.set_color(button.bg_color);
         }
         painter.circle(button.radius);
+    }
+}
+
+/// Keeps the graph button lit in step with the scene actually being shown.
+///
+/// The graph can also be toggled with `G`, which goes straight to the event and never
+/// touches [`ToggleState`], so deriving the state from the resource is what keeps the
+/// two from drifting apart.
+fn sync_graph_toggle(
+    show_graph: Option<Res<ShowGraph>>,
+    buttons: Query<&mut ToggleState, With<Graph>>,
+) {
+    for mut state in buttons {
+        state.0 = show_graph.is_some();
     }
 }
 
