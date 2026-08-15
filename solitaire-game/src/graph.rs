@@ -19,19 +19,22 @@
 //! which is 129_207 nodes up to 12 pegs. The next layers are 112_788 / 162_319 /
 //! 204_992 / 230_230, and the full graph is 1_679_072 nodes - see [`MAX_PEGS`].
 //!
-//! Toggled with the graph button or `G`. Left-drag orbits, right-drag pans, the wheel
-//! zooms, and `WASD` + `space`/`shift` flies.
+//! Toggled with the graph button or `G`. Starts in orbit mode: left-drag orbits,
+//! right-drag pans, the wheel zooms, and `WASD` + `space`/`shift` pans the pivot.
+//! `O` switches to a free-flying first-person mode instead, grabbing the mouse so it
+//! always looks around (no drag needed) - `WASD` moves along the view direction (not
+//! locked to the ground), `space`/`shift` still move straight up/down, and the wheel
+//! adjusts fly speed there.
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::visibility::NoFrustumCulling,
     core_pipeline::tonemapping::Tonemapping,
     ecs::world::CommandQueue,
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
-    mesh::PrimitiveTopology,
+    mesh::{Indices, PrimitiveTopology},
     prelude::*,
     tasks::AsyncComputeTaskPool,
-    window::RequestRedraw,
+    window::{CursorGrabMode, CursorOptions, PrimaryWindow, RequestRedraw},
     winit::{EventLoopProxyWrapper, WinitUserEvent::WakeUp},
 };
 use solitaire_solver::{Board, HashMap};
@@ -45,9 +48,11 @@ use crate::{
 ///
 /// Raising this is the intended way to scale the scene up, but the layer sizes grow
 /// steeply (see the table in the module docs) and the whole graph is 1_679_072 nodes.
-/// Past ~16 the per-node entity approach in [`spawn_graph`] is likely to need
-/// replacing with a custom instanced renderer.
-const MAX_PEGS: usize = 12;
+/// [`build_meshes`] already merges and spatially chunks every layer, so raising this
+/// mainly costs the one-time mesh build (more vertex data to duplicate per instance,
+/// more chunks - see its docs) rather than per-frame entity overhead. Past ~16 that
+/// build itself may need a real instanced renderer to stay off the main thread.
+const MAX_PEGS: usize = 21;
 
 /// Vertical distance between two layers.
 ///
@@ -66,12 +71,13 @@ const NODE_RADIUS: f32 = 0.015;
 ///
 /// Relative to the distance rather than absolute so that a keypress covers the same
 /// part of the screen whether you are looking at the whole funnel or at one board.
-const FLY_SPEED: f32 = 0.8;
+const FLY_SPEED: f32 = 0.2;
 
 pub struct GraphPlugin;
 
 impl Plugin for GraphPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<CameraMode>();
         app.add_systems(Startup, spawn_graph_camera);
         app.add_systems(
             Update,
@@ -83,11 +89,24 @@ impl Plugin for GraphPlugin {
         );
         app.add_systems(
             Update,
-            (orbit_camera, fly_camera, highlight_current).run_if(resource_exists::<ShowGraph>),
+            (
+                (orbit_camera, orbit_pan_keys).run_if(resource_equals(CameraMode::Orbit)),
+                fly_camera.run_if(resource_equals(CameraMode::Fly)),
+                highlight_current,
+            )
+                .run_if(resource_exists::<ShowGraph>),
         );
-        app.add_systems(Update, toggle_on_key);
+        app.add_systems(Update, (toggle_on_key, toggle_camera_mode));
         app.add_observer(toggle_graph);
     }
+}
+
+/// Which control scheme [`GraphCamera`] currently responds to - toggled by `O`.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
+enum CameraMode {
+    #[default]
+    Orbit,
+    Fly,
 }
 
 /// Set while the graph scene is the visible one.
@@ -148,6 +167,39 @@ impl Orbit {
         let offset = Vec3::new(cp * sy, sp, cp * cy) * self.radius;
         Transform::from_translation(self.focus + offset).looking_at(self.focus, Vec3::Y)
     }
+
+    /// Forward direction implied by `yaw`/`pitch` alone - the camera-to-focus
+    /// direction, i.e. `-offset` normalized. [`FreeFly`] uses the same formula for its
+    /// own look direction, via the same yaw/pitch convention.
+    fn forward(yaw: f32, pitch: f32) -> Vec3 {
+        let (sy, cy) = yaw.sin_cos();
+        let (sp, cp) = pitch.sin_cos();
+        Vec3::new(-cp * sy, -sp, -cp * cy)
+    }
+}
+
+/// State for the free-flying first-person camera - see [`CameraMode::Fly`].
+///
+/// Position lives directly on the entity's `Transform`; this only tracks orientation
+/// and speed. Yaw/pitch use the same convention as [`Orbit`] (see [`Orbit::forward`]) -
+/// not because the two modes hand off state (they don't, see [`toggle_camera_mode`]),
+/// just so the same formula works for both.
+#[derive(Component)]
+struct FreeFly {
+    yaw: f32,
+    pitch: f32,
+    /// world units/second, scroll-adjustable like [`Orbit::radius`] is
+    speed: f32,
+}
+
+impl Default for FreeFly {
+    fn default() -> Self {
+        Self {
+            yaw: 0.0,
+            pitch: 0.0,
+            speed: 5.0,
+        }
+    }
 }
 
 /// The derived graph. Nodes are ordered by ascending peg count, so each layer is a
@@ -171,12 +223,27 @@ impl ConstellationGraph {
     }
 }
 
-fn spawn_graph_camera(mut commands: Commands) {
-    let orbit = Orbit::default();
-    commands.spawn((
+/// Render meshes for [`ConstellationGraph`], built alongside it on the background
+/// thread - see [`build_meshes`]. `spawn_graph` only has to register these as assets
+/// and spawn one entity each.
+///
+/// Each layer (for nodes) or layer pair (for edges) is split into several spatial
+/// chunks rather than one mesh apiece - see [`build_meshes`] for why. `usize` is the
+/// peg count each mesh belongs to, used to pick its material.
+#[derive(Resource)]
+struct GraphMeshes {
+    nodes: Vec<(usize, Mesh)>,
+    edges: Vec<(usize, Mesh)>,
+}
+
+/// Bundle shared by both graph cameras - only the mode-specific state (an [`Orbit`] or
+/// a [`FreeFly`]) and initial [`Transform`] differ between them.
+fn graph_camera_bundle() -> impl Bundle {
+    (
         Camera3d::default(),
         Camera {
-            // starts hidden; `toggle_graph` flips this against the 2d camera
+            // starts hidden; `toggle_graph` flips this against the 2d camera and
+            // between the two graph cameras
             is_active: false,
             ..default()
         },
@@ -185,25 +252,44 @@ fn spawn_graph_camera(mut commands: Commands) {
         // keep the wasm bundle small, so pick one that needs no LUT - otherwise the
         // whole scene renders black.
         Tonemapping::ReinhardLuminance,
-        DistanceFog {
-            color: Color::srgb_u8(43, 44, 47),
-            falloff: FogFalloff::Linear {
-                start: 20.,
-                end: 60.,
-            },
-            ..default()
-        },
-        orbit.transform(),
-        orbit,
+        // DistanceFog {
+        //     color: Color::srgb_u8(43, 44, 47),
+        //     falloff: FogFalloff::Linear {
+        //         start: 20.,
+        //         end: 60.,
+        //     },
+        //     ..default()
+        // },
         GraphCamera,
+    )
+}
+
+/// Spawns the two graph cameras as entirely separate entities - an orbit camera and a
+/// free-flying one - rather than one entity switching control schemes. `Orbit`/
+/// `FreeFly` being on only one entity each is what lets every other system in this
+/// module keep querying "the orbit camera" / "the fly camera" just by requiring that
+/// component, with no extra marker needed; [`toggle_camera_mode`] is the only place
+/// that has to know about both at once, to swap which is [`Camera::is_active`].
+fn spawn_graph_camera(mut commands: Commands) {
+    let orbit = Orbit::default();
+    commands.spawn((graph_camera_bundle(), orbit.transform(), orbit));
+    // seeded with an arbitrary transform - `toggle_camera_mode` overwrites it with the
+    // orbit camera's current view the first time `O` is pressed, before it ever renders
+    commands.spawn((
+        graph_camera_bundle(),
+        Transform::default(),
+        FreeFly::default(),
     ));
 }
 
-/// Derives the graph from the feasible set on the async pool.
+/// Derives the graph and its render meshes from the feasible set on the async pool.
 ///
 /// Follows the same task shape as the stages in `solver.rs`: hand back a
 /// [`CommandQueue`], let `solver::poll_task` apply it, and wake the winit event loop
-/// because the app runs reactively and would otherwise not draw the result.
+/// because the app runs reactively and would otherwise not draw the result. Building
+/// the meshes here too, rather than in [`spawn_graph`], keeps the per-vertex work
+/// (millions of floats once merged - see [`build_meshes`]) off the main thread; the
+/// main thread only ever does the cheap `Assets<Mesh>::add` + spawn.
 fn build_graph(
     mut commands: Commands,
     feasible: Res<FeasibleConstellations>,
@@ -221,10 +307,12 @@ fn build_graph(
             graph.nodes.len(),
             graph.edges.len()
         );
+        let meshes = build_meshes(&graph);
 
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
             world.insert_resource(graph);
+            world.insert_resource(meshes);
             world.entity_mut(entity).remove::<BackgroundTask>();
         });
         wake.send_event(WakeUp).unwrap();
@@ -291,6 +379,140 @@ fn derive_graph(feasible: &solitaire_solver::HashSet<Board>) -> ConstellationGra
     };
     layout(&mut graph);
     graph
+}
+
+/// Target node count per spatial chunk - see [`build_meshes`].
+///
+/// A layer's grid resolution is derived from this (`sqrt(layer size / this)`), so
+/// thin layers (a handful of nodes) get a single chunk - same as the old one-mesh-
+/// per-layer approach - while the widest layer gets on the order of `68_326 / 1024
+/// ≈ 66` chunks. Small enough that orbiting close to one part of a dense layer only
+/// pulls a handful of chunks into the frustum, large enough that the chunk count
+/// stays well below the per-node-entity counts this replaced.
+const TARGET_CHUNK_NODES: f32 = 1024.0;
+
+/// Maps a world position to its grid cell within a disc of the given `radius`,
+/// split into a `grid * grid` array of cells - see [`build_meshes`].
+fn chunk_of(pos: Vec3, radius: f32, grid: usize) -> (i32, i32) {
+    let cell = (2.0 * radius / grid as f32).max(f32::EPSILON);
+    let to_cell = |v: f32| (((v + radius) / cell).floor() as i32).clamp(0, grid as i32 - 1);
+    (to_cell(pos.x), to_cell(pos.z))
+}
+
+/// Merges nodes and edges into per-chunk meshes - see [`GraphMeshes`].
+///
+/// One entity per node used to cost a transform, a visibility check and an entry in
+/// the render extraction every frame, times up to 129_207 nodes; merging into static
+/// meshes turns all of that into a one-time upload. But merging a whole layer into a
+/// *single* mesh (as the edges already did before this) throws away per-object
+/// culling: with the mesh's bounding box spanning the entire layer, orbiting close to
+/// one corner of the widest layer still submits and rasterizes the layer's entire
+/// geometry every frame - lines with one endpoint right next to the camera project to
+/// huge screen-space spans, and there are tens of thousands of them, which is what
+/// drove close-up framerate into the single digits even after the per-node-entity fix.
+/// Chunking spatially (via [`chunk_of`]) keeps each mesh's bounding box tight, so
+/// Bevy's ordinary per-entity frustum culling (re-enabled here by *not* using
+/// `NoFrustumCulling`) drops the chunks the camera isn't looking at.
+///
+/// The trade from merging at all still applies: vertex data is duplicated per
+/// instance instead of shared, so the local sphere is kept at `ico(1)` rather than
+/// the single-entity version's `ico(2)` - nodes are unlit and only [`NODE_RADIUS`]
+/// across, so the extra roundness wasn't visible anyway.
+fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
+    let sphere = Sphere::new(NODE_RADIUS).mesh().ico(1).unwrap();
+    let local_positions = sphere
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .unwrap()
+        .as_float3()
+        .unwrap();
+    let local_normals = sphere
+        .attribute(Mesh::ATTRIBUTE_NORMAL)
+        .unwrap()
+        .as_float3()
+        .unwrap();
+    let local_indices: Vec<u32> = sphere.indices().unwrap().iter().map(|i| i as u32).collect();
+
+    // peg count and chunk coordinate per node, needed by both passes below - edges
+    // are chunked by their `from` node's chunk, reusing the node grid for that layer
+    let mut node_pegs = vec![0usize; graph.nodes.len()];
+    let mut node_chunk = vec![(0i32, 0i32); graph.nodes.len()];
+    for pegs in 1..=MAX_PEGS {
+        let layer = graph.layer(pegs);
+        let grid = ((layer.len() as f32 / TARGET_CHUNK_NODES).sqrt().ceil() as usize).max(1);
+        let radius = layer_radius(layer.len());
+        for node in layer {
+            node_pegs[node] = pegs;
+            node_chunk[node] = chunk_of(graph.nodes[node], radius, grid);
+        }
+    }
+
+    let mut node_buckets: std::collections::HashMap<(usize, i32, i32), Vec<usize>> =
+        std::collections::HashMap::new();
+    for pegs in 1..=MAX_PEGS {
+        for node in graph.layer(pegs) {
+            node_buckets
+                .entry((pegs, node_chunk[node].0, node_chunk[node].1))
+                .or_default()
+                .push(node);
+        }
+    }
+    let nodes = node_buckets
+        .into_iter()
+        .map(|((pegs, _, _), bucket)| {
+            let mut positions = Vec::with_capacity(bucket.len() * local_positions.len());
+            let mut normals = Vec::with_capacity(bucket.len() * local_normals.len());
+            let mut indices = Vec::with_capacity(bucket.len() * local_indices.len());
+            for node in bucket {
+                let base = positions.len() as u32;
+                let offset = graph.nodes[node];
+                positions.extend(
+                    local_positions
+                        .iter()
+                        .map(|&p| (Vec3::from(p) + offset).to_array()),
+                );
+                normals.extend_from_slice(local_normals);
+                indices.extend(local_indices.iter().map(|i| i + base));
+            }
+            let mut mesh = Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            mesh.insert_indices(Indices::U32(indices));
+            (pegs, mesh)
+        })
+        .collect();
+
+    let mut edge_buckets: std::collections::HashMap<(usize, i32, i32), Vec<(u32, u32)>> =
+        std::collections::HashMap::new();
+    for &(from, to) in &graph.edges {
+        let (cx, cz) = node_chunk[from as usize];
+        edge_buckets
+            .entry((node_pegs[from as usize], cx, cz))
+            .or_default()
+            .push((from, to));
+    }
+    let edges = edge_buckets
+        .into_iter()
+        .map(|((pegs, _, _), bucket)| {
+            let mut positions = Vec::with_capacity(bucket.len() * 2);
+            for (from, to) in bucket {
+                positions.push(graph.nodes[from as usize].to_array());
+                positions.push(graph.nodes[to as usize].to_array());
+            }
+            let normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
+            let mut mesh = Mesh::new(
+                PrimitiveTopology::LineList,
+                RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+            );
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            (pegs, mesh)
+        })
+        .collect();
+
+    GraphMeshes { nodes, edges }
 }
 
 /// Radius of the disc a layer of `count` nodes is spread over.
@@ -406,14 +628,17 @@ fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
     }
 }
 
-/// Spawns the scene once the graph is ready.
+/// Spawns the scene once the graph and its meshes are ready.
 ///
-/// Nodes share one mesh and one material per layer so bevy can batch them, and all
-/// the edges of a layer pair go into a single line-list mesh - one draw call per pair
-/// instead of an entity per edge.
+/// The heavy lifting - building the per-chunk meshes - already happened on the
+/// background thread (see [`build_meshes`]); this just registers them as assets and
+/// spawns one entity per chunk. Deliberately no `NoFrustumCulling` here (unlike the
+/// per-layer meshes this replaced): each chunk's bounding box is tight enough that
+/// Bevy's ordinary per-entity culling is exactly what makes chunking pay off.
 fn spawn_graph(
     mut commands: Commands,
     graph: Res<ConstellationGraph>,
+    mut graph_meshes: ResMut<GraphMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     camera: Single<(&mut Orbit, &mut Transform), With<GraphCamera>>,
@@ -423,62 +648,46 @@ fn spawn_graph(
     *orbit = Orbit::frame(&graph);
     *camera_transform = orbit.transform();
 
-    let sphere = meshes.add(Sphere::new(NODE_RADIUS).mesh().ico(2).unwrap());
+    // one material per peg count, shared across that layer's chunks - many chunks
+    // would otherwise each add an identical material asset
+    let mut node_materials: HashMap<usize, Handle<StandardMaterial>> = HashMap::default();
+    let mut edge_materials: HashMap<usize, Handle<StandardMaterial>> = HashMap::default();
 
-    for pegs in 1..=MAX_PEGS {
-        let material = materials.add(StandardMaterial {
-            base_color: layer_color(pegs),
-            perceptual_roughness: 0.6,
-            ..default()
-        });
-        let batch: Vec<_> = graph
-            .layer(pegs)
-            .map(|i| {
-                (
-                    Mesh3d(sphere.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform::from_translation(graph.nodes[i]),
-                )
+    // `mem::take` rather than borrowing: these meshes are merged megabytes-large
+    // buffers, and moving them into `Assets<Mesh>` avoids cloning that data around
+    for (pegs, mesh) in std::mem::take(&mut graph_meshes.nodes) {
+        let material = node_materials
+            .entry(pegs)
+            .or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    base_color: layer_color(pegs),
+                    unlit: true,
+                    ..default()
+                })
             })
-            .collect();
-        commands.spawn_batch(batch);
+            .clone();
+        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)));
     }
 
-    // one line-list mesh per layer pair
-    for pegs in 2..=MAX_PEGS {
-        let layer = graph.layer(pegs);
-        let mut positions = Vec::new();
-        for &(from, to) in &graph.edges {
-            if layer.contains(&(from as usize)) {
-                positions.push(graph.nodes[from as usize].to_array());
-                positions.push(graph.nodes[to as usize].to_array());
-            }
-        }
-        if positions.is_empty() {
-            continue;
-        }
-        let normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::LineList,
-            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        let material = materials.add(StandardMaterial {
-            base_color: layer_color(pegs).with_alpha(0.25),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        });
-        commands.spawn((
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(material),
-            // the mesh spans a whole layer pair, so per-object culling buys nothing
-            NoFrustumCulling,
-        ));
+    for (pegs, mesh) in std::mem::take(&mut graph_meshes.edges) {
+        let material = edge_materials
+            .entry(pegs)
+            .or_insert_with(|| {
+                materials.add(StandardMaterial {
+                    base_color: layer_color(pegs).with_alpha(0.25),
+                    unlit: true,
+                    // alpha_mode: AlphaMode::Blend,
+                    ..default()
+                })
+            })
+            .clone();
+        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)));
     }
 
-    // the sphere that tracks the player's current board
+    commands.remove_resource::<GraphMeshes>();
+
+    // the sphere that tracks the player's current board - kept lit so `emissive` still
+    // reads as a glow rather than a flat disc now that the funnel itself is unlit
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(NODE_RADIUS * 6.0).mesh().ico(3).unwrap())),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -490,21 +699,6 @@ fn spawn_graph(
         Transform::default(),
         CurrentBoardMarker,
     ));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 6_000.0,
-            // 129k instances make shadow casting the first thing to fall over
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::default().looking_to(Vec3::new(-0.4, -1.0, -0.6), Vec3::Y),
-    ));
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 400.0,
-        ..default()
-    });
 
     request_redraw.write(RequestRedraw);
 }
@@ -582,13 +776,14 @@ fn toggle_on_key(input: Res<ButtonInput<KeyCode>>, mut commands: Commands) {
     }
 }
 
-/// Flies the camera with `WASD`, `space` up and `shift` down.
+/// Pans the orbit pivot with `WASD`, `space` up and `shift` down - only in
+/// [`CameraMode::Orbit`]; see [`fly_camera`] for the free-flying equivalent.
 ///
 /// Moves the point the camera orbits, so the direction you are looking is preserved
 /// and the mouse controls keep working unchanged around the new position. `W`/`S` run
 /// along the ground rather than along the view direction, so looking down at the
 /// funnel and pressing `W` moves over it instead of into it.
-fn fly_camera(
+fn orbit_pan_keys(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     camera: Single<(&mut Orbit, &mut Transform), With<GraphCamera>>,
@@ -629,18 +824,149 @@ fn fly_camera(
     request_redraw.write(RequestRedraw);
 }
 
+/// Free-flying first-person camera, active only in [`CameraMode::Fly`].
+///
+/// The OS cursor is grabbed and hidden for the whole time this mode is active (see
+/// [`toggle_camera_mode`]/[`toggle_graph`]), so the mouse always drives look here -
+/// unlike [`orbit_camera`], no drag/hold is needed. `WASD` moves straight along the
+/// current view direction rather than the ground plane - unlike [`orbit_pan_keys`],
+/// this is meant to fly *through* the funnel, not glide over it. `space`/`shift` still
+/// move along world up/down regardless of pitch, and the wheel adjusts fly speed
+/// instead of a zoom radius, since free flight has no pivot to zoom toward.
+fn fly_camera(
+    motion: Res<AccumulatedMouseMotion>,
+    scroll: Res<AccumulatedMouseScroll>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    camera: Single<(&mut FreeFly, &mut Transform), With<GraphCamera>>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
+) {
+    let (mut fly, mut transform) = camera.into_inner();
+    let mut changed = false;
+
+    if motion.delta != Vec2::ZERO {
+        fly.yaw -= motion.delta.x * 0.005;
+        fly.pitch = (fly.pitch + motion.delta.y * 0.005).clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.05,
+            std::f32::consts::FRAC_PI_2 - 0.05,
+        );
+        changed = true;
+    }
+
+    if scroll.delta.y != 0.0 {
+        fly.speed = (fly.speed * (1.0 - scroll.delta.y * 0.1)).clamp(0.1, 500.0);
+    }
+
+    if changed {
+        transform.look_to(Orbit::forward(fly.yaw, fly.pitch), Vec3::Y);
+    }
+
+    let mut direction = Vec3::ZERO;
+    if keys.pressed(KeyCode::KeyW) {
+        direction += *transform.forward();
+    }
+    if keys.pressed(KeyCode::KeyS) {
+        direction -= *transform.forward();
+    }
+    if keys.pressed(KeyCode::KeyD) {
+        direction += *transform.right();
+    }
+    if keys.pressed(KeyCode::KeyA) {
+        direction -= *transform.right();
+    }
+    if keys.pressed(KeyCode::Space) {
+        direction += Vec3::Y;
+    }
+    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        direction -= Vec3::Y;
+    }
+
+    if let Some(direction) = direction.try_normalize() {
+        transform.translation += direction * fly.speed * time.delta_secs();
+        changed = true;
+    }
+
+    if changed {
+        request_redraw.write(RequestRedraw);
+    }
+}
+
+/// `O` swaps [`CameraMode`] between the orbit and free-flying cameras - two entirely
+/// separate entities (see [`spawn_graph_camera`]) with their own [`Transform`] and
+/// controls. Switching is nothing but flipping which one is [`Camera::is_active`] -
+/// no state is copied between them, so each keeps whatever position/orientation it
+/// was last left at and picks up exactly there next time it's switched back to.
+///
+/// Also grabs/releases the OS cursor - fly mode wants raw, unbounded mouse motion for
+/// its look, which needs the cursor confined to (and hidden over) the window; see
+/// [`set_cursor_grab`]. `toggle_graph` releases it too, so leaving the graph entirely
+/// while flying doesn't strand the player's cursor grabbed over the 2d board.
+fn toggle_camera_mode(
+    input: Res<ButtonInput<KeyCode>>,
+    mut mode: ResMut<CameraMode>,
+    mut orbit_active: Single<&mut Camera, (With<Orbit>, Without<FreeFly>)>,
+    mut fly_active: Single<&mut Camera, (With<FreeFly>, Without<Orbit>)>,
+    cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
+) {
+    if !input.just_pressed(KeyCode::KeyO) {
+        return;
+    }
+
+    *mode = match *mode {
+        CameraMode::Orbit => {
+            orbit_active.is_active = false;
+            fly_active.is_active = true;
+            set_cursor_grab(cursor.into_inner(), true);
+            CameraMode::Fly
+        }
+        CameraMode::Fly => {
+            fly_active.is_active = false;
+            orbit_active.is_active = true;
+            set_cursor_grab(cursor.into_inner(), false);
+            CameraMode::Orbit
+        }
+    };
+    request_redraw.write(RequestRedraw);
+}
+
+/// Locks and hides the cursor for [`CameraMode::Fly`]'s raw mouse-look, or restores
+/// the normal free cursor - see [`toggle_camera_mode`]/[`toggle_graph`].
+fn set_cursor_grab(mut cursor: Mut<CursorOptions>, grabbed: bool) {
+    cursor.grab_mode = if grabbed {
+        CursorGrabMode::Locked
+    } else {
+        CursorGrabMode::None
+    };
+    cursor.visible = !grabbed;
+}
+
+/// Filter for the orbit camera entity - needs `With<GraphCamera>` to disjoint-prove
+/// against `game_camera`'s query below, and `With<Orbit>` + `Without<FreeFly>` to
+/// disjoint-prove against [`FlyCameraFilter`]'s query - see [`toggle_graph`].
+type OrbitCameraFilter = (With<GraphCamera>, With<Orbit>, Without<FreeFly>);
+
+/// The fly camera's equivalent of [`OrbitCameraFilter`].
+type FlyCameraFilter = (With<GraphCamera>, With<FreeFly>, Without<Orbit>);
+
 /// Swaps which camera is active.
 ///
 /// That is the whole switch: the 2d board is drawn by `ShapePainter` and `Text2d`,
 /// which only render through the `Core2d` graph, and the graph's meshes only render
-/// through `Core3d`. Deactivating one camera therefore hides everything belonging to
-/// that scene without touching any of its entities.
+/// through `Core3d`. Deactivating a camera therefore hides everything belonging to
+/// its scene without touching any of its entities. Exactly one of the three cameras
+/// (2d board, orbit, fly) ends up active: the 2d board when hidden, otherwise
+/// whichever graph camera matches the current [`CameraMode`].
+#[allow(clippy::too_many_arguments)]
 fn toggle_graph(
     _: On<ToggleGraph>,
     mut commands: Commands,
     show_graph: Option<Res<ShowGraph>>,
+    mode: Res<CameraMode>,
     mut game_camera: Single<&mut Camera, (With<crate::GameCamera>, Without<GraphCamera>)>,
-    mut graph_camera: Single<&mut Camera, With<GraphCamera>>,
+    orbit_cam: Single<&mut Camera, OrbitCameraFilter>,
+    fly_cam: Single<&mut Camera, FlyCameraFilter>,
+    cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let show = show_graph.is_none();
@@ -650,6 +976,13 @@ fn toggle_graph(
         commands.remove_resource::<ShowGraph>();
     }
     game_camera.is_active = !show;
-    graph_camera.is_active = show;
+    let fly_mode = show && *mode == CameraMode::Fly;
+    orbit_cam.into_inner().is_active = show && !fly_mode;
+    fly_cam.into_inner().is_active = fly_mode;
+
+    // hiding the graph always releases the cursor (the 2d board needs it free), even
+    // if fly mode's grab is still logically active - showing it again re-grabs
+    set_cursor_grab(cursor.into_inner(), fly_mode);
+
     request_redraw.write(RequestRedraw);
 }
