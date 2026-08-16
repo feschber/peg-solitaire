@@ -2,8 +2,10 @@
 //!
 //! Every node is one feasible constellation - a board that lies on at least one
 //! complete solution - and every edge is a legal move. Height is the peg count, so
-//! all edges point downwards and the whole graph reads as a funnel from the widest
-//! layer down to the single solved board at the apex.
+//! all edges point downwards. Feasible-board counts grow from the single solved board,
+//! peak part-way up, then shrink back down as peg count approaches the (near-)unique
+//! starting board - so the whole graph reads as an hourglass, not a pure funnel, widest
+//! around its middle rather than at the top. See `ConstellationGraph::widest_pegs`.
 //!
 //! The solver hands out the feasible set as a flat `Vec<Board>` with no edges and no
 //! layer index (see `solitaire_solver::calculate_feasible_set`), so both are derived
@@ -53,7 +55,7 @@ use crate::{
 /// mainly costs the one-time mesh build (more vertex data to duplicate per instance,
 /// more chunks - see its docs) rather than per-frame entity overhead. Past ~16 that
 /// build itself may need a real instanced renderer to stay off the main thread.
-const MAX_PEGS: usize = 21;
+const MAX_PEGS: usize = 31;
 
 /// Vertical distance between two layers.
 ///
@@ -63,7 +65,7 @@ const MAX_PEGS: usize = 21;
 const LAYER_HEIGHT: f32 = 2.0;
 
 /// Centre-to-centre spacing used to size a layer's disc - see [`layer_radius`].
-const NODE_SPACING: f32 = 0.6;
+const NODE_SPACING: f32 = 0.06;
 
 /// Kept well under [`NODE_SPACING`] so a dense layer still reads as separate boards.
 const NODE_RADIUS: f32 = 0.01;
@@ -147,13 +149,15 @@ impl Default for Orbit {
 }
 
 impl Orbit {
-    /// Frames the whole funnel.
+    /// Frames the whole shape.
     ///
     /// Derived from the graph's own extent rather than tuned by hand, so changing
-    /// [`MAX_PEGS`] or [`LAYER_HEIGHT`] still opens with all of it on screen.
+    /// [`MAX_PEGS`] or [`LAYER_HEIGHT`] still opens with all of it on screen. Width
+    /// comes from `graph.widest_pegs`, not `MAX_PEGS` - see its doc comment for why
+    /// those aren't the same layer in general.
     fn frame(graph: &ConstellationGraph) -> Self {
         let height = (MAX_PEGS - 1) as f32 * LAYER_HEIGHT;
-        let width = 2.0 * layer_radius(graph.layer(MAX_PEGS).len());
+        let width = 2.0 * layer_radius(graph.layer(graph.widest_pegs).len());
         Self {
             focus: Vec3::new(0.0, height / 2.0, 0.0),
             // bevy's default vertical fov is 45 degrees, so fitting an extent takes
@@ -216,12 +220,26 @@ pub struct ConstellationGraph {
     pub edges: Vec<(u32, u32)>,
     /// start offset of each peg count into [`Self::nodes`], length `MAX_PEGS + 2`
     layer_starts: Vec<u32>,
+    /// the peg count with the most nodes - see [`ConstellationGraph::find_widest_pegs`].
+    /// *Not* generally [`MAX_PEGS`]: feasible-board counts grow from the single solved
+    /// board, peak somewhere in the middle, then shrink back down towards the single
+    /// (near-)starting board, so past that peak the widest layer is strictly below
+    /// `MAX_PEGS`. Set once by [`layout`], read by both it and [`Orbit::frame`].
+    widest_pegs: usize,
 }
 
 impl ConstellationGraph {
     /// Index range of all nodes with `pegs` pegs.
     fn layer(&self, pegs: usize) -> std::ops::Range<usize> {
         self.layer_starts[pegs] as usize..self.layer_starts[pegs + 1] as usize
+    }
+
+    /// The peg count with the most nodes - see [`Self::widest_pegs`]'s doc comment for
+    /// why this isn't just [`MAX_PEGS`].
+    fn find_widest_pegs(&self) -> usize {
+        (1..=MAX_PEGS)
+            .max_by_key(|&pegs| self.layer(pegs).len())
+            .expect("MAX_PEGS >= 1")
     }
 }
 
@@ -385,6 +403,7 @@ fn derive_graph(feasible: &solitaire_solver::HashSet<Board>) -> ConstellationGra
         index,
         edges,
         layer_starts,
+        widest_pegs: 0, // placeholder - `layout` sets this to the real value first thing
     };
     layout(&mut graph);
     graph
@@ -592,53 +611,183 @@ fn layer_radius(count: usize) -> f32 {
     (NODE_SPACING * (count as f32 / std::f32::consts::PI).sqrt()).max(MIN_RADIUS)
 }
 
-/// Places nodes: height from the peg count, and the horizontal position from a
-/// top-down barycentric pass.
+/// Extra up/down relaxation passes after the initial seeding pass - see [`layout`].
 ///
-/// The widest layer is seeded with a sunflower disc, then each layer below is placed
-/// at the centroid of its predecessors in the layer above. Going *downwards* is what
-/// makes this work - a bottom-up pass from the single solved board would put every
-/// centroid at the origin and collapse the whole graph to a line.
+/// Each pass is two full sweeps (up then down), so this is `2 * RELAXATION_PASSES`
+/// barycenter recomputations of every layer past the first. Picked as "enough to
+/// visibly tighten edges without a noticeable build-time cost" rather than derived -
+/// layout runs once, off the main thread, so there's headroom to raise this if edges
+/// still look slack.
+const RELAXATION_PASSES: usize = 4;
+
+/// Places nodes: height from the peg count, and the horizontal position from
+/// iterated barycentric relaxation.
+///
+/// Feasible-board counts grow from the single solved board, peak somewhere in the
+/// middle, then shrink back down as peg count approaches `MAX_PEGS` (there's only one
+/// near-full starting board, same as there's only one solved one) - so the true
+/// widest layer (`graph.widest_pegs`, found by [`ConstellationGraph::find_widest_pegs`])
+/// is not generally the top layer. That layer is seeded with a sunflower disc and is
+/// the one layer that never moves - every other layer's position is defined relative
+/// to it, directly or transitively. Every other layer then gets an initial position
+/// at the centroid of its predecessors (if below the widest layer) or successors (if
+/// above), sweeping away from the anchor in each direction. Sweeping *away* from an
+/// already-placed layer is what makes this work at all - sweeping into unplaced
+/// territory would put every centroid at the origin and collapse that whole side to a
+/// line.
+///
+/// A single sweep only ever pulls a layer towards the one neighboring layer it looked
+/// at, though - it never revisits a layer once its other neighbor exists, so edges to
+/// that other neighbor stay however long the initial pass happened to leave them.
+/// Fixed by further relaxation rounds over every non-anchor layer, for
+/// [`RELAXATION_PASSES`] rounds - but *not* by further one-directional sweeps: running
+/// a successor-sweep and a predecessor-sweep back to back doesn't average the two,
+/// it just lets whichever runs second completely overwrite the first's result (see
+/// [`barycenter_from_neighbors`]'s doc comment), so alternating one-directional sweeps
+/// converges to a fixed point defined by whichever direction ran last, not one that
+/// accounts for both. [`barycenter_from_neighbors`] instead centres each layer on *all*
+/// of its neighbors - predecessors and successors together - in one update, which is
+/// the exact update that minimizes total squared edge length to every neighbor at
+/// once; this is the barycenter method layered graph-drawing tools like Graphviz's
+/// `dot` use for the equivalent step. [`spread_layer`] runs after every single-layer
+/// update, for the same reason it already needed to in the initial pass: unopposed
+/// averaging shrinks a layer towards a point, and the next layer processed needs this
+/// one's *rescaled* position, not the raw centroid, when using it as a reference.
 fn layout(graph: &mut ConstellationGraph) {
-    let widest = graph.layer(MAX_PEGS);
-    let count = widest.len();
-    let radius = layer_radius(count);
-    // Vogel's model: golden-angle increments with sqrt-spaced radii give an even disc.
-    let golden_angle = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
-    for (rank, node) in widest.clone().enumerate() {
-        let r = radius * ((rank as f32 + 0.5) / count as f32).sqrt();
-        let theta = golden_angle * rank as f32;
-        graph.nodes[node] = Vec3::new(r * theta.cos(), 0.0, r * theta.sin());
+    graph.widest_pegs = graph.find_widest_pegs();
+    let widest_pegs = graph.widest_pegs;
+
+    sunflower_disc(graph, widest_pegs);
+
+    // initial seed: sweep away from the anchor once in each direction
+    for pegs in (1..widest_pegs).rev() {
+        barycenter_from_predecessors(graph, pegs);
+        spread_layer(graph, pegs);
+    }
+    for pegs in (widest_pegs + 1)..=MAX_PEGS {
+        barycenter_from_successors(graph, pegs);
+        spread_layer(graph, pegs);
     }
 
-    // Predecessor sums per node, filled layer by layer as we walk down.
-    for pegs in (1..MAX_PEGS).rev() {
-        let mut sum = vec![Vec3::ZERO; graph.layer(pegs).len()];
-        let mut n = vec![0u32; sum.len()];
-        let base = graph.layer(pegs).start;
-        // edges are sorted by `from`, so the ones out of layer pegs+1 are contiguous,
-        // but a plain scan is cheap enough and keeps this readable.
-        for &(from, to) in &graph.edges {
-            let to = to as usize;
-            if graph.layer(pegs).contains(&to) {
-                sum[to - base] += graph.nodes[from as usize];
-                n[to - base] += 1;
-            }
+    for _ in 0..RELAXATION_PASSES {
+        for pegs in (1..=MAX_PEGS).filter(|&pegs| pegs != widest_pegs) {
+            barycenter_from_neighbors(graph, pegs);
+            spread_layer(graph, pegs);
         }
-        for (i, node) in graph.layer(pegs).enumerate() {
-            // Every feasible board below the widest layer has at least one feasible
-            // predecessor one layer up, so `n` is only ever 0 if MAX_PEGS cut it off.
-            if n[i] > 0 {
-                graph.nodes[node] = sum[i] / n[i] as f32;
-            }
-        }
-        spread_layer(graph, pegs);
     }
 
     for pegs in 1..=MAX_PEGS {
         let y = (pegs - 1) as f32 * LAYER_HEIGHT;
         for node in graph.layer(pegs) {
             graph.nodes[node].y = y;
+        }
+    }
+}
+
+/// Evenly distributes one layer's nodes over its disc via Vogel's model
+/// (golden-angle increments with sqrt-spaced radii give an even disc) - used both to
+/// seed the anchor layer in [`layout`], and as [`spread_layer`]'s fallback when the
+/// barycentric pass leaves a layer's nodes too tightly clustered to have a meaningful
+/// direction to rescale outward from.
+fn sunflower_disc(graph: &mut ConstellationGraph, pegs: usize) {
+    let layer = graph.layer(pegs);
+    let count = layer.len();
+    let radius = layer_radius(count);
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+    for (rank, node) in layer.enumerate() {
+        let r = radius * ((rank as f32 + 0.5) / count as f32).sqrt();
+        let theta = golden_angle * rank as f32;
+        graph.nodes[node] = Vec3::new(r * theta.cos(), 0.0, r * theta.sin());
+    }
+}
+
+/// The slice of `graph.edges` whose `from` endpoint lies in `range` (a node-index
+/// range, e.g. from [`ConstellationGraph::layer`]) - relies on `derive_graph` having
+/// sorted `edges` (primarily by `from`), turning what used to be a full linear scan
+/// per layer into a binary search plus a scan of only that layer's own edges.
+fn edges_from(graph: &ConstellationGraph, range: std::ops::Range<usize>) -> &[(u32, u32)] {
+    let start = graph
+        .edges
+        .partition_point(|&(from, _)| (from as usize) < range.start);
+    let end = graph
+        .edges
+        .partition_point(|&(from, _)| (from as usize) < range.end);
+    &graph.edges[start..end]
+}
+
+/// Repositions every node in layer `pegs` to the centroid of its predecessors (layer
+/// `pegs + 1`, the only layer with edges into this one) - the down-sweep step of
+/// [`layout`]'s relaxation.
+fn barycenter_from_predecessors(graph: &mut ConstellationGraph, pegs: usize) {
+    let base = graph.layer(pegs).start;
+    let mut sum = vec![Vec3::ZERO; graph.layer(pegs).len()];
+    let mut n = vec![0u32; sum.len()];
+    for &(from, to) in edges_from(graph, graph.layer(pegs + 1)) {
+        let i = to as usize - base;
+        sum[i] += graph.nodes[from as usize];
+        n[i] += 1;
+    }
+    for (i, node) in graph.layer(pegs).enumerate() {
+        // Every feasible board below MAX_PEGS has at least one feasible predecessor
+        // one layer up (it was reached by some move on some solution path), so `n` is
+        // only ever 0 for boards at MAX_PEGS itself - callers never pass that in.
+        if n[i] > 0 {
+            graph.nodes[node] = sum[i] / n[i] as f32;
+        }
+    }
+}
+
+/// Repositions every node in layer `pegs` to the centroid of its successors (layer
+/// `pegs - 1`, the only layer this one has edges into) - the up-sweep step of
+/// [`layout`]'s relaxation.
+fn barycenter_from_successors(graph: &mut ConstellationGraph, pegs: usize) {
+    let base = graph.layer(pegs).start;
+    let mut sum = vec![Vec3::ZERO; graph.layer(pegs).len()];
+    let mut n = vec![0u32; sum.len()];
+    for &(from, to) in edges_from(graph, graph.layer(pegs)) {
+        let i = from as usize - base;
+        sum[i] += graph.nodes[to as usize];
+        n[i] += 1;
+    }
+    for (i, node) in graph.layer(pegs).enumerate() {
+        // every non-apex board has at least one legal move, i.e. one successor
+        if n[i] > 0 {
+            graph.nodes[node] = sum[i] / n[i] as f32;
+        }
+    }
+}
+
+/// Repositions every node in layer `pegs` to the centroid of *all* its neighbors -
+/// predecessors (layer `pegs + 1`) and successors (layer `pegs - 1`) combined into one
+/// average - [`layout`]'s relaxation step.
+///
+/// Not the same as running [`barycenter_from_predecessors`] then
+/// [`barycenter_from_successors`] (or the reverse) back to back: whichever ran second
+/// would completely overwrite the first's result for every layer it touched, since
+/// neither looks at the other's contribution - so alternating one-directional sweeps
+/// converges to a fixed point defined by whichever direction's sweep runs last, not one
+/// that jointly accounts for both neighbors. Averaging both in a single pass avoids
+/// that: each update is the exact centroid of everything this layer connects to,
+/// full stop, so there's no direction whose pull the next step silently discards.
+fn barycenter_from_neighbors(graph: &mut ConstellationGraph, pegs: usize) {
+    let base = graph.layer(pegs).start;
+    let mut sum = vec![Vec3::ZERO; graph.layer(pegs).len()];
+    let mut n = vec![0u32; sum.len()];
+    if pegs < MAX_PEGS {
+        for &(from, to) in edges_from(graph, graph.layer(pegs + 1)) {
+            let i = to as usize - base;
+            sum[i] += graph.nodes[from as usize];
+            n[i] += 1;
+        }
+    }
+    for &(from, to) in edges_from(graph, graph.layer(pegs)) {
+        let i = from as usize - base;
+        sum[i] += graph.nodes[to as usize];
+        n[i] += 1;
+    }
+    for (i, node) in graph.layer(pegs).enumerate() {
+        if n[i] > 0 {
+            graph.nodes[node] = sum[i] / n[i] as f32;
         }
     }
 }
@@ -663,6 +812,17 @@ const SPREAD_PERCENTILE: f32 = 0.98;
 /// scale comes from a high percentile rather than the maximum, with the tail past it
 /// clamped to the rim, which is what stops the far-out boards from being flung
 /// outside the scene entirely.
+///
+/// Falls back to [`sunflower_disc`] instead of scaling when the barycentric pass left
+/// a layer that isn't genuinely spread across *both* dimensions of its plane (see
+/// [`spans_two_dimensions`]) - this is rare in the funnel's lower half, but routine
+/// near `MAX_PEGS`: those layers are small and highly convergent (few boards, each
+/// with many moves landing back among the same handful of successors), so a node's
+/// position - the centroid of however many of those few successors it connects to -
+/// is mathematically confined to their convex hull. With only one or two distinct
+/// successor positions to average over, that hull is a point or a line segment, and
+/// uniformly scaling a point or a line just produces a bigger point or line - it takes
+/// an actual even distribution to turn that into a disc.
 fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
     let layer = graph.layer(pegs);
     let count = layer.len();
@@ -675,6 +835,11 @@ fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
     }
 
     let centroid = layer.clone().map(|i| graph.nodes[i]).sum::<Vec3>() / count as f32;
+    if !spans_two_dimensions(graph, layer.clone(), centroid) {
+        sunflower_disc(graph, pegs);
+        return;
+    }
+
     let mut radii: Vec<f32> = layer
         .clone()
         .map(|i| (graph.nodes[i] - centroid).length())
@@ -683,6 +848,9 @@ fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
 
     let pivot = radii[((count as f32 * SPREAD_PERCENTILE) as usize).min(count - 1)];
     if pivot <= f32::EPSILON {
+        // shouldn't happen once `spans_two_dimensions` passed, but dividing by it next
+        // would be a NaN if it somehow did
+        sunflower_disc(graph, pegs);
         return;
     }
     let radius = layer_radius(count);
@@ -692,6 +860,41 @@ fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
         let offset = (graph.nodes[node] - centroid) * scale;
         graph.nodes[node] = offset.clamp_length_max(radius).with_y(0.0);
     }
+}
+
+/// Whether a layer's raw (pre-rescale) point cloud actually spans both dimensions of
+/// its plane, rather than having collapsed onto a point or a line - see
+/// [`spread_layer`]. A nonzero spread radius alone doesn't rule out a collinear cloud
+/// (any two distinct points already give one a meaningful "radius"), so this instead
+/// looks at the eigenvalues of the cloud's XZ covariance matrix about `centroid`: a
+/// genuinely 2d cloud has two eigenvalues of comparable magnitude, while one that's
+/// collapsed towards a point or a line has one (or both) collapse towards zero.
+fn spans_two_dimensions(
+    graph: &ConstellationGraph,
+    layer: std::ops::Range<usize>,
+    centroid: Vec3,
+) -> bool {
+    let count = layer.len() as f32;
+    let (mut var_x, mut var_z, mut cov_xz) = (0.0f32, 0.0f32, 0.0f32);
+    for i in layer {
+        let d = graph.nodes[i] - centroid;
+        var_x += d.x * d.x;
+        var_z += d.z * d.z;
+        cov_xz += d.x * d.z;
+    }
+    var_x /= count;
+    var_z /= count;
+    cov_xz /= count;
+
+    let trace = var_x + var_z;
+    if trace <= f32::EPSILON {
+        return false; // collapsed onto (essentially) a single point
+    }
+    let det = var_x * var_z - cov_xz * cov_xz;
+    let min_eigenvalue = (trace - (trace * trace - 4.0 * det).max(0.0).sqrt()) / 2.0;
+    // the narrow axis needs to carry a non-negligible fraction of the total spread,
+    // or the cloud reads as a line no matter how much the wide axis carries
+    min_eigenvalue / trace > 1e-4
 }
 
 /// Spawns the scene once the graph and its meshes are ready.
@@ -742,7 +945,7 @@ fn spawn_graph(
                 materials.add(StandardMaterial {
                     base_color: layer_color(pegs).with_alpha(0.25),
                     unlit: true,
-                    alpha_mode: AlphaMode::Blend,
+                    alpha_mode: AlphaMode::Opaque,
                     ..default()
                 })
             })
