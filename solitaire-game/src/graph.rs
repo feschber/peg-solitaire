@@ -34,6 +34,7 @@ use bevy::{
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
     tasks::AsyncComputeTaskPool,
+    ui::IsDefaultUiCamera,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow, RequestRedraw},
     winit::{EventLoopProxyWrapper, WinitUserEvent::WakeUp},
 };
@@ -62,10 +63,10 @@ const MAX_PEGS: usize = 21;
 const LAYER_HEIGHT: f32 = 2.0;
 
 /// Centre-to-centre spacing used to size a layer's disc - see [`layer_radius`].
-const NODE_SPACING: f32 = 0.06;
+const NODE_SPACING: f32 = 0.6;
 
 /// Kept well under [`NODE_SPACING`] so a dense layer still reads as separate boards.
-const NODE_RADIUS: f32 = 0.015;
+const NODE_RADIUS: f32 = 0.01;
 
 /// Keyboard fly speed, as a fraction of the orbit distance per second.
 ///
@@ -93,10 +94,11 @@ impl Plugin for GraphPlugin {
                 (orbit_camera, orbit_pan_keys).run_if(resource_equals(CameraMode::Orbit)),
                 fly_camera.run_if(resource_equals(CameraMode::Fly)),
                 highlight_current,
+                toggle_camera_mode,
             )
                 .run_if(resource_exists::<ShowGraph>),
         );
-        app.add_systems(Update, (toggle_on_key, toggle_camera_mode));
+        app.add_systems(Update, toggle_on_key);
         app.add_observer(toggle_graph);
     }
 }
@@ -260,6 +262,13 @@ fn graph_camera_bundle() -> impl Bundle {
         //     },
         //     ..default()
         // },
+        // Bevy defaults every camera to 4x MSAA, which is disproportionately expensive
+        // for thin line primitives specifically: a solid triangle only needs extra
+        // samples along its silhouette, but a 1px-wide line is silhouette everywhere it
+        // touches, so ~every pixel it covers pays the 4x cost. Measured: turning MSAA
+        // off roughly doubled fps at the worst (edge-dense, up-close) viewpoint - a
+        // bigger win than reducing edge overdraw itself has managed so far.
+        Msaa::Off,
         GraphCamera,
     )
 }
@@ -418,6 +427,46 @@ fn chunk_of(pos: Vec3, radius: f32, grid: usize) -> (i32, i32) {
 /// instance instead of shared, so the local sphere is kept at `ico(1)` rather than
 /// the single-entity version's `ico(2)` - nodes are unlit and only [`NODE_RADIUS`]
 /// across, so the extra roundness wasn't visible anyway.
+///
+/// This duplication is a real ceiling, not just a memory nice-to-have: raising
+/// [`MAX_PEGS`] toward the full-size graph and bumping this sphere to `ico(2)`
+/// (confirmed by hand) is enough to exhaust memory badly enough to crash the whole
+/// desktop session, not just the app. The proper fix, when this needs revisiting, is
+/// real GPU instancing - one shared base mesh plus a *static, write-once* per-instance
+/// position buffer (node positions never change after layout, so unlike Bevy's
+/// automatic GPU-preprocessing this needs no compute shader - it would work fine on
+/// WebGL2). Bevy's own `examples/shader_advanced/custom_shader_instancing.rs` shows
+/// the shape of it: a custom WGSL shader, `SpecializedMeshPipeline`, and a hand-managed
+/// `RenderDevice` buffer. Note that example still needs `NoFrustumCulling` (per-instance
+/// positions aren't reflected in the entity's bounding box), so it would have to keep
+/// the spatial chunking here rather than replace it - instancing only fixes memory,
+/// not culling.
+///
+/// Why not just spawn one entity per node and let Bevy's automatic instancing handle
+/// it? On this crate's `webgl2` target there's no compute-shader support, so Bevy's
+/// fast/GPU-driven batching path is unavailable; the CPU fallback
+/// (`extract_meshes_for_cpu_building` in `bevy_pbr`) rebuilds *every* entity's
+/// `MeshUniform` from scratch *every frame*, with no `Changed<Transform>` skip - unlike
+/// the compute-shader path, which is change-detection-gated. Confirmed by reading the
+/// source, not assumed. For ~129k+ static (never-moving) node entities that's a real,
+/// unavoidable-in-stock-Bevy per-frame CPU tax, which is the actual reason nodes are
+/// merged into a handful of chunk meshes here instead of left as individual entities.
+///
+/// **Chunking's actual limit** (measured, not theoretical): frustum culling can only
+/// exclude geometry that's genuinely outside the camera's field of view. Orbiting near
+/// the *rim* of a layer looking across it works great - most chunks are behind or to
+/// the side, so culling drops them. But positioned near the *axis*, at the narrow neck
+/// where one layer's edges converge into the next, looking outward, nearly the entire
+/// layer-pair is legitimately in frame - there's nothing off to the side to cull.
+/// Confirmed by counting: at that viewpoint 93-95% of all edges were still
+/// `ViewVisibility` true regardless of chunk size (tested from the shipped
+/// [`TARGET_CHUNK_NODES`] down to 32, i.e. ~19x more/smaller chunks - negligible
+/// difference). No spatial partitioning scheme fixes that, because it isn't a
+/// culling failure; it's fill-rate for genuinely-visible geometry. Confirmed
+/// separately: framerate drops further at 4K vs windowed with everything else held
+/// equal, which is the signature of a fill-rate (pixels shaded), not vertex-count or
+/// CPU, bottleneck. A real fix from here would have to reduce pixels touched per
+/// visible edge (distance-based fade/thinning, e.g.), not improve what's culled.
 fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
     let sphere = Sphere::new(NODE_RADIUS).mesh().ico(1).unwrap();
     let local_positions = sphere
@@ -432,17 +481,22 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
         .unwrap();
     let local_indices: Vec<u32> = sphere.indices().unwrap().iter().map(|i| i as u32).collect();
 
-    // peg count and chunk coordinate per node, needed by both passes below - edges
-    // are chunked by their `from` node's chunk, reusing the node grid for that layer
+    // grid resolution and radius per layer, needed by both passes below
+    let mut layer_grid = [1usize; MAX_PEGS + 1];
+    let mut layer_rad = [0.0f32; MAX_PEGS + 1];
+    for pegs in 1..=MAX_PEGS {
+        let count = graph.layer(pegs).len();
+        layer_grid[pegs] = ((count as f32 / TARGET_CHUNK_NODES).sqrt().ceil() as usize).max(1);
+        layer_rad[pegs] = layer_radius(count);
+    }
+
+    // peg count and chunk coordinate per node, needed by both passes below
     let mut node_pegs = vec![0usize; graph.nodes.len()];
     let mut node_chunk = vec![(0i32, 0i32); graph.nodes.len()];
     for pegs in 1..=MAX_PEGS {
-        let layer = graph.layer(pegs);
-        let grid = ((layer.len() as f32 / TARGET_CHUNK_NODES).sqrt().ceil() as usize).max(1);
-        let radius = layer_radius(layer.len());
-        for node in layer {
+        for node in graph.layer(pegs) {
             node_pegs[node] = pegs;
-            node_chunk[node] = chunk_of(graph.nodes[node], radius, grid);
+            node_chunk[node] = chunk_of(graph.nodes[node], layer_rad[pegs], layer_grid[pegs]);
         }
     }
 
@@ -484,12 +538,24 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
         })
         .collect();
 
+    // Chunked by the edge's own midpoint, not the `from` node's chunk: an edge's
+    // `to` node sits one layer down, in a differently-sized (usually narrower) disc,
+    // and the barycentric layout does not keep it directly "under" its predecessors -
+    // so a `from`-only chunk key produces bounding boxes that balloon to cover
+    // wherever this chunk's edges' `to` ends happen to land, often most of the layer
+    // below. Chunking by the midpoint instead groups edges by where they actually are
+    // in space, which is what makes the bounding box - and therefore frustum culling -
+    // tight. Confirmed by measurement: before this change, 87% of edge chunks (95% of
+    // all edges) were still "visible" from a single fixed viewpoint at the narrow neck
+    // just below the widest layer - the chunking was barely culling anything there.
     let mut edge_buckets: std::collections::HashMap<(usize, i32, i32), Vec<(u32, u32)>> =
         std::collections::HashMap::new();
     for &(from, to) in &graph.edges {
-        let (cx, cz) = node_chunk[from as usize];
+        let pegs = node_pegs[from as usize];
+        let midpoint = (graph.nodes[from as usize] + graph.nodes[to as usize]) * 0.5;
+        let (cx, cz) = chunk_of(midpoint, layer_rad[pegs], layer_grid[pegs]);
         edge_buckets
-            .entry((node_pegs[from as usize], cx, cz))
+            .entry((pegs, cx, cz))
             .or_default()
             .push((from, to));
     }
@@ -676,7 +742,7 @@ fn spawn_graph(
                 materials.add(StandardMaterial {
                     base_color: layer_color(pegs).with_alpha(0.25),
                     unlit: true,
-                    // alpha_mode: AlphaMode::Blend,
+                    alpha_mode: AlphaMode::Blend,
                     ..default()
                 })
             })
@@ -897,32 +963,41 @@ fn fly_camera(
 /// no state is copied between them, so each keeps whatever position/orientation it
 /// was last left at and picks up exactly there next time it's switched back to.
 ///
-/// Also grabs/releases the OS cursor - fly mode wants raw, unbounded mouse motion for
-/// its look, which needs the cursor confined to (and hidden over) the window; see
-/// [`set_cursor_grab`]. `toggle_graph` releases it too, so leaving the graph entirely
-/// while flying doesn't strand the player's cursor grabbed over the 2d board.
+/// Also moves `IsDefaultUiCamera` onto the newly active camera - see [`GameCamera`]'s
+/// doc comment for why UI silently stops rendering without this - and grabs/releases
+/// the OS cursor - fly mode wants raw, unbounded mouse motion for its look, which needs
+/// the cursor confined to (and hidden over) the window; see [`set_cursor_grab`].
+/// `toggle_graph` releases it too, so leaving the graph entirely while flying doesn't
+/// strand the player's cursor grabbed over the 2d board.
 fn toggle_camera_mode(
+    mut commands: Commands,
     input: Res<ButtonInput<KeyCode>>,
     mut mode: ResMut<CameraMode>,
-    mut orbit_active: Single<&mut Camera, (With<Orbit>, Without<FreeFly>)>,
-    mut fly_active: Single<&mut Camera, (With<FreeFly>, Without<Orbit>)>,
+    mut orbit_active: Single<(Entity, &mut Camera), OrbitCameraFilter>,
+    mut fly_active: Single<(Entity, &mut Camera), FlyCameraFilter>,
     cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     if !input.just_pressed(KeyCode::KeyO) {
         return;
     }
+    let (orbit_entity, orbit_camera) = &mut *orbit_active;
+    let (fly_entity, fly_camera) = &mut *fly_active;
 
     *mode = match *mode {
         CameraMode::Orbit => {
-            orbit_active.is_active = false;
-            fly_active.is_active = true;
+            orbit_camera.is_active = false;
+            fly_camera.is_active = true;
+            commands.entity(*orbit_entity).remove::<IsDefaultUiCamera>();
+            commands.entity(*fly_entity).insert(IsDefaultUiCamera);
             set_cursor_grab(cursor.into_inner(), true);
             CameraMode::Fly
         }
         CameraMode::Fly => {
-            fly_active.is_active = false;
-            orbit_active.is_active = true;
+            fly_camera.is_active = false;
+            orbit_camera.is_active = true;
+            commands.entity(*fly_entity).remove::<IsDefaultUiCamera>();
+            commands.entity(*orbit_entity).insert(IsDefaultUiCamera);
             set_cursor_grab(cursor.into_inner(), false);
             CameraMode::Orbit
         }
@@ -949,6 +1024,9 @@ type OrbitCameraFilter = (With<GraphCamera>, With<Orbit>, Without<FreeFly>);
 /// The fly camera's equivalent of [`OrbitCameraFilter`].
 type FlyCameraFilter = (With<GraphCamera>, With<FreeFly>, Without<Orbit>);
 
+/// Filter for the 2d board's camera - see [`OrbitCameraFilter`].
+type GameCameraFilter = (With<crate::GameCamera>, Without<GraphCamera>);
+
 /// Swaps which camera is active.
 ///
 /// That is the whole switch: the 2d board is drawn by `ShapePainter` and `Text2d`,
@@ -956,16 +1034,20 @@ type FlyCameraFilter = (With<GraphCamera>, With<FreeFly>, Without<Orbit>);
 /// through `Core3d`. Deactivating a camera therefore hides everything belonging to
 /// its scene without touching any of its entities. Exactly one of the three cameras
 /// (2d board, orbit, fly) ends up active: the 2d board when hidden, otherwise
-/// whichever graph camera matches the current [`CameraMode`].
+/// whichever graph camera matches the current [`CameraMode`]. `IsDefaultUiCamera`
+/// (see [`GameCamera`]'s doc comment) always follows the same one, or UI drawn without
+/// an explicit target camera - like the fps overlay - silently renders through
+/// whichever camera won Bevy's static "highest order, tie-broken by entity id"
+/// fallback, which has nothing to do with which camera is actually active.
 #[allow(clippy::too_many_arguments)]
 fn toggle_graph(
     _: On<ToggleGraph>,
     mut commands: Commands,
     show_graph: Option<Res<ShowGraph>>,
     mode: Res<CameraMode>,
-    mut game_camera: Single<&mut Camera, (With<crate::GameCamera>, Without<GraphCamera>)>,
-    orbit_cam: Single<&mut Camera, OrbitCameraFilter>,
-    fly_cam: Single<&mut Camera, FlyCameraFilter>,
+    game_camera: Single<(Entity, &mut Camera), GameCameraFilter>,
+    orbit_cam: Single<(Entity, &mut Camera), OrbitCameraFilter>,
+    fly_cam: Single<(Entity, &mut Camera), FlyCameraFilter>,
     cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
@@ -975,10 +1057,29 @@ fn toggle_graph(
     } else {
         commands.remove_resource::<ShowGraph>();
     }
+    let (game_entity, mut game_camera) = game_camera.into_inner();
+    let (orbit_entity, mut orbit_camera) = orbit_cam.into_inner();
+    let (fly_entity, mut fly_camera) = fly_cam.into_inner();
+
     game_camera.is_active = !show;
     let fly_mode = show && *mode == CameraMode::Fly;
-    orbit_cam.into_inner().is_active = show && !fly_mode;
-    fly_cam.into_inner().is_active = fly_mode;
+    orbit_camera.is_active = show && !fly_mode;
+    fly_camera.is_active = fly_mode;
+
+    let active_entity = if !show {
+        game_entity
+    } else if fly_mode {
+        fly_entity
+    } else {
+        orbit_entity
+    };
+    for entity in [game_entity, orbit_entity, fly_entity] {
+        if entity == active_entity {
+            commands.entity(entity).insert(IsDefaultUiCamera);
+        } else {
+            commands.entity(entity).remove::<IsDefaultUiCamera>();
+        }
+    }
 
     // hiding the graph always releases the cursor (the 2d board needs it free), even
     // if fly mode's grab is still logically active - showing it again re-grabs

@@ -1,4 +1,4 @@
-use bevy::{camera::ScalingMode, prelude::*};
+use bevy::{camera::ScalingMode, prelude::*, ui::IsDefaultUiCamera};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
 use solitaire_solver::Board;
 
@@ -63,7 +63,12 @@ struct Selected;
 pub struct GameCamera;
 
 fn camera_setup(mut commands: Commands) {
-    commands.spawn((Camera2d, GameCamera));
+    // `IsDefaultUiCamera` starts here since this camera is active by default; see its
+    // doc comment on `GameCamera` for why the graph's cameras need the same care -
+    // `graph.rs`'s toggle systems move this marker along with whichever camera they
+    // activate, or UI (e.g. the fps overlay) silently stops rendering while the graph
+    // is shown, or shows through the wrong (inactive) camera.
+    commands.spawn((Camera2d, GameCamera, IsDefaultUiCamera));
 }
 
 fn scale_viewport(mut camera_query: Query<(&mut Projection, &Camera), With<GameCamera>>) {
