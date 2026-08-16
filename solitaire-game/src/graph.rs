@@ -55,7 +55,7 @@ use crate::{
 /// mainly costs the one-time mesh build (more vertex data to duplicate per instance,
 /// more chunks - see its docs) rather than per-frame entity overhead. Past ~16 that
 /// build itself may need a real instanced renderer to stay off the main thread.
-const MAX_PEGS: usize = 31;
+const MAX_PEGS: usize = 32;
 
 /// Vertical distance between two layers.
 ///
@@ -65,7 +65,7 @@ const MAX_PEGS: usize = 31;
 const LAYER_HEIGHT: f32 = 2.0;
 
 /// Centre-to-centre spacing used to size a layer's disc - see [`layer_radius`].
-const NODE_SPACING: f32 = 0.06;
+const NODE_SPACING: f32 = 0.20;
 
 /// Kept well under [`NODE_SPACING`] so a dense layer still reads as separate boards.
 const NODE_RADIUS: f32 = 0.01;
@@ -89,6 +89,10 @@ impl Plugin for GraphPlugin {
         app.add_systems(
             Update,
             spawn_graph.run_if(resource_added::<ConstellationGraph>),
+        );
+        app.add_systems(
+            Update,
+            prune_unreachable_edges.run_if(resource_added::<ShowGraph>),
         );
         app.add_systems(
             Update,
@@ -127,6 +131,12 @@ pub struct GraphCamera;
 /// Marks the sphere that tracks the player's current board.
 #[derive(Component)]
 struct CurrentBoardMarker;
+
+/// Marks an edge-layer-chunk mesh entity, so [`prune_unreachable_edges`] can find and
+/// replace them each time the graph is shown, without touching node entities (which
+/// stay as-is - only edges get pruned).
+#[derive(Component)]
+struct EdgeMesh;
 
 /// Orbit state for [`GraphCamera`], in spherical coordinates about [`Self::focus`].
 #[derive(Component)]
@@ -500,24 +510,8 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
         .unwrap();
     let local_indices: Vec<u32> = sphere.indices().unwrap().iter().map(|i| i as u32).collect();
 
-    // grid resolution and radius per layer, needed by both passes below
-    let mut layer_grid = [1usize; MAX_PEGS + 1];
-    let mut layer_rad = [0.0f32; MAX_PEGS + 1];
-    for pegs in 1..=MAX_PEGS {
-        let count = graph.layer(pegs).len();
-        layer_grid[pegs] = ((count as f32 / TARGET_CHUNK_NODES).sqrt().ceil() as usize).max(1);
-        layer_rad[pegs] = layer_radius(count);
-    }
-
-    // peg count and chunk coordinate per node, needed by both passes below
-    let mut node_pegs = vec![0usize; graph.nodes.len()];
-    let mut node_chunk = vec![(0i32, 0i32); graph.nodes.len()];
-    for pegs in 1..=MAX_PEGS {
-        for node in graph.layer(pegs) {
-            node_pegs[node] = pegs;
-            node_chunk[node] = chunk_of(graph.nodes[node], layer_rad[pegs], layer_grid[pegs]);
-        }
-    }
+    let (layer_grid, layer_rad, node_pegs, node_chunk) =
+        chunk_layout(&graph.nodes, &graph.layer_starts);
 
     let mut node_buckets: std::collections::HashMap<(usize, i32, i32), Vec<usize>> =
         std::collections::HashMap::new();
@@ -557,34 +551,92 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
         })
         .collect();
 
-    // Chunked by the edge's own midpoint, not the `from` node's chunk: an edge's
-    // `to` node sits one layer down, in a differently-sized (usually narrower) disc,
-    // and the barycentric layout does not keep it directly "under" its predecessors -
-    // so a `from`-only chunk key produces bounding boxes that balloon to cover
-    // wherever this chunk's edges' `to` ends happen to land, often most of the layer
-    // below. Chunking by the midpoint instead groups edges by where they actually are
-    // in space, which is what makes the bounding box - and therefore frustum culling -
-    // tight. Confirmed by measurement: before this change, 87% of edge chunks (95% of
-    // all edges) were still "visible" from a single fixed viewpoint at the narrow neck
-    // just below the widest layer - the chunking was barely culling anything there.
+    let edges = build_edge_meshes(
+        &graph.nodes,
+        &node_pegs,
+        &layer_rad,
+        &layer_grid,
+        &graph.edges,
+    );
+
+    GraphMeshes { nodes, edges }
+}
+
+/// Grid resolution, disc radius, and (peg count, chunk coordinate) per node - the
+/// setup [`build_meshes`] needs to chunk both nodes and edges consistently. Recomputing
+/// this is cheap (`O(nodes)`), so [`prune_unreachable_edges`] just redoes it from its
+/// own cloned `nodes`/`layer_starts` rather than needing a whole `ConstellationGraph`.
+#[allow(clippy::type_complexity)]
+fn chunk_layout(
+    nodes: &[Vec3],
+    layer_starts: &[u32],
+) -> (
+    [usize; MAX_PEGS + 1],
+    [f32; MAX_PEGS + 1],
+    Vec<usize>,
+    Vec<(i32, i32)>,
+) {
+    let layer = |pegs: usize| layer_starts[pegs] as usize..layer_starts[pegs + 1] as usize;
+
+    let mut layer_grid = [1usize; MAX_PEGS + 1];
+    let mut layer_rad = [0.0f32; MAX_PEGS + 1];
+    for pegs in 1..=MAX_PEGS {
+        let count = layer(pegs).len();
+        layer_grid[pegs] = ((count as f32 / TARGET_CHUNK_NODES).sqrt().ceil() as usize).max(1);
+        layer_rad[pegs] = layer_radius(count);
+    }
+
+    let mut node_pegs = vec![0usize; nodes.len()];
+    let mut node_chunk = vec![(0i32, 0i32); nodes.len()];
+    for pegs in 1..=MAX_PEGS {
+        for node in layer(pegs) {
+            node_pegs[node] = pegs;
+            node_chunk[node] = chunk_of(nodes[node], layer_rad[pegs], layer_grid[pegs]);
+        }
+    }
+
+    (layer_grid, layer_rad, node_pegs, node_chunk)
+}
+
+/// Merges a set of edges into per-chunk line-list meshes - shared by [`build_meshes`]
+/// (the full edge set) and [`prune_unreachable_edges`] (whatever subset of it is still
+/// reachable from the current board).
+///
+/// Chunked by each edge's own midpoint, not the `from` node's chunk: an edge's `to`
+/// node sits one layer down, in a differently-sized (usually narrower) disc, and the
+/// barycentric layout does not keep it directly "under" its predecessors - so a
+/// `from`-only chunk key produces bounding boxes that balloon to cover wherever this
+/// chunk's edges' `to` ends happen to land, often most of the layer below. Chunking by
+/// the midpoint instead groups edges by where they actually are in space, which is
+/// what makes the bounding box - and therefore frustum culling - tight. Confirmed by
+/// measurement: before this change, 87% of edge chunks (95% of all edges) were still
+/// "visible" from a single fixed viewpoint at the narrow neck just below the widest
+/// layer - the chunking was barely culling anything there.
+fn build_edge_meshes(
+    nodes: &[Vec3],
+    node_pegs: &[usize],
+    layer_rad: &[f32; MAX_PEGS + 1],
+    layer_grid: &[usize; MAX_PEGS + 1],
+    edges: &[(u32, u32)],
+) -> Vec<(usize, Mesh)> {
     let mut edge_buckets: std::collections::HashMap<(usize, i32, i32), Vec<(u32, u32)>> =
         std::collections::HashMap::new();
-    for &(from, to) in &graph.edges {
+    for &(from, to) in edges {
         let pegs = node_pegs[from as usize];
-        let midpoint = (graph.nodes[from as usize] + graph.nodes[to as usize]) * 0.5;
+        let midpoint = (nodes[from as usize] + nodes[to as usize]) * 0.5;
         let (cx, cz) = chunk_of(midpoint, layer_rad[pegs], layer_grid[pegs]);
         edge_buckets
             .entry((pegs, cx, cz))
             .or_default()
             .push((from, to));
     }
-    let edges = edge_buckets
+    edge_buckets
         .into_iter()
         .map(|((pegs, _, _), bucket)| {
             let mut positions = Vec::with_capacity(bucket.len() * 2);
             for (from, to) in bucket {
-                positions.push(graph.nodes[from as usize].to_array());
-                positions.push(graph.nodes[to as usize].to_array());
+                positions.push(nodes[from as usize].to_array());
+                positions.push(nodes[to as usize].to_array());
             }
             let normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
             let mut mesh = Mesh::new(
@@ -595,9 +647,7 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
             (pegs, mesh)
         })
-        .collect();
-
-    GraphMeshes { nodes, edges }
+        .collect()
 }
 
 /// Radius of the disc a layer of `count` nodes is spread over.
@@ -670,7 +720,7 @@ fn layout(graph: &mut ConstellationGraph) {
     }
 
     for _ in 0..RELAXATION_PASSES {
-        for pegs in (1..=MAX_PEGS).filter(|&pegs| pegs != widest_pegs) {
+        for pegs in 1..=MAX_PEGS {
             barycenter_from_neighbors(graph, pegs);
             spread_layer(graph, pegs);
         }
@@ -701,18 +751,55 @@ fn sunflower_disc(graph: &mut ConstellationGraph, pegs: usize) {
     }
 }
 
-/// The slice of `graph.edges` whose `from` endpoint lies in `range` (a node-index
-/// range, e.g. from [`ConstellationGraph::layer`]) - relies on `derive_graph` having
-/// sorted `edges` (primarily by `from`), turning what used to be a full linear scan
-/// per layer into a binary search plus a scan of only that layer's own edges.
-fn edges_from(graph: &ConstellationGraph, range: std::ops::Range<usize>) -> &[(u32, u32)] {
-    let start = graph
-        .edges
-        .partition_point(|&(from, _)| (from as usize) < range.start);
-    let end = graph
-        .edges
-        .partition_point(|&(from, _)| (from as usize) < range.end);
-    &graph.edges[start..end]
+/// The slice of `edges` whose `from` endpoint lies in `range` (a node-index range,
+/// e.g. from [`ConstellationGraph::layer`]) - relies on `derive_graph` having sorted
+/// `edges` (primarily by `from`), turning what used to be a full linear scan per layer
+/// into a binary search plus a scan of only that layer's own edges. Takes a raw slice
+/// rather than `&ConstellationGraph` so [`prune_unreachable_edges`] can reuse it on a
+/// pruned edge list that isn't part of a full graph.
+fn edges_from(edges: &[(u32, u32)], range: std::ops::Range<usize>) -> &[(u32, u32)] {
+    let start = edges.partition_point(|&(from, _)| (from as usize) < range.start);
+    let end = edges.partition_point(|&(from, _)| (from as usize) < range.end);
+    &edges[start..end]
+}
+
+/// Every node reachable by repeated moves (i.e. forward through the graph, always to
+/// fewer pegs) starting from `start`, which has `start_pegs` pegs - see
+/// [`prune_unreachable_edges`].
+///
+/// A move only ever removes a peg, so this is the *entire* set of boards the player
+/// could still end up at from here - anything not in it can never be reached again
+/// regardless of what's played next, no matter that it may have been reachable from
+/// the very first board.
+///
+/// One layer at a time, outward from `start`: at each step the frontier is entirely
+/// within one layer, so [`edges_from`] slices to just that layer's edges, and every
+/// edge whose `from` is actually in the (possibly much smaller) frontier - not just
+/// somewhere in that layer - both marks its `to` reachable and carries it into the
+/// next layer's frontier.
+fn reachable_from(
+    layer_starts: &[u32],
+    edges: &[(u32, u32)],
+    start: u32,
+    start_pegs: usize,
+) -> std::collections::HashSet<u32> {
+    let mut reachable = std::collections::HashSet::new();
+    reachable.insert(start);
+    let mut frontier: std::collections::HashSet<u32> = [start].into_iter().collect();
+    for pegs in (1..start_pegs).rev() {
+        let layer = layer_starts[pegs + 1] as usize..layer_starts[pegs + 2] as usize;
+        let mut next_frontier = std::collections::HashSet::new();
+        for &(from, to) in edges_from(edges, layer) {
+            if frontier.contains(&from) && reachable.insert(to) {
+                next_frontier.insert(to);
+            }
+        }
+        frontier = next_frontier;
+        if frontier.is_empty() {
+            break;
+        }
+    }
+    reachable
 }
 
 /// Repositions every node in layer `pegs` to the centroid of its predecessors (layer
@@ -722,7 +809,7 @@ fn barycenter_from_predecessors(graph: &mut ConstellationGraph, pegs: usize) {
     let base = graph.layer(pegs).start;
     let mut sum = vec![Vec3::ZERO; graph.layer(pegs).len()];
     let mut n = vec![0u32; sum.len()];
-    for &(from, to) in edges_from(graph, graph.layer(pegs + 1)) {
+    for &(from, to) in edges_from(&graph.edges, graph.layer(pegs + 1)) {
         let i = to as usize - base;
         sum[i] += graph.nodes[from as usize];
         n[i] += 1;
@@ -744,7 +831,7 @@ fn barycenter_from_successors(graph: &mut ConstellationGraph, pegs: usize) {
     let base = graph.layer(pegs).start;
     let mut sum = vec![Vec3::ZERO; graph.layer(pegs).len()];
     let mut n = vec![0u32; sum.len()];
-    for &(from, to) in edges_from(graph, graph.layer(pegs)) {
+    for &(from, to) in edges_from(&graph.edges, graph.layer(pegs)) {
         let i = from as usize - base;
         sum[i] += graph.nodes[to as usize];
         n[i] += 1;
@@ -774,13 +861,13 @@ fn barycenter_from_neighbors(graph: &mut ConstellationGraph, pegs: usize) {
     let mut sum = vec![Vec3::ZERO; graph.layer(pegs).len()];
     let mut n = vec![0u32; sum.len()];
     if pegs < MAX_PEGS {
-        for &(from, to) in edges_from(graph, graph.layer(pegs + 1)) {
+        for &(from, to) in edges_from(&graph.edges, graph.layer(pegs + 1)) {
             let i = to as usize - base;
             sum[i] += graph.nodes[from as usize];
             n[i] += 1;
         }
     }
-    for &(from, to) in edges_from(graph, graph.layer(pegs)) {
+    for &(from, to) in edges_from(&graph.edges, graph.layer(pegs)) {
         let i = from as usize - base;
         sum[i] += graph.nodes[to as usize];
         n[i] += 1;
@@ -941,16 +1028,9 @@ fn spawn_graph(
     for (pegs, mesh) in std::mem::take(&mut graph_meshes.edges) {
         let material = edge_materials
             .entry(pegs)
-            .or_insert_with(|| {
-                materials.add(StandardMaterial {
-                    base_color: layer_color(pegs).with_alpha(0.25),
-                    unlit: true,
-                    alpha_mode: AlphaMode::Opaque,
-                    ..default()
-                })
-            })
+            .or_insert_with(|| materials.add(edge_material(pegs)))
             .clone();
-        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)));
+        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), EdgeMesh));
     }
 
     commands.remove_resource::<GraphMeshes>();
@@ -972,10 +1052,108 @@ fn spawn_graph(
     request_redraw.write(RequestRedraw);
 }
 
+/// Rebuilds the edge meshes to only whatever's still [`reachable_from`] the current
+/// board, every time the graph is (re)shown.
+///
+/// Lazy rather than eager: recomputed once when the graph opens (using whatever the
+/// board is at that exact moment), not on every move regardless of whether the graph
+/// is even being looked at - opening the graph after playing deep into a game should
+/// still only draw the (now much smaller) set of moves still reachable from here, but
+/// there's no reason to pay for that rebuild on moves where the graph never gets shown.
+///
+/// Follows the same background-task/`CommandQueue` shape as [`build_graph`] (and needs
+/// to: pruning re-buckets and rebuilds every affected chunk's line-list mesh, the same
+/// per-vertex work that justified moving that off the main thread in the first place) -
+/// except this one only ever replaces [`EdgeMesh`]-marked entities, leaving nodes and
+/// everything else untouched, per the design call to keep every board visible and
+/// prune only the connections between them.
+fn prune_unreachable_edges(
+    mut commands: Commands,
+    graph: Option<Res<ConstellationGraph>>,
+    board: Res<CurrentBoard>,
+    wake: Res<EventLoopProxyWrapper>,
+) {
+    let Some(graph) = graph else { return };
+    let normalized = board.0.normalize();
+    let start_pegs = normalized.count_pegs();
+    // not a graph node - e.g. above MAX_PEGS early in the game - nothing to prune
+    // from, so leave whatever edges are already there rather than guess
+    let Some(&start) = graph.index.get(&normalized) else {
+        info!("DEBUG prune: board not in graph.index (pegs={start_pegs}), skipping");
+        return;
+    };
+
+    let nodes = graph.nodes.clone();
+    let edges = graph.edges.clone();
+    let layer_starts = graph.layer_starts.clone();
+    let total_edges = edges.len();
+
+    let thread_pool = AsyncComputeTaskPool::get();
+    let entity = commands.spawn_empty().id();
+    let wake = wake.clone();
+    let task = thread_pool.spawn(async move {
+        let reachable = reachable_from(&layer_starts, &edges, start, start_pegs);
+        let pruned: Vec<(u32, u32)> = edges
+            .iter()
+            .copied()
+            .filter(|&(from, _)| reachable.contains(&from))
+            .collect();
+        info!(
+            "DEBUG prune: start_pegs={start_pegs} reachable_nodes={} edges {total_edges} -> {}",
+            reachable.len(),
+            pruned.len()
+        );
+
+        let (layer_grid, layer_rad, node_pegs, _node_chunk) = chunk_layout(&nodes, &layer_starts);
+        let edge_meshes = build_edge_meshes(&nodes, &node_pegs, &layer_rad, &layer_grid, &pruned);
+
+        let mut command_queue = CommandQueue::default();
+        command_queue.push(move |world: &mut World| {
+            let old: Vec<Entity> = world
+                .query_filtered::<Entity, With<EdgeMesh>>()
+                .iter(world)
+                .collect();
+            for old_entity in old {
+                world.despawn(old_entity);
+            }
+
+            let mut edge_materials: HashMap<usize, Handle<StandardMaterial>> = HashMap::default();
+            for (pegs, mesh) in edge_meshes {
+                let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
+                let material = edge_materials
+                    .entry(pegs)
+                    .or_insert_with(|| {
+                        world
+                            .resource_mut::<Assets<StandardMaterial>>()
+                            .add(edge_material(pegs))
+                    })
+                    .clone();
+                world.spawn((Mesh3d(mesh_handle), MeshMaterial3d(material), EdgeMesh));
+            }
+
+            world.entity_mut(entity).remove::<BackgroundTask>();
+        });
+        wake.send_event(WakeUp).unwrap();
+        command_queue
+    });
+    commands.entity(entity).insert(BackgroundTask { task });
+}
+
 /// Blue at the apex through to red at the widest layer.
 fn layer_color(pegs: usize) -> Color {
     let t = (pegs - 1) as f32 / (MAX_PEGS - 1) as f32;
-    Color::hsl(240.0 * (1.0 - t), 0.75, 0.55)
+    Color::hsl(240.0 * t, 0.75, 0.55)
+}
+
+/// The material every edge-layer chunk for `pegs` uses - shared by `spawn_graph` and
+/// [`prune_unreachable_edges`] so a reprune can't silently drift from the initial look.
+fn edge_material(pegs: usize) -> StandardMaterial {
+    StandardMaterial {
+        base_color: layer_color(pegs).darker(0.2),
+        unlit: true,
+        alpha_mode: AlphaMode::Opaque,
+        ..default()
+    }
 }
 
 /// Moves the marker sphere onto the node for the board the player is on.
