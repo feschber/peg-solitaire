@@ -2,14 +2,13 @@ use bevy::{
     log::{Level, LogPlugin},
     prelude::*,
     window::{WindowMode, WindowTheme, WindowThemeChanged},
-    winit::WinitSettings,
 };
 
 pub struct MainWindow;
 
 impl Plugin for MainWindow {
     fn build(&self, app: &mut App) {
-        // app.insert_resource(WinitSettings::desktop_app());
+        // app.insert_resource(bevy::winit::WinitSettings::desktop_app());
 
         let default_plugins = DefaultPlugins
             .set(LogPlugin {

@@ -562,7 +562,7 @@ fn chunk_of(pos: Vec3, radius: f32, grid: usize) -> (i32, i32) {
 /// CPU, bottleneck. A real fix from here would have to reduce pixels touched per
 /// visible edge (distance-based fade/thinning, e.g.), not improve what's culled.
 fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
-    let sphere = Sphere::new(NODE_RADIUS).mesh().ico(1).unwrap();
+    let sphere = node_mesh(NODE_RADIUS, 1);
     let local_positions = sphere
         .attribute(Mesh::ATTRIBUTE_POSITION)
         .unwrap()
