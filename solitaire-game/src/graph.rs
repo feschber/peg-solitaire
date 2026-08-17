@@ -23,13 +23,16 @@
 //! zooms, and `WASD` + `space`/`shift` flies.
 
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
     camera::visibility::NoFrustumCulling,
     core_pipeline::tonemapping::Tonemapping,
     ecs::world::CommandQueue,
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     mesh::PrimitiveTopology,
+    pbr::MaterialPlugin,
     prelude::*,
+    render::render_resource::AsBindGroup,
+    shader::ShaderRef,
     tasks::AsyncComputeTaskPool,
     window::RequestRedraw,
     winit::{EventLoopProxyWrapper, WinitUserEvent::WakeUp},
@@ -72,6 +75,11 @@ pub struct GraphPlugin;
 
 impl Plugin for GraphPlugin {
     fn build(&self, app: &mut App) {
+        // Baked into the binary rather than loaded from `assets/`, so the three targets
+        // that ship this (native, wasm, apk) need no packaging change and the wasm build
+        // needs no extra round trip before the scene can draw.
+        embedded_asset!(app, "graph.wgsl");
+        app.add_plugins(MaterialPlugin::<GraphMaterial>::default());
         app.add_systems(Startup, spawn_graph_camera);
         app.add_systems(
             Update,
@@ -196,6 +204,7 @@ fn spawn_graph_camera(mut commands: Commands) {
         orbit.transform(),
         orbit,
         GraphCamera,
+        Msaa::Off,
     ));
 }
 
@@ -406,6 +415,103 @@ fn spread_layer(graph: &mut ConstellationGraph, pegs: usize) {
     }
 }
 
+/// Flat unlit material for the graph scene.
+///
+/// [`StandardMaterial`] is the wrong tool for a scene this size even with `unlit: true`:
+/// that flag only skips the lighting maths inside the fragment stage, while the prepass
+/// and shadow pipelines are still specialized and queued per material, and the fragment
+/// stage still pulls in the whole PBR bind group. The scene needs a position transform
+/// and a constant colour, so the shader in `graph.wgsl` replaces *both* stages and
+/// [`Material::enable_prepass`] and [`Material::enable_shadows`] turn off the rest.
+///
+/// With nothing in the scene lit, the graph carries no light source at all - layer
+/// colour is the only depth cue, and it was already doing that work.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct GraphMaterial {
+    /// The literal fragment output, *not* a base colour.
+    ///
+    /// Premultiplied here so the shader needs no branch: opaque wants `(rgb, 1)`, and
+    /// additive wants `(rgb * intensity, 0)`, because [`AlphaMode::Add`] is implemented
+    /// as premultiplied-alpha blending - `src + dst * (1 - src.a)` - which only comes
+    /// out truly additive when the fragment's alpha is zero.
+    #[uniform(0)]
+    color: LinearRgba,
+    /// Not a binding. Picks the blend state, via [`Material::alpha_mode`].
+    alpha_mode: AlphaMode,
+}
+
+impl GraphMaterial {
+    fn opaque(color: Color) -> Self {
+        Self {
+            color: color.to_linear().with_alpha(1.0),
+            alpha_mode: AlphaMode::Opaque,
+        }
+    }
+
+    /// Additive, so a bundle of overlapping edges reads as brighter than a lone one.
+    fn additive(color: Color, intensity: f32) -> Self {
+        let color = color.to_linear();
+        Self {
+            color: LinearRgba::new(
+                color.red * intensity,
+                color.green * intensity,
+                color.blue * intensity,
+                0.0,
+            ),
+            alpha_mode: AlphaMode::Add,
+        }
+    }
+}
+
+impl Material for GraphMaterial {
+    fn vertex_shader() -> ShaderRef {
+        shader()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        shader()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        self.alpha_mode
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+/// Path of the shader embedded by [`embedded_asset!`] in [`GraphPlugin::build`].
+///
+/// Spelled out rather than fetched with `load_embedded_asset!` because the shader
+/// getters above are associated functions with no access to the [`AssetServer`];
+/// [`embedded_path!`] is the same path computation that macro does internally, so the
+/// two cannot drift.
+fn shader() -> ShaderRef {
+    ShaderRef::Path(AssetPath::from_path_buf(embedded_path!("graph.wgsl")).with_source("embedded"))
+}
+
+/// A sphere carrying nothing but positions.
+///
+/// [`GraphMaterial`] reads no normals and no uvs, and every one of the tens of
+/// thousands of instances re-fetches this mesh, so the attributes it does not read are
+/// pure vertex bandwidth - position-only is 12 bytes a vertex instead of 32.
+fn node_mesh(radius: f32, subdivisions: u32) -> Mesh {
+    let mut mesh = Sphere::new(radius)
+        .mesh()
+        .ico(subdivisions)
+        .unwrap()
+        .with_removed_attribute(Mesh::ATTRIBUTE_NORMAL)
+        .with_removed_attribute(Mesh::ATTRIBUTE_UV_0);
+    // see the note on the edge meshes in `spawn_graph`
+    mesh.asset_usage = RenderAssetUsages::RENDER_WORLD;
+    mesh
+}
+
 /// Spawns the scene once the graph is ready.
 ///
 /// Nodes share one mesh and one material per layer so bevy can batch them, and all
@@ -415,7 +521,7 @@ fn spawn_graph(
     mut commands: Commands,
     graph: Res<ConstellationGraph>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<GraphMaterial>>,
     camera: Single<(&mut Orbit, &mut Transform), With<GraphCamera>>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
@@ -423,14 +529,10 @@ fn spawn_graph(
     *orbit = Orbit::frame(&graph);
     *camera_transform = orbit.transform();
 
-    let sphere = meshes.add(Sphere::new(NODE_RADIUS).mesh().ico(2).unwrap());
+    let sphere = meshes.add(node_mesh(NODE_RADIUS, 2));
 
     for pegs in 1..=MAX_PEGS {
-        let material = materials.add(StandardMaterial {
-            base_color: layer_color(pegs),
-            perceptual_roughness: 0.6,
-            ..default()
-        });
+        let material = materials.add(GraphMaterial::opaque(layer_color(pegs)));
         let batch: Vec<_> = graph
             .layer(pegs)
             .map(|i| {
@@ -457,19 +559,17 @@ fn spawn_graph(
         if positions.is_empty() {
             continue;
         }
-        let normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::LineList,
-            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
-        );
+        // These are the big allocations in the scene - two vertices per edge, and the
+        // edges outnumber the nodes several times over. RENDER_WORLD without MAIN_WORLD
+        // makes the extraction *move* the vertex data to the gpu instead of cloning it,
+        // so none of it stays mirrored in RAM. Bevy caches the bounding box across that
+        // move (`Mesh::final_aabb`), and nothing here reads the mesh back: there is no
+        // raycasting against the graph, and `calculate_bounds` runs in `PostUpdate`, so
+        // it has already seen the positions by the time the render world takes them.
+        let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
+        // no normals: `GraphMaterial` is unlit, and they were half the vertex data
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        let material = materials.add(StandardMaterial {
-            base_color: layer_color(pegs).with_alpha(0.25),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        });
+        let material = materials.add(GraphMaterial::additive(layer_color(pegs), 0.25));
         commands.spawn((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(material),
@@ -478,33 +578,16 @@ fn spawn_graph(
         ));
     }
 
-    // the sphere that tracks the player's current board
+    // the sphere that tracks the player's current board. White against layer colours
+    // that are all at 55% lightness, so it still reads as the brightest thing on screen
+    // now that nothing is emissive.
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(NODE_RADIUS * 6.0).mesh().ico(3).unwrap())),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            emissive: LinearRgba::rgb(2.0, 2.0, 2.0),
-            ..default()
-        })),
+        Mesh3d(meshes.add(node_mesh(NODE_RADIUS * 6.0, 3))),
+        MeshMaterial3d(materials.add(GraphMaterial::opaque(Color::WHITE))),
         Visibility::Hidden,
         Transform::default(),
         CurrentBoardMarker,
     ));
-
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 6_000.0,
-            // 129k instances make shadow casting the first thing to fall over
-            shadows_enabled: false,
-            ..default()
-        },
-        Transform::default().looking_to(Vec3::new(-0.4, -1.0, -0.6), Vec3::Y),
-    ));
-    commands.insert_resource(GlobalAmbientLight {
-        color: Color::WHITE,
-        brightness: 400.0,
-        ..default()
-    });
 
     request_redraw.write(RequestRedraw);
 }
