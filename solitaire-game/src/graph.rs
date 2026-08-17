@@ -49,6 +49,8 @@ use crate::{
     solver::{BackgroundTask, FeasibleConstellations},
 };
 
+const EDGE_ALPHA: f32 = 0.02;
+
 /// Highest peg count included in the graph.
 ///
 /// Raising this is the intended way to scale the scene up, but the layer sizes grow
@@ -76,7 +78,7 @@ const NODE_RADIUS: f32 = 0.01;
 ///
 /// Relative to the distance rather than absolute so that a keypress covers the same
 /// part of the screen whether you are looking at the whole funnel or at one board.
-const FLY_SPEED: f32 = 0.2;
+const FLY_SPEED: f32 = 0.8;
 
 pub struct GraphPlugin;
 
@@ -374,14 +376,11 @@ fn node_mesh(radius: f32, subdivisions: u32) -> Mesh {
 /// that has to know about both at once, to swap which is [`Camera::is_active`].
 fn spawn_graph_camera(mut commands: Commands) {
     let orbit = Orbit::default();
+    let transform = orbit.transform();
     commands.spawn((graph_camera_bundle(), orbit.transform(), orbit));
     // seeded with an arbitrary transform - `toggle_camera_mode` overwrites it with the
     // orbit camera's current view the first time `O` is pressed, before it ever renders
-    commands.spawn((
-        graph_camera_bundle(),
-        Transform::default(),
-        FreeFly::default(),
-    ));
+    commands.spawn((graph_camera_bundle(), transform, FreeFly::default()));
 }
 
 /// Derives the graph and its render meshes from the feasible set on the async pool.
@@ -481,6 +480,7 @@ fn derive_graph(feasible: &solitaire_solver::HashSet<Board>) -> ConstellationGra
         widest_pegs: 0, // placeholder - `layout` sets this to the real value first thing
     };
     layout(&mut graph);
+    layout_cube(&mut graph, feasible);
     graph
 }
 
@@ -600,7 +600,7 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
             }
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
-                RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+                RenderAssetUsages::RENDER_WORLD,
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
             mesh.insert_indices(Indices::U32(indices));
@@ -695,7 +695,9 @@ fn build_edge_meshes(
                 positions.push(nodes[from as usize].to_array());
                 positions.push(nodes[to as usize].to_array());
             }
-            let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
+            let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)
+                .with_removed_attribute(Mesh::ATTRIBUTE_NORMAL)
+                .with_removed_attribute(Mesh::ATTRIBUTE_UV_0);
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
             (pegs, mesh)
         })
@@ -755,6 +757,7 @@ const RELAXATION_PASSES: usize = 4;
 /// update, for the same reason it already needed to in the initial pass: unopposed
 /// averaging shrinks a layer towards a point, and the next layer processed needs this
 /// one's *rescaled* position, not the raw centroid, when using it as a reference.
+#[allow(unused)]
 fn layout(graph: &mut ConstellationGraph) {
     graph.widest_pegs = graph.find_widest_pegs();
     let widest_pegs = graph.widest_pegs;
@@ -1036,6 +1039,35 @@ fn spans_two_dimensions(
     min_eigenvalue / trace > 1e-4
 }
 
+fn layout_cube(graph: &mut ConstellationGraph, feasible: &solitaire_solver::HashSet<Board>) {
+    for board in feasible {
+        if let Some(&idx) = graph.index.get(board) {
+            // const WIDTH: u64 = 52015;
+            const WIDTH: u64 = 2048;
+            // const WIDTH: u64 = 92682;
+            const WIDTH_SQ: u64 = WIDTH * WIDTH;
+            let compr = board.to_compressed_repr();
+            // let compr = board.0;
+            // const POW_2_47: u64 = 1 << 47;
+            // let compr: u64 = rand::random_range(0..POW_2_47);
+
+            let layer = compr / WIDTH_SQ;
+            let row = (compr % WIDTH_SQ) / WIDTH;
+            let col = compr % WIDTH;
+
+            // let layer = 0;
+            // let row = compr / WIDTH;
+            // let col = compr % WIDTH;
+
+            graph.nodes[idx as usize].y = (layer as f64 / 50.) as f32;
+            graph.nodes[idx as usize].z = (row as f64 / 50.) as f32;
+            graph.nodes[idx as usize].x = (col as f64 / 50.) as f32;
+        } else {
+            warn!("no idx for board {board:?}!");
+        }
+    }
+}
+
 /// Spawns the scene once the graph and its meshes are ready.
 ///
 /// The heavy lifting - building the per-chunk meshes - already happened on the
@@ -1184,11 +1216,11 @@ fn prune_unreachable_edges(
 /// Blue at the apex through to red at the widest layer.
 fn layer_color(pegs: usize) -> Color {
     let t = (pegs - 1) as f32 / (MAX_PEGS - 1) as f32;
-    Color::hsl(240.0 * t, 0.75, 0.55)
+    Color::hsl(360.0 * (1.0 - t), 0.75, 0.55)
 }
 
 fn edge_material(pegs: usize) -> GraphMaterial {
-    GraphMaterial::additive(layer_color(pegs), 0.1)
+    GraphMaterial::additive(layer_color(pegs), EDGE_ALPHA)
 }
 
 /// Moves the marker sphere onto the node for the board the player is on.
