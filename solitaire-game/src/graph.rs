@@ -29,12 +29,14 @@
 //! adjusts fly speed there.
 
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
     core_pipeline::tonemapping::Tonemapping,
     ecs::world::CommandQueue,
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
+    render::render_resource::AsBindGroup,
+    shader::ShaderRef,
     tasks::AsyncComputeTaskPool,
     ui::IsDefaultUiCamera,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow, RequestRedraw},
@@ -80,6 +82,8 @@ pub struct GraphPlugin;
 
 impl Plugin for GraphPlugin {
     fn build(&self, app: &mut App) {
+        embedded_asset!(app, "graph.wgsl");
+        app.add_plugins(MaterialPlugin::<GraphMaterial>::default());
         app.init_resource::<CameraMode>();
         app.add_systems(Startup, spawn_graph_camera);
         app.add_systems(
@@ -301,6 +305,67 @@ fn graph_camera_bundle() -> impl Bundle {
     )
 }
 
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct GraphMaterial {
+    #[uniform(0)]
+    color: LinearRgba,
+    alpha_mode: AlphaMode,
+}
+
+impl GraphMaterial {
+    fn opaque(color: Color) -> Self {
+        Self {
+            color: color.to_linear().with_alpha(1.0),
+            alpha_mode: AlphaMode::Opaque,
+        }
+    }
+    fn additive(color: Color, intensity: f32) -> Self {
+        let color = color.to_linear();
+        Self {
+            color: LinearRgba::new(
+                color.red * intensity,
+                color.green * intensity,
+                color.blue * intensity,
+                0.0,
+            ),
+            alpha_mode: AlphaMode::Add,
+        }
+    }
+}
+
+impl Material for GraphMaterial {
+    fn vertex_shader() -> ShaderRef {
+        shader()
+    }
+    fn fragment_shader() -> ShaderRef {
+        shader()
+    }
+    fn alpha_mode(&self) -> AlphaMode {
+        self.alpha_mode
+    }
+    fn enable_prepass() -> bool {
+        false
+    }
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+fn shader() -> ShaderRef {
+    ShaderRef::Path(AssetPath::from_path_buf(embedded_path!("graph.wgsl")).with_source("embedded"))
+}
+
+fn node_mesh(radius: f32, subdivisions: u32) -> Mesh {
+    let mut mesh = Sphere::new(radius)
+        .mesh()
+        .ico(subdivisions)
+        .unwrap()
+        .with_removed_attribute(Mesh::ATTRIBUTE_NORMAL)
+        .with_removed_attribute(Mesh::ATTRIBUTE_UV_0);
+    mesh.asset_usage = RenderAssetUsages::RENDER_WORLD;
+    mesh
+}
+
 /// Spawns the two graph cameras as entirely separate entities - an orbit camera and a
 /// free-flying one - rather than one entity switching control schemes. `Orbit`/
 /// `FreeFly` being on only one entity each is what lets every other system in this
@@ -503,11 +568,6 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
         .unwrap()
         .as_float3()
         .unwrap();
-    let local_normals = sphere
-        .attribute(Mesh::ATTRIBUTE_NORMAL)
-        .unwrap()
-        .as_float3()
-        .unwrap();
     let local_indices: Vec<u32> = sphere.indices().unwrap().iter().map(|i| i as u32).collect();
 
     let (layer_grid, layer_rad, node_pegs, node_chunk) =
@@ -527,7 +587,6 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
         .into_iter()
         .map(|((pegs, _, _), bucket)| {
             let mut positions = Vec::with_capacity(bucket.len() * local_positions.len());
-            let mut normals = Vec::with_capacity(bucket.len() * local_normals.len());
             let mut indices = Vec::with_capacity(bucket.len() * local_indices.len());
             for node in bucket {
                 let base = positions.len() as u32;
@@ -537,7 +596,6 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
                         .iter()
                         .map(|&p| (Vec3::from(p) + offset).to_array()),
                 );
-                normals.extend_from_slice(local_normals);
                 indices.extend(local_indices.iter().map(|i| i + base));
             }
             let mut mesh = Mesh::new(
@@ -545,7 +603,6 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
                 RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
             mesh.insert_indices(Indices::U32(indices));
             (pegs, mesh)
         })
@@ -638,13 +695,8 @@ fn build_edge_meshes(
                 positions.push(nodes[from as usize].to_array());
                 positions.push(nodes[to as usize].to_array());
             }
-            let normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
-            let mut mesh = Mesh::new(
-                PrimitiveTopology::LineList,
-                RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
-            );
+            let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
             (pegs, mesh)
         })
         .collect()
@@ -996,7 +1048,7 @@ fn spawn_graph(
     graph: Res<ConstellationGraph>,
     mut graph_meshes: ResMut<GraphMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<GraphMaterial>>,
     camera: Single<(&mut Orbit, &mut Transform), With<GraphCamera>>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
@@ -1006,21 +1058,15 @@ fn spawn_graph(
 
     // one material per peg count, shared across that layer's chunks - many chunks
     // would otherwise each add an identical material asset
-    let mut node_materials: HashMap<usize, Handle<StandardMaterial>> = HashMap::default();
-    let mut edge_materials: HashMap<usize, Handle<StandardMaterial>> = HashMap::default();
+    let mut node_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
+    let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
 
     // `mem::take` rather than borrowing: these meshes are merged megabytes-large
     // buffers, and moving them into `Assets<Mesh>` avoids cloning that data around
     for (pegs, mesh) in std::mem::take(&mut graph_meshes.nodes) {
         let material = node_materials
             .entry(pegs)
-            .or_insert_with(|| {
-                materials.add(StandardMaterial {
-                    base_color: layer_color(pegs),
-                    unlit: true,
-                    ..default()
-                })
-            })
+            .or_insert_with(|| materials.add(GraphMaterial::opaque(layer_color(pegs))))
             .clone();
         commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)));
     }
@@ -1038,12 +1084,8 @@ fn spawn_graph(
     // the sphere that tracks the player's current board - kept lit so `emissive` still
     // reads as a glow rather than a flat disc now that the funnel itself is unlit
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(NODE_RADIUS * 6.0).mesh().ico(3).unwrap())),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            emissive: LinearRgba::rgb(2.0, 2.0, 2.0),
-            ..default()
-        })),
+        Mesh3d(meshes.add(node_mesh(NODE_RADIUS * 6.0, 3))),
+        MeshMaterial3d(materials.add(GraphMaterial::opaque(Color::WHITE))),
         Visibility::Hidden,
         Transform::default(),
         CurrentBoardMarker,
@@ -1117,14 +1159,14 @@ fn prune_unreachable_edges(
                 world.despawn(old_entity);
             }
 
-            let mut edge_materials: HashMap<usize, Handle<StandardMaterial>> = HashMap::default();
+            let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
             for (pegs, mesh) in edge_meshes {
                 let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
                 let material = edge_materials
                     .entry(pegs)
                     .or_insert_with(|| {
                         world
-                            .resource_mut::<Assets<StandardMaterial>>()
+                            .resource_mut::<Assets<GraphMaterial>>()
                             .add(edge_material(pegs))
                     })
                     .clone();
@@ -1145,15 +1187,8 @@ fn layer_color(pegs: usize) -> Color {
     Color::hsl(240.0 * t, 0.75, 0.55)
 }
 
-/// The material every edge-layer chunk for `pegs` uses - shared by `spawn_graph` and
-/// [`prune_unreachable_edges`] so a reprune can't silently drift from the initial look.
-fn edge_material(pegs: usize) -> StandardMaterial {
-    StandardMaterial {
-        base_color: layer_color(pegs).darker(0.2),
-        unlit: true,
-        alpha_mode: AlphaMode::Opaque,
-        ..default()
-    }
+fn edge_material(pegs: usize) -> GraphMaterial {
+    GraphMaterial::additive(layer_color(pegs), 0.1)
 }
 
 /// Moves the marker sphere onto the node for the board the player is on.
