@@ -46,23 +46,5 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var out = color;
 
-#ifdef DISTANCE_FOG
-    // The graph camera's fog is always `FogFalloff::Linear`, so this ramp is the whole
-    // of it, rather than the mode dispatch in `bevy_pbr::pbr_functions::apply_fog`.
-    // `be.x`/`be.y` are where the linear falloff's start/end live in the fog uniform.
-    let distance = length(in.world_position - view.world_position);
-    let ramp = clamp((distance - fog.be.x) / (fog.be.y - fog.be.x), 0.0, 1.0);
-    let fog_factor = ramp * fog.base_color.a;
-
-    // Fogging in premultiplied-alpha space is compositing an opaque, fog-coloured layer
-    // *under* the fragment, which is why this one line is right for both blend modes:
-    // the opaque nodes (a = 1) mix towards the fog colour, and the additive edges
-    // (a = 0) fade towards nothing, which is what "the background" means when the
-    // blend is `src + dst * (1 - src.a)`. Mixing them towards a grey instead - what
-    // `apply_fog` does, since it preserves the input alpha - would make the far edges
-    // brighter with distance rather than dimmer.
-    out = mix(out, vec4(fog.base_color.rgb, 1.0) * out.a, fog_factor);
-#endif
-
     return out;
 }
