@@ -142,7 +142,8 @@ fn unindex(
     );
     // same reasoning as `retarget`: this prefix's keys are exactly those whose low half
     // carries the state the prefix is missing
-    let wanted = (Board::invariant_state((h as u64) << LOW_BITS) ^ Board::INVARIANT_TARGET) as usize;
+    let wanted =
+        (Board::invariant_state((h as u64) << LOW_BITS) ^ Board::INVARIANT_TARGET) as usize;
     let low = low_unrank[pegs - used][wanted][(index - high_cum[h] as u64) as usize];
     let key = ((h as u64) << LOW_BITS) | low as u64;
     debug_assert_eq!(key.count_ones() as usize, pegs);
@@ -365,8 +366,8 @@ impl LayerRanks {
             if used <= pegs && pegs - used <= LOW_BITS as usize {
                 // Only the low halves that complete this prefix *to the target* count: the
                 // state is a XOR, so the low half must carry whatever the prefix is missing.
-                let wanted = Board::invariant_state((h as u64) << LOW_BITS)
-                    ^ Board::INVARIANT_TARGET;
+                let wanted =
+                    Board::invariant_state((h as u64) << LOW_BITS) ^ Board::INVARIANT_TARGET;
                 acc += u64::from(counts[pegs - used][wanted as usize]);
             }
         }
@@ -873,8 +874,8 @@ mod tests {
             let w = Board::INVARIANT_WEIGHTS[i] as usize;
             for j in 0..=KEY_BITS {
                 for state in 0..16 {
-                    ways[i + 1][j][state] = ways[i][j][state]
-                        + if j == 0 { 0 } else { ways[i][j - 1][state ^ w] };
+                    ways[i + 1][j][state] =
+                        ways[i][j][state] + if j == 0 { 0 } else { ways[i][j - 1][state ^ w] };
                 }
             }
         }
@@ -967,7 +968,9 @@ mod tests {
         );
         // and the layers must partition the invariant subspace: one key in 16, i.e. 2^29
         assert_eq!(
-            (0..=KEY_BITS).map(|k| ways[KEY_BITS][k][target]).sum::<u64>(),
+            (0..=KEY_BITS)
+                .map(|k| ways[KEY_BITS][k][target])
+                .sum::<u64>(),
             1u64 << 29,
         );
     }

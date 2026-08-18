@@ -1515,7 +1515,10 @@ fn layout_cube(graph: &mut ConstellationGraph) {
 /// which is what makes switching between them a comparison of two *traversals* of one
 /// cube rather than of two different shapes.
 const KEY_BITS_PER_AXIS: u32 = Board::SLOTS as u32 / 3;
-const _: () = assert!(Board::SLOTS.is_multiple_of(3), "the key space must split evenly in 3");
+const _: () = assert!(
+    Board::SLOTS.is_multiple_of(3),
+    "the key space must split evenly in 3"
+);
 
 /// World units per grid cell for the key-space layouts - shared so the two stay the same
 /// size on screen, and matching what [`layout_cube`] used before there was a second one.
@@ -1799,8 +1802,6 @@ fn rescale_to_extent(nodes: &mut [Vec3], extent: f32) -> f32 {
 /// compares pictures of the same size rather than of the same shape at different zooms.
 const SHELL_EXTENT: f32 = 20.0;
 
-
-
 /// Places nodes on concentric shells growing outward from the start board - the
 /// [`GraphLayout::Shell`] layout, and the only one that tries to keep edges short.
 ///
@@ -1978,7 +1979,11 @@ fn spawn_graph(
             .entry(pegs)
             .or_insert_with(|| materials.add(GraphMaterial::opaque(layer_color(pegs))))
             .clone();
-        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), GraphChunk));
+        commands.spawn((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material),
+            GraphChunk,
+        ));
     }
 
     for EdgeChunk { pegs, level, mesh } in std::mem::take(&mut graph_meshes.edges) {
@@ -2075,10 +2080,8 @@ fn prune_unreachable_edges(
                 world.despawn(old_entity);
             }
 
-            let mut edge_materials: std::collections::HashMap<
-                (usize, u32),
-                Handle<GraphMaterial>,
-            > = std::collections::HashMap::new();
+            let mut edge_materials: std::collections::HashMap<(usize, u32), Handle<GraphMaterial>> =
+                std::collections::HashMap::new();
             for EdgeChunk { pegs, level, mesh } in edge_meshes {
                 let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
                 let material = edge_materials
@@ -2505,7 +2508,9 @@ mod tests {
     /// Node indices ascend with peg count, so this is the path 0-1-2-...-31, with edges
     /// running from higher peg count to lower as `derive_graph` builds them.
     fn path_graph() -> ConstellationGraph {
-        let layer_starts = (0..MAX_PEGS as u32 + 2).map(|p| p.saturating_sub(1)).collect();
+        let layer_starts = (0..MAX_PEGS as u32 + 2)
+            .map(|p| p.saturating_sub(1))
+            .collect();
         ConstellationGraph {
             nodes: vec![Vec3::ZERO; MAX_PEGS],
             index: HashMap::default(),
@@ -2594,7 +2599,9 @@ mod tests {
             degree[from as usize] += 1.0;
             degree[to as usize] += 1.0;
         }
-        let norms: Vec<f32> = (0..3).map(|c| d_dot_axes(&graph.nodes, &degree, c, c)).collect();
+        let norms: Vec<f32> = (0..3)
+            .map(|c| d_dot_axes(&graph.nodes, &degree, c, c))
+            .collect();
         for (c, &norm) in norms.iter().enumerate() {
             assert!(norm > 0.0, "axis {c} collapsed");
         }
@@ -2687,11 +2694,16 @@ mod tests {
         for pegs in 1..MAX_PEGS {
             assert!(
                 radii[pegs] >= radii[pegs + 1],
-                "shell {pegs} is inside shell {}", pegs + 1
+                "shell {pegs} is inside shell {}",
+                pegs + 1
             );
         }
         // and the outermost shell defines the scene's half-extent
-        assert!((radii[30] - SHELL_EXTENT).abs() < 1e-4, "outermost shell is {}", radii[30]);
+        assert!(
+            (radii[30] - SHELL_EXTENT).abs() < 1e-4,
+            "outermost shell is {}",
+            radii[30]
+        );
     }
 
     /// Points spread over a sphere have to actually be *on* it, and spread - a degenerate
@@ -2701,11 +2713,17 @@ mod tests {
         const COUNT: usize = 512;
         let points: Vec<Vec3> = (0..COUNT).map(|r| fibonacci_sphere(r, COUNT)).collect();
         for (rank, p) in points.iter().enumerate() {
-            assert!((p.length() - 1.0).abs() < 1e-5, "point {rank} is not on the sphere");
+            assert!(
+                (p.length() - 1.0).abs() < 1e-5,
+                "point {rank} is not on the sphere"
+            );
         }
         // an even spread has its centroid at the middle and covers both poles
         let centroid: Vec3 = points.iter().copied().sum::<Vec3>() / COUNT as f32;
-        assert!(centroid.length() < 0.05, "spread is lopsided: centroid {centroid:?}");
+        assert!(
+            centroid.length() < 0.05,
+            "spread is lopsided: centroid {centroid:?}"
+        );
         assert!(points.iter().any(|p| p.y > 0.9) && points.iter().any(|p| p.y < -0.9));
     }
 

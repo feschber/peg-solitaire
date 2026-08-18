@@ -584,7 +584,10 @@ impl Board {
             }
             row += 1;
         }
-        assert!(index == Self::SLOTS, "the cross must have exactly SLOTS cells");
+        assert!(
+            index == Self::SLOTS,
+            "the cross must have exactly SLOTS cells"
+        );
         weights
     }
 

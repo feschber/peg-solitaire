@@ -75,7 +75,11 @@ fn slots() -> Vec<Slot> {
         };
         for col in cols {
             // `Board::REPR` is 8, i.e. one byte per row
-            slots.push(Slot { bit: (row * 8 + col) as u32, row, col });
+            slots.push(Slot {
+                bit: (row * 8 + col) as u32,
+                row,
+                col,
+            });
         }
     }
     assert_eq!(slots.len(), Board::SLOTS);
@@ -177,12 +181,7 @@ fn move_masks(slots: &[Slot]) -> Vec<u64> {
 /// four functionals back to zero. That works one pivot at a time only against the *reduced*
 /// rows, where each pivot column belongs to a single row; against the original masks a pivot
 /// touches several rows at once and correcting one breaks another.
-fn kernel_basis(
-    masks: &[u64; 4],
-    reduced: &[u64; 4],
-    slots: &[Slot],
-    pivots: &[u32],
-) -> Vec<u64> {
+fn kernel_basis(masks: &[u64; 4], reduced: &[u64; 4], slots: &[Slot], pivots: &[u32]) -> Vec<u64> {
     let mut basis = Vec::new();
     for slot in slots.iter().filter(|s| !pivots.contains(&s.bit)) {
         let mut vector = 1u64 << slot.bit;
@@ -195,7 +194,11 @@ fn kernel_basis(
         }
         // checked against the original functionals, not the reduced ones - the whole point is
         // that the two describe the same kernel
-        assert_eq!(evaluate(masks, vector), [0; 4], "kernel vector is not in the kernel");
+        assert_eq!(
+            evaluate(masks, vector),
+            [0; 4],
+            "kernel vector is not in the kernel"
+        );
         basis.push(vector);
     }
     basis
@@ -243,7 +246,9 @@ impl Packing {
         self.carried
             .iter()
             .enumerate()
-            .fold(0u32, |key, (i, &bit)| key | (((board >> bit) & 1) as u32) << i)
+            .fold(0u32, |key, (i, &bit)| {
+                key | (((board >> bit) & 1) as u32) << i
+            })
     }
 
     fn unpack(&self, key: u32) -> u64 {
@@ -306,18 +311,28 @@ fn main() {
     let (pivots, reduced, reduced_targets) = redundant_bits(&masks, expected);
 
     println!("== invariant structure ==");
-    println!("  4 GF(2) functionals, rank {} over the 33 slots", pivots.len());
+    println!(
+        "  4 GF(2) functionals, rank {} over the 33 slots",
+        pivots.len()
+    );
     println!(
         "  so {} of 33 bits are redundant -> {}-bit keys, which {} fit a u32",
         pivots.len(),
         Board::SLOTS - pivots.len(),
-        if Board::SLOTS - pivots.len() <= 32 { "DO" } else { "do not" }
+        if Board::SLOTS - pivots.len() <= 32 {
+            "DO"
+        } else {
+            "do not"
+        }
     );
     println!("  reconstructible bit positions: {pivots:?}");
 
     let start = Board(Board::full().0 & !Board::solved().0);
     println!("  start invariants: {:?}", evaluate(&masks, start.0));
-    println!("  solved invariants: {:?}", evaluate(&masks, Board::solved().0));
+    println!(
+        "  solved invariants: {:?}",
+        evaluate(&masks, Board::solved().0)
+    );
 
     // ---- Is the subspace closed under everything the solver does to a board?
     //
@@ -349,7 +364,11 @@ fn main() {
     // subspace is `start + ker f`, so a symmetry maps it into itself exactly when it keeps
     // `start` inside and sends every kernel basis vector back into the kernel.
     let basis = kernel_basis(&masks, &reduced, &slots, &pivots);
-    println!("  kernel basis has {} vectors (expect 33 - {})", basis.len(), pivots.len());
+    println!(
+        "  kernel basis has {} vectors (expect 33 - {})",
+        basis.len(),
+        pivots.len()
+    );
     let mut broken = 0usize;
     for (index, image) in start.symmetries().iter().enumerate() {
         let offset_ok = evaluate(&masks, image.0) == expected;
@@ -367,7 +386,11 @@ fn main() {
     println!(
         "  => a {}-bit packed key is {} for every board the solver stores",
         Board::SLOTS - pivots.len(),
-        if bad_moves == 0 && broken == 0 { "SAFE" } else { "UNSAFE" }
+        if bad_moves == 0 && broken == 0 {
+            "SAFE"
+        } else {
+            "UNSAFE"
+        }
     );
 
     // ---- Does this compose with the C(33, k) ranking `keyspace_footprint.rs` explored?
@@ -383,9 +406,7 @@ fn main() {
         .enumerate()
         .fold(0usize, |acc, (bit, &v)| acc | (v as usize) << bit);
     let ways = ways_table(&slots, &masks);
-    let bits_for = |count: u128| {
-        (0..64).find(|b| count <= 1u128 << b).unwrap_or(64)
-    };
+    let bits_for = |count: u128| (0..64).find(|b| count <= 1u128 << b).unwrap_or(64);
 
     println!("   k   C(33,k)      C(33,k)/16   invariant & popcount   bits  vs C(33,k)");
     let mut total = 0u128;
@@ -409,8 +430,14 @@ fn main() {
     println!(
         "  worst single layer needs {} bits, against 29 for the invariant alone \
          and {} for ranking alone",
-        (0..=slots.len()).map(|k| bits_for(ways[0][k][target])).max().unwrap(),
-        (0..=slots.len()).map(|k| bits_for(binomial(slots.len(), k))).max().unwrap(),
+        (0..=slots.len())
+            .map(|k| bits_for(ways[0][k][target]))
+            .max()
+            .unwrap(),
+        (0..=slots.len())
+            .map(|k| bits_for(binomial(slots.len(), k)))
+            .max()
+            .unwrap(),
     );
     let _ = total;
 
