@@ -6,3 +6,5 @@ app/build
 app/.cxx
 .gradle
 .idea
+.envrc
+.direnv
