@@ -144,17 +144,25 @@ fn main() {
             break;
         }
     }
-    eprintln!("{} boards ({} pegs)\n", states.len(), states[0].count_pegs());
+    eprintln!(
+        "{} boards ({} pegs)\n",
+        states.len(),
+        states[0].count_pegs()
+    );
 
     // correctness: batched must agree with the scalar version bit for bit
     let mut a = states.clone();
     let mut b = states.clone();
     Board::normalize_all(&mut a);
     normalize_batched(&mut b);
-    assert_eq!(a, b, "batched normalize disagrees with Board::normalize_all");
+    assert_eq!(
+        a, b,
+        "batched normalize disagrees with Board::normalize_all"
+    );
     let mut a = states.clone();
     let mut b = states.clone();
-    a.iter_mut().for_each(|x| *x = Board(!x.0 & FULL).normalize());
+    a.iter_mut()
+        .for_each(|x| *x = Board(!x.0 & FULL).normalize());
     inverse_normalize_batched(&mut b);
     assert_eq!(a, b, "batched inverse+normalize disagrees");
     eprintln!("batched output is identical to scalar\n");
@@ -178,8 +186,10 @@ fn main() {
 
         let mut v = states.clone();
         let t = Instant::now();
-        v.par_chunks_mut(chunk)
-            .for_each(|c| c.iter_mut().for_each(|x| *x = Board(!x.0 & FULL).normalize()));
+        v.par_chunks_mut(chunk).for_each(|c| {
+            c.iter_mut()
+                .for_each(|x| *x = Board(!x.0 & FULL).normalize())
+        });
         scalar_inv.push(t.elapsed().as_micros());
 
         let mut v = states.clone();
@@ -216,10 +226,12 @@ fn main() {
                 dsts.push(a);
                 rest = b;
             }
-            dsts.into_par_iter().zip(parts.par_iter()).for_each(|(dst, src)| {
-                let dst: &mut [Board] = unsafe { std::mem::transmute(dst) };
-                dst.copy_from_slice(src);
-            });
+            dsts.into_par_iter()
+                .zip(parts.par_iter())
+                .for_each(|(dst, src)| {
+                    let dst: &mut [Board] = unsafe { std::mem::transmute(dst) };
+                    dst.copy_from_slice(src);
+                });
         }
         unsafe { out.set_len(total) };
         collect_join.push(t.elapsed().as_micros());
@@ -242,14 +254,38 @@ fn main() {
         v.sort();
         v[v.len() / 2] as f64 / 1000.0
     };
-    println!("{:>26} {:>10} {:>10} {:>9}", "", "scalar", "8-wide", "delta");
+    println!(
+        "{:>26} {:>10} {:>10} {:>9}",
+        "", "scalar", "8-wide", "delta"
+    );
     let (s, b) = (med(&mut scalar), med(&mut batched));
-    println!("{:>26} {:>9.3}ms {:>9.3}ms {:>8.1}%", "normalize", s, b, (b / s - 1.0) * 100.0);
+    println!(
+        "{:>26} {:>9.3}ms {:>9.3}ms {:>8.1}%",
+        "normalize",
+        s,
+        b,
+        (b / s - 1.0) * 100.0
+    );
     let (s, b) = (med(&mut scalar_inv), med(&mut batched_inv));
-    println!("{:>26} {:>9.3}ms {:>9.3}ms {:>8.1}%", "inverse + normalize", s, b, (b / s - 1.0) * 100.0);
+    println!(
+        "{:>26} {:>9.3}ms {:>9.3}ms {:>8.1}%",
+        "inverse + normalize",
+        s,
+        b,
+        (b / s - 1.0) * 100.0
+    );
 
     println!("\nwhole-step shapes (what the solver actually runs):");
     let (s, b) = (med(&mut collect_join), med(&mut direct));
-    println!("{:>26} {:>9.3}ms {:>9.3}ms {:>8.1}%", "chunk-Vecs then join", s, b, (b / s - 1.0) * 100.0);
-    println!("{:>26}   <- `par::parallel`      <- write into one output", "");
+    println!(
+        "{:>26} {:>9.3}ms {:>9.3}ms {:>8.1}%",
+        "chunk-Vecs then join",
+        s,
+        b,
+        (b / s - 1.0) * 100.0
+    );
+    println!(
+        "{:>26}   <- `par::parallel`      <- write into one output",
+        ""
+    );
 }

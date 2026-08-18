@@ -283,7 +283,10 @@ fn score(
         "\n{label}: {} distinct candidates, {positives} in the final answer, {negatives} negatives",
         candidates.len()
     );
-    println!("{:<32} {:>13} {:>18}", "predicate", "FALSE PRUNES", "negatives caught");
+    println!(
+        "{:<32} {:>13} {:>18}",
+        "predicate", "FALSE PRUNES", "negatives caught"
+    );
     for (name, f) in preds {
         let (bad, caught) = candidates
             .par_iter()
@@ -336,14 +339,31 @@ fn main() {
         next.retain(|b| weigh(&PAGODA, b.inverse()) >= solved_weight);
         level = next;
     }
-    println!("  growth visited[16]: {} boards (expect 2046865)", level.len());
+    println!(
+        "  growth visited[16]: {} boards (expect 2046865)",
+        level.len()
+    );
 
     let growth_candidates = dedup_normalized(Board::possible_reverse_moves(&level15));
-    score("growth round", &g, &growth_candidates, &truth_set, true, &preds);
+    score(
+        "growth round",
+        &g,
+        &growth_candidates,
+        &truth_set,
+        true,
+        &preds,
+    );
 
     let v17: Vec<Board> = level.par_iter().map(|b| b.inverse().normalize()).collect();
     let shrink_candidates = dedup_normalized(Board::possible_moves(&v17));
-    score("shrink round", &g, &shrink_candidates, &truth_set, false, &preds);
+    score(
+        "shrink round",
+        &g,
+        &shrink_candidates,
+        &truth_set,
+        false,
+        &preds,
+    );
 
     println!("\nper-board cost (single-threaded, 1M boards):");
     for (name, f) in &preds {
@@ -353,7 +373,10 @@ fn main() {
             acc += f(&g, b) as u64;
         }
         let ns = t.elapsed().as_nanos() as f64 / 1e6;
-        println!("  {name:<32} {ns:>5.1} ns/board (~{:>3.0} cycles) [{acc}]", ns * 3.0);
+        println!(
+            "  {name:<32} {ns:>5.1} ns/board (~{:>3.0} cycles) [{acc}]",
+            ns * 3.0
+        );
     }
 
     // reported in aggregate because every member scores zero - see the module docs

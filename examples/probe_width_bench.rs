@@ -169,7 +169,11 @@ fn main() {
     let k = probe[0].count_pegs();
     let mut moves = Board::possible_moves(&states);
     Board::normalize_all(&mut moves);
-    assert_eq!(moves[0].count_pegs(), k, "probe side must share the map's layer");
+    assert_eq!(
+        moves[0].count_pegs(),
+        k,
+        "probe side must share the map's layer"
+    );
 
     let hc = high_cum_table(k, &c);
     let lr = low_rank_table();
@@ -209,7 +213,10 @@ fn main() {
         probe.len() * 4 / 1024,
     );
 
-    println!("{:>24} {:>10} {:>10} {:>9}", "", "Board", "u32 rank", "delta");
+    println!(
+        "{:>24} {:>10} {:>10} {:>9}",
+        "", "Board", "u32 rank", "delta"
+    );
     for (label, words) in &maps {
         let mut tb = vec![];
         let mut tr = vec![];
@@ -246,7 +253,10 @@ fn main() {
         let (b, r) = (med(&mut tb), med(&mut tr));
         println!(
             "{:>24} {:>9.3}ms {:>9.3}ms {:>8.1}%",
-            format!("{label} ({:.0}%)", hits_b as f64 / probe.len() as f64 * 100.),
+            format!(
+                "{label} ({:.0}%)",
+                hits_b as f64 / probe.len() as f64 * 100.
+            ),
             b,
             r,
             (r / b - 1.0) * 100.0

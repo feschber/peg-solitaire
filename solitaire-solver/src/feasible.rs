@@ -476,7 +476,8 @@ fn reverse_probe_chunk(set: &DenseKeySet, chunk: &[Board]) -> (Vec<Board>, usize
         let syms = board.symmetries();
         for dir in Dir::enumerate() {
             for idx in board.rev_mov_pattern_mask(dir) {
-                let bit = set.index(Board::normalize_after_move(&syms, idx, dir).to_compressed_repr());
+                let bit =
+                    set.index(Board::normalize_after_move(&syms, idx, dir).to_compressed_repr());
                 set.prefetch_at(bit);
                 let slot = n & (PREFETCH_DISTANCE - 1);
                 if n >= PREFETCH_DISTANCE {
@@ -1079,7 +1080,10 @@ mod tests {
         let candidates = states_after(9);
         let pegs = src[0].count_pegs();
         assert_eq!(candidates[0].count_pegs(), pegs - 1);
-        assert!(src.len() >= bitset_threshold(), "round too small for either path");
+        assert!(
+            src.len() >= bitset_threshold(),
+            "round too small for either path"
+        );
         assert!(
             src.len() < candidates.len(),
             "sizes must send `try_bitset_shrink_round` down its default path"
@@ -1094,10 +1098,18 @@ mod tests {
         // exactly the transition being relied on here
         let mut keyset = None;
         let a = try_bitset_shrink_round(&mut keyset, &mut default, pegs, 1, &mut Timer::new());
-        let b =
-            try_bitset_shrink_round_reversed(&mut keyset, &mut reversed, pegs, 1, &mut Timer::new());
+        let b = try_bitset_shrink_round_reversed(
+            &mut keyset,
+            &mut reversed,
+            pegs,
+            1,
+            &mut Timer::new(),
+        );
 
-        let (a, b) = (a.expect("default path declined"), b.expect("reversed path declined"));
+        let (a, b) = (
+            a.expect("default path declined"),
+            b.expect("reversed path declined"),
+        );
         assert_eq!(
             default[pegs - 1],
             reversed[pegs - 1],

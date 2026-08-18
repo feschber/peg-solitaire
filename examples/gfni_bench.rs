@@ -180,7 +180,10 @@ fn main() {
                         for w in c.chunks_exact(8) {
                             unsafe {
                                 let v = _mm512_loadu_si512(w.as_ptr().cast());
-                                let r = _mm512_xor_si512(transpose_gfni8(v), reverse_bits_in_bytes_gfni8(v));
+                                let r = _mm512_xor_si512(
+                                    transpose_gfni8(v),
+                                    reverse_bits_in_bytes_gfni8(v),
+                                );
                                 let mut out = [0u64; 8];
                                 _mm512_storeu_si512(out.as_mut_ptr().cast(), r);
                                 for o in out {
@@ -223,13 +226,27 @@ fn main() {
         println!("{:>34} {:>10}", "", "per pass over 2.6M boards");
         println!("{:>34} {:>9.3}ms", "SWAR (transpose + bit-reverse)", s);
         let g = med(&mut gfni1);
-        println!("{:>34} {:>9.3}ms  {:+.1}%", "GFNI, one board at a time", g, (g / s - 1.0) * 100.0);
+        println!(
+            "{:>34} {:>9.3}ms  {:+.1}%",
+            "GFNI, one board at a time",
+            g,
+            (g / s - 1.0) * 100.0
+        );
         if avx512 {
             let g8 = med(&mut gfni8);
-            println!("{:>34} {:>9.3}ms  {:+.1}%", "GFNI, eight at a time (zmm)", g8, (g8 / s - 1.0) * 100.0);
+            println!(
+                "{:>34} {:>9.3}ms  {:+.1}%",
+                "GFNI, eight at a time (zmm)",
+                g8,
+                (g8 / s - 1.0) * 100.0
+            );
         }
         let sy = med(&mut syms);
         println!("\n{:>34} {:>9.3}ms", "Board::symmetries(), as called", sy);
-        println!("{:>34} {:>9.3}ms   <- whole-run cost if ~11M calls", "", sy * 11.0 / 2.6);
+        println!(
+            "{:>34} {:>9.3}ms   <- whole-run cost if ~11M calls",
+            "",
+            sy * 11.0 / 2.6
+        );
     }
 }

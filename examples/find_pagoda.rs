@@ -62,7 +62,11 @@ fn orbit_counts(board: Board) -> [i32; NUM_ORBITS] {
 }
 
 fn dot(counts: &[i32; NUM_ORBITS], weights: &[i64; NUM_ORBITS]) -> i64 {
-    counts.iter().zip(weights).map(|(&c, &w)| c as i64 * w as i64).sum()
+    counts
+        .iter()
+        .zip(weights)
+        .map(|(&c, &w)| c as i64 * w as i64)
+        .sum()
 }
 
 /// all geometric (pos, mid, target) move triples on the board, for every direction -
@@ -104,7 +108,9 @@ fn growth_round(states: &[Board]) -> Vec<Board> {
 
 fn main() {
     println!("computing true feasible set (ground truth)...");
-    let feasible: HashSet<Board> = solitaire_solver::calculate_feasible_set(None).into_iter().collect();
+    let feasible: HashSet<Board> = solitaire_solver::calculate_feasible_set(None)
+        .into_iter()
+        .collect();
     println!("feasible set size: {}", feasible.len());
 
     println!("regenerating growth-phase rounds (unpruned) for labeled data...");
@@ -140,11 +146,23 @@ fn main() {
         .map(|(b, _)| *b)
         .filter(|_| next_rand() % 20 == 0) // ~5% sample
         .collect();
-    let all_pos: Vec<Board> = labeled.iter().filter(|(_, l)| *l).map(|(b, _)| *b).collect();
-    println!("search sample: {} positives (all), {} negatives (~5%)", all_pos.len(), sample_negs.len());
+    let all_pos: Vec<Board> = labeled
+        .iter()
+        .filter(|(_, l)| *l)
+        .map(|(b, _)| *b)
+        .collect();
+    println!(
+        "search sample: {} positives (all), {} negatives (~5%)",
+        all_pos.len(),
+        sample_negs.len()
+    );
 
-    let pos_counts: Vec<[i32; NUM_ORBITS]> = all_pos.iter().map(|&b| orbit_counts(b.inverse())).collect();
-    let neg_counts: Vec<[i32; NUM_ORBITS]> = sample_negs.iter().map(|&b| orbit_counts(b.inverse())).collect();
+    let pos_counts: Vec<[i32; NUM_ORBITS]> =
+        all_pos.iter().map(|&b| orbit_counts(b.inverse())).collect();
+    let neg_counts: Vec<[i32; NUM_ORBITS]> = sample_negs
+        .iter()
+        .map(|&b| orbit_counts(b.inverse()))
+        .collect();
 
     let triples = move_triples();
     println!("{} move constraint triples", triples.len());
@@ -158,11 +176,23 @@ fn main() {
     // which is the *superseded* weighting - it prunes ~3.5% where production prunes
     // ~21%, so comparing a family against it would overstate the gain by 6x.
     let existing = [3i64, 0, 2, 0, 2, -2, 2];
-    assert!(is_valid_weighting(&existing, &triples), "existing pagoda weighting failed our own validity check - derivation bug");
+    assert!(
+        is_valid_weighting(&existing, &triples),
+        "existing pagoda weighting failed our own validity check - derivation bug"
+    );
     let existing_center = existing[0];
-    let existing_false_prune = pos_counts.iter().filter(|c| dot(c, &existing) < existing_center).count();
-    assert_eq!(existing_false_prune, 0, "existing pagoda weighting should never exclude a positive");
-    let existing_pruned = neg_counts.iter().filter(|c| dot(c, &existing) < existing_center).count();
+    let existing_false_prune = pos_counts
+        .iter()
+        .filter(|c| dot(c, &existing) < existing_center)
+        .count();
+    assert_eq!(
+        existing_false_prune, 0,
+        "existing pagoda weighting should never exclude a positive"
+    );
+    let existing_pruned = neg_counts
+        .iter()
+        .filter(|c| dot(c, &existing) < existing_center)
+        .count();
     println!(
         "sanity check ok: existing weighting prunes {existing_pruned}/{} sampled negatives ({:.2}%)",
         neg_counts.len(),
@@ -230,7 +260,9 @@ fn main() {
             return;
         }
     }
-    println!("(orbit reprs: 0=center 1=dist3-axis 2=dist2-axis(existing) 3=diag1 4=dist1-axis 5=dist(1,3) 6=dist(1,2))");
+    println!(
+        "(orbit reprs: 0=center 1=dist3-axis 2=dist2-axis(existing) 3=diag1 4=dist1-axis 5=dist(1,3) 6=dist(1,2))"
+    );
 
     // ---------------------------------------------------------------------------
     // Phase 2: greedy set cover over the negatives.
@@ -302,11 +334,20 @@ fn main() {
         let c = orbit_counts(b.inverse());
         fam.iter().all(|w| dot(&c, w) >= w[0])
     };
-    let full_negs: Vec<Board> = labeled.iter().filter(|(_, l)| !*l).map(|(b, _)| *b).collect();
+    let full_negs: Vec<Board> = labeled
+        .iter()
+        .filter(|(_, l)| !*l)
+        .map(|(b, _)| *b)
+        .collect();
     for (i, w) in family.iter().enumerate() {
-        assert!(is_valid_weighting(w, &triples), "family member {i} is not a valid pagoda");
         assert!(
-            !all_pos.iter().any(|&b| dot(&orbit_counts(b.inverse()), w) < w[0]),
+            is_valid_weighting(w, &triples),
+            "family member {i} is not a valid pagoda"
+        );
+        assert!(
+            !all_pos
+                .iter()
+                .any(|&b| dot(&orbit_counts(b.inverse()), w) < w[0]),
             "family member {i} excludes a true positive"
         );
     }
@@ -314,7 +355,10 @@ fn main() {
         .iter()
         .filter(|&&b| dot(&orbit_counts(b.inverse()), &existing) < existing_center)
         .count();
-    let family_full = full_negs.iter().filter(|&&b| !survives_family(b, &family)).count();
+    let family_full = full_negs
+        .iter()
+        .filter(|&&b| !survives_family(b, &family))
+        .count();
     println!(
         "\nFULL-DATA: existing prunes {existing_full}/{} ({:.2}%), family of {} prunes {family_full} ({:.2}%)",
         full_negs.len(),
@@ -355,17 +399,33 @@ fn main() {
          the orbit form of the production weighting is wrong"
     );
     let (fam_sizes, fam_lost) = simulate(&family);
-    assert!(!base_lost, "the existing weighting lost a positive - harness bug");
-    assert!(!fam_lost, "THE FAMILY LOST A TRUE POSITIVE - it is not sound");
+    assert!(
+        !base_lost,
+        "the existing weighting lost a positive - harness bug"
+    );
+    assert!(
+        !fam_lost,
+        "THE FAMILY LOST A TRUE POSITIVE - it is not sound"
+    );
 
-    println!("  {:>5} {:>10} {:>10} {:>10}", "round", "today", "family", "reduction");
+    println!(
+        "  {:>5} {:>10} {:>10} {:>10}",
+        "round", "today", "family", "reduction"
+    );
     let (mut tot_a, mut tot_b) = (0usize, 0usize);
     for (round, (a, b)) in base_sizes.iter().zip(&fam_sizes).enumerate() {
         tot_a += a;
         tot_b += b;
-        println!("  {round:>5} {a:>10} {b:>10} {:>9.1}%", 100.0 * (1.0 - *b as f64 / *a as f64));
+        println!(
+            "  {round:>5} {a:>10} {b:>10} {:>9.1}%",
+            100.0 * (1.0 - *b as f64 / *a as f64)
+        );
     }
-    println!("  {:>5} {tot_a:>10} {tot_b:>10} {:>9.1}%", "total", 100.0 * (1.0 - tot_b as f64 / tot_a as f64));
+    println!(
+        "  {:>5} {tot_a:>10} {tot_b:>10} {:>9.1}%",
+        "total",
+        100.0 * (1.0 - tot_b as f64 / tot_a as f64)
+    );
     println!("\nboards carried by the growth phase: {tot_a} -> {tot_b}");
     println!("family: {family:?}");
     println!("no true positive lost: {}", !fam_lost);

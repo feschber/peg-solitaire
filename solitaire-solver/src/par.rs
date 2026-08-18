@@ -66,7 +66,9 @@ fn into_mut_slices<'a, T>(mut v: &'a mut [T], lens: &[usize]) -> Vec<&'a mut [T]
     slices
 }
 
-pub(crate) fn par_join<T: Copy + Send + Sync, VT: Send + Sync + AsRef<[T]>>(slices: &[VT]) -> Vec<T> {
+pub(crate) fn par_join<T: Copy + Send + Sync, VT: Send + Sync + AsRef<[T]>>(
+    slices: &[VT],
+) -> Vec<T> {
     let lens = slices.iter().map(|r| r.as_ref().len()).collect::<Vec<_>>();
     let total = lens.iter().sum();
     let mut result = Vec::with_capacity(total);

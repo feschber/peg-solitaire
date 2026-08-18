@@ -108,11 +108,20 @@ fn test_pagoda_matches_peg_by_peg_reference() {
     fn pagoda_reference(board: Board) -> i64 {
         board.into_iter().map(|i| PAGODA[i]).sum()
     }
-    let samples = [Board::empty(), Board::full(), Board::solved(), Board::default()]
-        .into_iter()
-        .chain((0..100_000).map(|_| Board(rand::random::<u64>() & Board::full().0)));
+    let samples = [
+        Board::empty(),
+        Board::full(),
+        Board::solved(),
+        Board::default(),
+    ]
+    .into_iter()
+    .chain((0..100_000).map(|_| Board(rand::random::<u64>() & Board::full().0)));
     for board in samples {
-        assert_eq!(pagoda(board), pagoda_reference(board), "mismatch for {board:?}");
+        assert_eq!(
+            pagoda(board),
+            pagoda_reference(board),
+            "mismatch for {board:?}"
+        );
     }
 }
 
@@ -135,11 +144,16 @@ fn test_pagoda_is_valid() {
                 let mid = (y + dy, x + dx);
                 let tgt = (y + 2 * dy, x + 2 * dx);
                 if Board::inbounds(mid) && Board::inbounds(tgt) {
-                    let (wp, wm, wt) = (PAGODA[idx(y, x)], PAGODA[mid.0 as usize * Board::REPR as usize + mid.1 as usize], PAGODA[tgt.0 as usize * Board::REPR as usize + tgt.1 as usize]);
+                    let (wp, wm, wt) = (
+                        PAGODA[idx(y, x)],
+                        PAGODA[mid.0 as usize * Board::REPR as usize + mid.1 as usize],
+                        PAGODA[tgt.0 as usize * Board::REPR as usize + tgt.1 as usize],
+                    );
                     assert!(
                         wp + wm >= wt,
                         "invalid pagoda weighting: move ({y},{x})->({},{}) violates w(pos)+w(mid)>=w(target): {wp}+{wm} < {wt}",
-                        mid.0, mid.1
+                        mid.0,
+                        mid.1
                     );
                     checked += 1;
                 }
@@ -153,9 +167,14 @@ fn test_pagoda_is_valid() {
 fn inverse_weight_is_the_complement() {
     // what lets the growth phase test reachability - stated on a board's inverse -
     // without ever materializing that inverse
-    let samples = [Board::empty(), Board::full(), Board::solved(), Board::default()]
-        .into_iter()
-        .chain((0..100_000).map(|_| Board(rand::random::<u64>() & Board::full().0)));
+    let samples = [
+        Board::empty(),
+        Board::full(),
+        Board::solved(),
+        Board::default(),
+    ]
+    .into_iter()
+    .chain((0..100_000).map(|_| Board(rand::random::<u64>() & Board::full().0)));
     for board in samples {
         assert_eq!(pagoda(board.inverse()), FULL_WEIGHT - pagoda(board));
     }

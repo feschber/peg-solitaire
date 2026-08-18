@@ -395,7 +395,6 @@ impl DenseKeySet {
         }
     }
 
-
     /// Empties the map and switches it to the layer of keys with `pegs` pegs, which
     /// is what makes [`Self::index`] a bijection for the round about to run.
     ///

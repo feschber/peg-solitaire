@@ -290,13 +290,27 @@ fn test_reverse_rows_rotate_180_bit_trick() {
     fn rotate_180_orig(x: u64) -> u64 {
         x.reverse_bits() >> 9
     }
-    let samples = [0u64, u64::MAX, 0x1, 0x8000_0000_0000_0000, 0xAAAA_AAAA_AAAA_AAAA]
-        .into_iter()
-        .chain((0..100_000).map(|_| rand::random::<u64>()));
+    let samples = [
+        0u64,
+        u64::MAX,
+        0x1,
+        0x8000_0000_0000_0000,
+        0xAAAA_AAAA_AAAA_AAAA,
+    ]
+    .into_iter()
+    .chain((0..100_000).map(|_| rand::random::<u64>()));
     for x in samples {
         let board = Board(x);
-        assert_eq!(board.reverse_rows().0, reverse_rows_orig(x), "reverse_rows mismatch for {x:#x}");
-        assert_eq!(board.rotate_180().0, rotate_180_orig(x), "rotate_180 mismatch for {x:#x}");
+        assert_eq!(
+            board.reverse_rows().0,
+            reverse_rows_orig(x),
+            "reverse_rows mismatch for {x:#x}"
+        );
+        assert_eq!(
+            board.rotate_180().0,
+            rotate_180_orig(x),
+            "rotate_180 mismatch for {x:#x}"
+        );
     }
 }
 
@@ -363,9 +377,14 @@ fn test_compressed_repr_matches_portable() {
 #[test]
 fn test_normalize_after_move_matches_direct_normalize() {
     let full = Board::full().0;
-    let samples = [Board::empty(), Board::full(), Board::default(), Board::solved()]
-        .into_iter()
-        .chain((0..2_000).map(|_| Board(rand::random::<u64>() & full)));
+    let samples = [
+        Board::empty(),
+        Board::full(),
+        Board::default(),
+        Board::solved(),
+    ]
+    .into_iter()
+    .chain((0..2_000).map(|_| Board(rand::random::<u64>() & full)));
     let mut checked = 0usize;
     for board in samples {
         let syms = board.symmetries();
@@ -424,7 +443,11 @@ fn test_decompress_matches_reference() {
         // and it must undo compression exactly, which is the property the solver
         // actually depends on when it unranks a key back into a board
         let board = Board::from_compressed_repr(c);
-        assert_eq!(board.to_compressed_repr(), c, "round trip failed for {c:#x}");
+        assert_eq!(
+            board.to_compressed_repr(),
+            c,
+            "round trip failed for {c:#x}"
+        );
     }
 }
 
