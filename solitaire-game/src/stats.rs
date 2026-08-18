@@ -19,6 +19,7 @@ pub struct ToggleBookMarks;
 #[derive(Resource)]
 struct ShowStats;
 
+#[allow(clippy::type_complexity)]
 fn toggle_stats(
     _: On<ToggleStats>,
     mut commands: Commands,
@@ -40,20 +41,16 @@ fn toggle_stats(
     if show_stats.is_none() {
         info!("Hiding Stats");
         commands.insert_resource(ShowStats);
-        let mut i = 0;
-        for e in &stats {
+        for (i, e) in stats.iter().enumerate() {
             info!("Hiding Stats ({i})");
-            i += 1;
             let mut e = commands.entity(e);
             e.insert(Disabled);
         }
     } else {
         info!("Showing Stats");
         commands.remove_resource::<ShowStats>();
-        let mut i = 0;
-        for e in &stats {
+        for (i, e) in stats.iter().enumerate() {
             info!("Showing Stats ({i})");
-            i += 1;
             let mut e = commands.entity(e);
             e.remove::<Disabled>();
         }
@@ -383,12 +380,12 @@ fn update_unique_solutions(
             .unwrap_or(&0u64);
         paths.to_formatted_string(&Locale::en)
     } else {
-        format!("?")
+        "?".to_string()
     };
     let unique_solutions = if let Some(unique_solutions) = unique_solutions.0 {
         format!("{}", unique_solutions)
     } else {
-        format!("?")
+        "?".to_string()
     };
 
     for text in unique_solutions_text {

@@ -127,7 +127,7 @@ impl From<(SolutionMultiset, &HashSet<Board>)> for Solution {
         log::info!("from::<SolutionMultiset>()");
         let mut vec: Vec<_> = mset
             .into_iter()
-            .flat_map(|(k, v)| std::iter::repeat(k).take(v))
+            .flat_map(|(k, v)| std::iter::repeat_n(k, v))
             .collect();
         assert_eq!(vec.len(), 31);
         // canonicalize by sorting
@@ -136,7 +136,7 @@ impl From<(SolutionMultiset, &HashSet<Board>)> for Solution {
         let move_mask = 0u32;
         let mut solution = Self::default();
         let board = Board::default();
-        let ass = from_unordered_moves(&vec, &mut solution, move_mask, board, &feasible);
+        let ass = from_unordered_moves(&vec, &mut solution, move_mask, board, feasible);
         assert!(ass);
         solution
     }

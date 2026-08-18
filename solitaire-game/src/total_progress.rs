@@ -1,3 +1,6 @@
+/// This module keeps track of the total progress of the game.
+/// We store statistics about which constellations have previously been
+/// explored.
 use std::collections::HashSet;
 
 use bevy::{
@@ -17,10 +20,6 @@ use crate::{
     solver::{FeasibleConstellations, UniqueSolutions},
     stats::UpdateStats,
 };
-
-/// This module keeps track of the total progress of the game.
-/// We store statistics about which constellations have previously been
-/// explored.
 
 pub struct TotalProgressPlugin;
 
@@ -70,18 +69,15 @@ fn update_total_progress(
     board: Res<CurrentBoard>,
 ) {
     let board = board.0;
-    if let Some(feasible) = feasible {
-        if feasible.0.contains(&board.normalize()) {
-            *total_progress
-                .explored_states
-                .entry(board)
-                .or_insert(Default::default()) += 1;
-            *total_progress
-                .normalized_explored_states
-                .entry(board.normalize())
-                .or_insert(Default::default()) += 1;
-            total_progress.explored_states_by_pegs[board.count_pegs() as usize - 1].insert(board);
-        }
+    if let Some(feasible) = feasible
+        && feasible.0.contains(&board.normalize())
+    {
+        *total_progress.explored_states.entry(board).or_default() += 1;
+        *total_progress
+            .normalized_explored_states
+            .entry(board.normalize())
+            .or_default() += 1;
+        total_progress.explored_states_by_pegs[board.count_pegs() - 1].insert(board);
     }
 }
 

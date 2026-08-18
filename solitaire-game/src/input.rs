@@ -50,17 +50,18 @@ fn grab_peg(
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
-    if let Some(cursor_pos) = window.cursor_position() {
-        if let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform) {
-            let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
-            if let Some(peg) = pegs.iter().find(|(_, p)| **p == board_pos).map(|(p, _)| p) {
-                commands.entity(peg).insert(Selected);
-                request_redraw.write(RequestRedraw);
-            }
+    if let Some(cursor_pos) = window.cursor_position()
+        && let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform)
+    {
+        let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
+        if let Some(peg) = pegs.iter().find(|(_, p)| **p == board_pos).map(|(p, _)| p) {
+            commands.entity(peg).insert(Selected);
+            request_redraw.write(RequestRedraw);
         };
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn release_peg(
     mut commands: Commands,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -69,17 +70,18 @@ fn release_peg(
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let (camera, camera_transform) = *camera_query;
-    if let Some(cursor_pos) = window.cursor_position() {
-        if let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform) {
-            let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
-            for (selected_peg, &current_pos) in selected_pegs {
-                move_peg(&mut commands, selected_peg, current_pos, board_pos);
-            }
-            request_redraw.write(RequestRedraw);
-        };
-    }
+    if let Some(cursor_pos) = window.cursor_position()
+        && let Some(world_pos_cursor) = viewport_to_world(cursor_pos, camera, camera_transform)
+    {
+        let board_pos = BoardPosition::from_world_space(world_pos_cursor.xy());
+        for (selected_peg, &current_pos) in selected_pegs {
+            move_peg(&mut commands, selected_peg, current_pos, board_pos);
+        }
+        request_redraw.write(RequestRedraw);
+    };
 }
 
+#[allow(clippy::type_complexity)]
 fn peg_selection_touch(
     mut commands: Commands,
     touches: Res<Touches>,

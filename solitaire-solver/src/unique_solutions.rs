@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 /// we define two solutions as "equal" when the
 ///  multiset of steps is equivalent between them
-
+///
 /// Finds all *unique* solutions (by step-multiset) from `start` to any board in `goals`.
 ///
 /// Uses BFS/DFS over the feasible graph, accumulating the multiset of steps along
@@ -60,7 +60,7 @@ pub fn all_unique_solutions(
             let next_hash = hash ^ zobrist.delta(&mov, new_count);
 
             // Only push if this (board, multiset) state is genuinely new
-            if visited.insert((next_board.clone(), next_hash)) {
+            if visited.insert((next_board, next_hash)) {
                 stack.push((next_board, next_multiset, next_hash));
             }
         }
@@ -128,7 +128,7 @@ impl ZobristTable {
     fn get(&mut self, step: &Move, count: usize) -> u64 {
         *self
             .table
-            .entry((step.clone(), count))
+            .entry((*step, count))
             .or_insert_with(rand::random)
     }
 }
@@ -145,8 +145,8 @@ pub fn all_unique_paths(feasible: impl IntoIterator<Item = Board>) -> HashMap<Bo
         boards[board.count_pegs()].push(board);
     }
     number_of_combinations.insert(Board::solved(), 1);
-    for i in 2..=32 {
-        for board in &boards[i] {
+    for boards in boards.iter().skip(2) {
+        for board in boards {
             let mut next = Board::possible_moves(&[*board]);
             Board::normalize_all(&mut next);
             next.dedup();
@@ -156,9 +156,7 @@ pub fn all_unique_paths(feasible: impl IntoIterator<Item = Board>) -> HashMap<Bo
                 .filter(|b| feasible_set.contains(b))
                 .map(|b| number_of_combinations[&b])
                 .sum();
-            let entry = number_of_combinations
-                .entry(*board)
-                .or_insert(Default::default());
+            let entry = number_of_combinations.entry(*board).or_default();
             *entry = count;
         }
     }

@@ -316,16 +316,16 @@ fn handle_touch_press<'a, T, U: Default + Event>(
     }
 }
 
-fn handle_touch_release<'a, T>(mut buttons: Query<&mut ButtonState, With<T>>, touches: Res<Touches>)
+fn handle_touch_release<T>(mut buttons: Query<&mut ButtonState, With<T>>, touches: Res<Touches>)
 where
     T: Component + Send + Sync,
 {
     for released_id in touches.iter_just_released().map(|t| t.id()) {
         for mut state in &mut buttons {
-            if let Some(id) = state.touched {
-                if id == released_id {
-                    state.touched = None;
-                }
+            if let Some(id) = state.touched
+                && id == released_id
+            {
+                state.touched = None;
             }
         }
     }
@@ -485,7 +485,7 @@ fn draw_bookmark(
         _ => {
             for mut b in buttons {
                 // book          f02d
-                b.0 = format!("\u{f02d}");
+                b.0 = "\u{f02d}".to_string();
             }
         }
     }

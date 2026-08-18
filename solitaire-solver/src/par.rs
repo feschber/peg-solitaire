@@ -36,7 +36,7 @@ where
         return vec![f(slice)];
     }
     let chunk_size = slice.len().div_ceil(nthreads * 2);
-    slice.par_chunks(chunk_size).map(|c| f(c)).collect()
+    slice.par_chunks(chunk_size).map(f).collect()
 }
 
 /// maps chunks of a slice `&mut [T]` into `R` in parallel using F; see [`par_map_chunks`].
@@ -51,7 +51,7 @@ where
         return vec![f(slice)];
     }
     let chunk_size = slice.len().div_ceil(nthreads * 2);
-    slice.par_chunks_mut(chunk_size).map(|c| f(c)).collect()
+    slice.par_chunks_mut(chunk_size).map(f).collect()
 }
 
 /// slices `v` into multiple mutable slices according to `lens` lengths

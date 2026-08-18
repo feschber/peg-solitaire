@@ -56,7 +56,7 @@ fn update_text_pos(
     let (cam, gt) = &*camera_query;
     if let Some(view_port) = cam.logical_viewport_rect() {
         for (mut t, m) in moves {
-            let pos = pos(cam, gt, view_port, m.0, &*solution);
+            let pos = pos(cam, gt, view_port, m.0, &solution);
             t.translation = pos + Vec3::Y * 0.5;
         }
     }
@@ -70,7 +70,7 @@ fn draw_solution(
     let (cam, gt) = &*camera_query;
     if let Some(view_port) = cam.logical_viewport_rect() {
         for (i, _mov) in solution.0.clone().into_iter().enumerate() {
-            let pos = pos(cam, gt, view_port, i, &*solution);
+            let pos = pos(cam, gt, view_port, i, &solution);
             painter.set_translation(pos);
             painter.set_color(Color::WHITE);
             painter.circle(0.07);
