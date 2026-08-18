@@ -27,8 +27,11 @@ impl Plugin for FpsOverlay {
     }
 }
 
+/// `F3`, not `D`: `D` is also strafe-right in both graph cameras (see `graph.rs`), so
+/// panning around the graph used to toggle the overlay on every keypress - which matters
+/// because this readout is the only frame-time instrument the app has.
 fn toggle_fps_overlay(input: Res<ButtonInput<KeyCode>>, mut overlay: ResMut<FpsOverlayConfig>) {
-    if input.just_pressed(KeyCode::KeyD) {
+    if input.just_pressed(KeyCode::F3) {
         overlay.enabled = !overlay.enabled;
     }
 }

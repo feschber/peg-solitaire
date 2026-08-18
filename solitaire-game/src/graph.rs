@@ -40,7 +40,7 @@ use bevy::{
     tasks::AsyncComputeTaskPool,
     ui::IsDefaultUiCamera,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow, RequestRedraw},
-    winit::{EventLoopProxyWrapper, WinitUserEvent::WakeUp},
+    winit::{EventLoopProxy, EventLoopProxyWrapper, WinitUserEvent, WinitUserEvent::WakeUp},
 };
 use solitaire_solver::{Board, HashMap};
 
@@ -87,6 +87,7 @@ impl Plugin for GraphPlugin {
         embedded_asset!(app, "graph.wgsl");
         app.add_plugins(MaterialPlugin::<GraphMaterial>::default());
         app.init_resource::<CameraMode>();
+        app.init_resource::<BuildSettings>();
         app.add_systems(Startup, spawn_graph_camera);
         app.add_systems(
             Update,
@@ -107,6 +108,7 @@ impl Plugin for GraphPlugin {
                 fly_camera.run_if(resource_equals(CameraMode::Fly)),
                 highlight_current,
                 toggle_camera_mode,
+                rebuild_on_key,
             )
                 .run_if(resource_exists::<ShowGraph>),
         );
@@ -144,6 +146,38 @@ struct CurrentBoardMarker;
 #[derive(Component)]
 struct EdgeMesh;
 
+/// Marks every chunk mesh entity, node and edge alike, so [`switch_layout`] can clear
+/// the whole scene in one query. [`EdgeMesh`] entities carry both.
+#[derive(Component)]
+struct GraphChunk;
+
+/// Which of the two node layouts the graph is drawn with - switched with `L`.
+///
+/// Both are kept deliberately, because they answer different questions and neither
+/// replaces the other: [`layout`] is the graph-drawing one (layers stacked by peg count,
+/// relaxed to shorten edges, so the *move structure* is what you see), while
+/// [`layout_cube`] plots each board's compressed representation straight into a cube, so
+/// what you see is the shape of the *key space*. Before this was a choice, `derive_graph`
+/// ran `layout` and then overwrote every position with `layout_cube` unconditionally - so
+/// the relaxation work was computed and thrown away, and only the cube was ever visible.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
+enum GraphLayout {
+    /// [`layout`] - an hourglass of barycentrically-relaxed layers, height from peg count.
+    Hourglass,
+    /// [`layout_cube`] - position straight from `Board::to_compressed_repr`.
+    #[default]
+    Cube,
+}
+
+impl GraphLayout {
+    fn next(self) -> Self {
+        match self {
+            Self::Hourglass => Self::Cube,
+            Self::Cube => Self::Hourglass,
+        }
+    }
+}
+
 /// Orbit state for [`GraphCamera`], in spherical coordinates about [`Self::focus`].
 #[derive(Component)]
 struct Orbit {
@@ -167,18 +201,19 @@ impl Default for Orbit {
 impl Orbit {
     /// Frames the whole shape.
     ///
-    /// Derived from the graph's own extent rather than tuned by hand, so changing
-    /// [`MAX_PEGS`] or [`LAYER_HEIGHT`] still opens with all of it on screen. Width
-    /// comes from `graph.widest_pegs`, not `MAX_PEGS` - see its doc comment for why
-    /// those aren't the same layer in general.
+    /// Measured off the node positions themselves rather than reconstructed from
+    /// [`LAYER_HEIGHT`] and [`layer_radius`], so it opens with all of the graph on screen
+    /// under either [`GraphLayout`]. The reconstructed version only described [`layout`]'s
+    /// geometry, and framed [`layout_cube`] - whose extent has nothing to do with those
+    /// constants, and which is not centred on the origin - well off-screen.
     fn frame(graph: &ConstellationGraph) -> Self {
-        let height = (MAX_PEGS - 1) as f32 * LAYER_HEIGHT;
-        let width = 2.0 * layer_radius(graph.layer(graph.widest_pegs).len());
+        let (min, max) = aabb_of(graph.nodes.iter().copied());
+        let extent = max - min;
         Self {
-            focus: Vec3::new(0.0, height / 2.0, 0.0),
+            focus: (min + max) * 0.5,
             // bevy's default vertical fov is 45 degrees, so fitting an extent takes
             // about 1.2x it in distance - the rest is breathing room.
-            radius: height.max(width) * 1.6,
+            radius: (extent.max_element() * 1.6).max(1.0),
             ..default()
         }
     }
@@ -269,7 +304,7 @@ impl ConstellationGraph {
 #[derive(Resource)]
 struct GraphMeshes {
     nodes: Vec<(usize, Mesh)>,
-    edges: Vec<(usize, Mesh)>,
+    edges: Vec<EdgeChunk>,
 }
 
 /// Bundle shared by both graph cameras - only the mode-specific state (an [`Orbit`] or
@@ -383,32 +418,56 @@ fn spawn_graph_camera(mut commands: Commands) {
     commands.spawn((graph_camera_bundle(), transform, FreeFly::default()));
 }
 
-/// Derives the graph and its render meshes from the feasible set on the async pool.
-///
-/// Follows the same task shape as the stages in `solver.rs`: hand back a
-/// [`CommandQueue`], let `solver::poll_task` apply it, and wake the winit event loop
-/// because the app runs reactively and would otherwise not draw the result. Building
-/// the meshes here too, rather than in [`spawn_graph`], keeps the per-vertex work
-/// (millions of floats once merged - see [`build_meshes`]) off the main thread; the
-/// main thread only ever does the cheap `Assets<Mesh>::add` + spawn.
+/// Derives the graph and its render meshes from the feasible set on the async pool,
+/// once the solver hands the feasible set over.
 fn build_graph(
     mut commands: Commands,
     feasible: Res<FeasibleConstellations>,
+    settings: Res<BuildSettings>,
     wake: Res<EventLoopProxyWrapper>,
 ) {
-    info!("building constellation graph (<= {MAX_PEGS} pegs) ...");
+    spawn_build_task(&mut commands, &feasible.0, *settings, wake.clone());
+}
+
+/// Spawns the derive-plus-mesh-build task.
+///
+/// Follows the same task shape as the stages in `solver.rs`: hand back a
+/// [`CommandQueue`], let `solver::poll_task` apply it, and wake the winit event loop so
+/// a background result still gets drawn. Building the meshes here too, rather than in
+/// [`spawn_graph`], keeps the per-vertex work (millions of floats once merged - see
+/// [`build_meshes`]) off the main thread; the main thread only ever does the cheap
+/// `Assets<Mesh>::add` + spawn.
+///
+/// Shared with [`switch_layout`], which rebuilds from scratch rather than re-laying-out
+/// in place. Re-deriving the nodes and edges is a fraction of the total cost, and it
+/// keeps every expensive step here on the background pool - an in-place version would
+/// have had to either clone `index` (one entry per node) into the task or block the main
+/// thread for the whole relaxation.
+fn spawn_build_task(
+    commands: &mut Commands,
+    feasible: &solitaire_solver::HashSet<Board>,
+    settings: BuildSettings,
+    // the proxy itself rather than the resource wrapper, because that is what
+    // `EventLoopProxyWrapper`'s `Deref` + `clone` at the call sites actually hands over
+    wake: EventLoopProxy<WinitUserEvent>,
+) {
+    info!("building constellation graph (<= {MAX_PEGS} pegs, {settings:?}) ...");
     let thread_pool = AsyncComputeTaskPool::get();
     let entity = commands.spawn_empty().id();
-    let feasible = feasible.0.clone();
-    let wake = wake.clone();
+    let feasible = feasible.clone();
     let task = thread_pool.spawn(async move {
-        let graph = derive_graph(&feasible);
+        let graph = derive_graph(&feasible, settings.layout);
         info!(
             "constellation graph: {} nodes, {} edges",
             graph.nodes.len(),
             graph.edges.len()
         );
-        let meshes = build_meshes(&graph);
+        let meshes = build_meshes(&graph, settings);
+        info!(
+            "graph meshes: {} node chunks, {} edge chunks",
+            meshes.nodes.len(),
+            meshes.edges.len()
+        );
 
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
@@ -422,7 +481,65 @@ fn build_graph(
     commands.entity(entity).insert(BackgroundTask { task });
 }
 
-fn derive_graph(feasible: &solitaire_solver::HashSet<Board>) -> ConstellationGraph {
+/// Clears the scene and rebuilds it: `L` switches [`GraphLayout`], `[`/`]` halve/double
+/// the chunk size, `-`/`=` halve/double the edge budget.
+///
+/// Both are here so the two knobs this module has can be swept from one session without
+/// rebuilding the binary or having to find the same viewpoint again - which is the only
+/// way to compare them honestly, since the readout is an eyeballed FPS number.
+fn rebuild_on_key(
+    mut commands: Commands,
+    input: Res<ButtonInput<KeyCode>>,
+    feasible: Option<Res<FeasibleConstellations>>,
+    graph: Option<Res<ConstellationGraph>>,
+    mut settings: ResMut<BuildSettings>,
+    chunks: Query<Entity, With<GraphChunk>>,
+    wake: Res<EventLoopProxyWrapper>,
+) {
+    let switch = input.just_pressed(KeyCode::KeyL);
+    let finer = input.just_pressed(KeyCode::BracketLeft);
+    let coarser = input.just_pressed(KeyCode::BracketRight);
+    let thinner = input.just_pressed(KeyCode::Minus);
+    let denser = input.just_pressed(KeyCode::Equal);
+    if !(switch || finer || coarser || thinner || denser) {
+        return;
+    }
+    // `graph` being absent means either the first build or a previous rebuild is still in
+    // flight, and starting a second one would race it into the same resources
+    let (Some(feasible), Some(_)) = (feasible, graph) else {
+        return;
+    };
+
+    if switch {
+        settings.layout = settings.layout.next();
+    }
+    if finer {
+        settings.chunk_size = (settings.chunk_size * 0.5).max(32.0);
+    }
+    if coarser {
+        settings.chunk_size *= 2.0;
+    }
+    if thinner {
+        settings.edge_budget = (settings.edge_budget / 2).max(1);
+    }
+    if denser {
+        // no ceiling: past the busiest chunk's size this is simply "no decimation"
+        settings.edge_budget *= 2;
+    }
+
+    for chunk in &chunks {
+        commands.entity(chunk).despawn();
+    }
+    // removing this is what re-arms `spawn_graph`'s `resource_added` condition, so the
+    // scene gets respawned - and reframed for the new layout's extent - when this lands
+    commands.remove_resource::<ConstellationGraph>();
+    spawn_build_task(&mut commands, &feasible.0, *settings, wake.clone());
+}
+
+fn derive_graph(
+    feasible: &solitaire_solver::HashSet<Board>,
+    graph_layout: GraphLayout,
+) -> ConstellationGraph {
     // bucket by peg count. `count_pegs` is the popcount, i.e. exactly the layer index.
     let mut layers: Vec<Vec<Board>> = vec![Vec::new(); MAX_PEGS + 1];
     for board in feasible.iter().copied() {
@@ -477,29 +594,145 @@ fn derive_graph(feasible: &solitaire_solver::HashSet<Board>) -> ConstellationGra
         index,
         edges,
         layer_starts,
-        widest_pegs: 0, // placeholder - `layout` sets this to the real value first thing
+        widest_pegs: 0, // placeholder - the layout pass below sets the real value
     };
-    layout(&mut graph);
-    layout_cube(&mut graph, feasible);
+    match graph_layout {
+        GraphLayout::Hourglass => layout(&mut graph),
+        GraphLayout::Cube => {
+            // `layout` is otherwise the one that fills this in, and it is part of the
+            // graph rather than of either layout
+            graph.widest_pegs = graph.find_widest_pegs();
+            layout_cube(&mut graph);
+        }
+    }
     graph
 }
 
-/// Target node count per spatial chunk - see [`build_meshes`].
+/// Target primitive count per spatial chunk - see [`build_meshes`].
 ///
-/// A layer's grid resolution is derived from this (`sqrt(layer size / this)`), so
+/// A grid's resolution is derived from this and the number of things going into it, so
 /// thin layers (a handful of nodes) get a single chunk - same as the old one-mesh-
-/// per-layer approach - while the widest layer gets on the order of `68_326 / 1024
-/// ≈ 66` chunks. Small enough that orbiting close to one part of a dense layer only
-/// pulls a handful of chunks into the frustum, large enough that the chunk count
-/// stays well below the per-node-entity counts this replaced.
-const TARGET_CHUNK_NODES: f32 = 1024.0;
+/// per-layer approach - while a dense layer gets many. Small enough that orbiting close
+/// to one part of a dense layer only pulls a handful of chunks into the frustum, large
+/// enough that the chunk count stays well below the per-node-entity counts this
+/// replaced.
+///
+/// This is a real trade in *both* directions, which is why it is a [`ChunkSize`] resource
+/// rather than only a constant: every chunk is a separate entity in a sorted render phase
+/// (see [`build_edge_meshes`]), so finer chunking buys culling and pays draw calls. At the
+/// full graph, 8.58M edges at this size come out as ~7.5k edge chunks, i.e. ~7.5k draw
+/// calls a frame - and the viewpoint that actually hurts is the one where culling rejects
+/// almost nothing, so there the draw calls are pure loss. Sweep it with `[` and `]`.
+const DEFAULT_CHUNK_SIZE: f32 = 1024.0;
 
-/// Maps a world position to its grid cell within a disc of the given `radius`,
-/// split into a `grid * grid` array of cells - see [`build_meshes`].
-fn chunk_of(pos: Vec3, radius: f32, grid: usize) -> (i32, i32) {
-    let cell = (2.0 * radius / grid as f32).max(f32::EPSILON);
-    let to_cell = |v: f32| (((v + radius) / cell).floor() as i32).clamp(0, grid as i32 - 1);
-    (to_cell(pos.x), to_cell(pos.z))
+/// Default [`BuildSettings::edge_budget`] - the edge count above which a chunk gets
+/// thinned. See [`decimation_level`].
+///
+/// Set well under [`DEFAULT_CHUNK_SIZE`] on purpose: the chunk grid is sized so a layer
+/// *averages* that many edges per cell, so a budget equal to it would only touch the
+/// above-average cells and leave the total roughly where it started. The edge pass needs
+/// to lose most of its 8.58M primitives, not trim the tail.
+const DEFAULT_EDGE_BUDGET: usize = 128;
+
+/// Everything a graph (re)build is parameterized by - see [`rebuild_on_key`], which
+/// sweeps both at runtime so they can be A/B'd from one session at one viewpoint rather
+/// than across rebuilds.
+#[derive(Resource, Clone, Copy, Debug)]
+struct BuildSettings {
+    layout: GraphLayout,
+    /// target primitives per chunk - see [`DEFAULT_CHUNK_SIZE`]
+    chunk_size: f32,
+    /// max edges kept per chunk before [`decimation_level`] starts thinning it
+    edge_budget: usize,
+}
+
+impl Default for BuildSettings {
+    fn default() -> Self {
+        Self {
+            layout: GraphLayout::default(),
+            chunk_size: DEFAULT_CHUNK_SIZE,
+            edge_budget: DEFAULT_EDGE_BUDGET,
+        }
+    }
+}
+
+/// Bounding box of a set of positions. Empty input gives an inverted (non-finite) box,
+/// which [`ChunkGrid::new`] treats as a single cell.
+fn aabb_of(positions: impl IntoIterator<Item = Vec3>) -> (Vec3, Vec3) {
+    positions.into_iter().fold(
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+        |(min, max), p| (min.min(p), max.max(p)),
+    )
+}
+
+/// The box one chunk group actually occupies, cut into `divisions` cells per axis.
+///
+/// Derived from the positions themselves rather than from [`layer_radius`], which is
+/// what makes it hold under either layout - see [`GraphLayout`]. The disc-shaped version
+/// this replaced baked in [`layout`]'s geometry (each layer a flat disc on XZ, `y` fixed
+/// by peg count) and *folded everything outside that disc into the rim cells*. Under
+/// [`layout_cube`], where a layer's `y` varies as widely as its `x` and `z` and the
+/// coordinates have nothing to do with `layer_radius`, that left most of a layer sharing
+/// a handful of cells whose bounding boxes spanned the whole shape - so the frustum
+/// culling this chunking exists to enable had very little left to reject.
+#[derive(Clone, Copy, Default)]
+struct ChunkGrid {
+    min: Vec3,
+    cell: Vec3,
+    divisions: IVec3,
+}
+
+impl ChunkGrid {
+    /// Cuts `min..max` into roughly cube-shaped cells, aiming for `target` positions in
+    /// each - see [`ChunkSize`].
+    ///
+    /// Divisions are spread over the axes in proportion to the extent along each, so a
+    /// layout that keeps a layer flat gets a 2d grid and one that doesn't gets a 3d one,
+    /// with no special-casing either way: asking for `n_i` proportional to `extent_i`
+    /// with the product equal to the wanted cell count gives `n_i = k * extent_i` for
+    /// `k = (cells / product of extents)^(1/axes)`. Axes with no extent get one
+    /// division and are left out of that product, which is what stops a flat layer from
+    /// collapsing `k` to zero.
+    fn new(min: Vec3, max: Vec3, count: usize, target: f32) -> Self {
+        let extent = (max - min).max(Vec3::ZERO);
+        let spread: Vec<usize> = (0..3).filter(|&i| extent[i] > f32::EPSILON).collect();
+        let product: f32 = spread.iter().map(|&i| extent[i]).product();
+        let cells = (count as f32 / target).ceil().max(1.0);
+        let k = if spread.is_empty() || !product.is_normal() {
+            0.0
+        } else {
+            (cells / product).powf(1.0 / spread.len() as f32)
+        };
+
+        let mut grid = Self {
+            min,
+            // 1.0 rather than 0.0 on the flat axes: `cell_of` divides by this, and a
+            // zero-extent axis has to floor to cell 0 rather than produce a NaN
+            cell: Vec3::ONE,
+            divisions: IVec3::ONE,
+        };
+        for i in spread {
+            grid.divisions[i] = ((k * extent[i]).round() as i32).max(1);
+            grid.cell[i] = extent[i] / grid.divisions[i] as f32;
+        }
+        grid
+    }
+
+    /// Which cell `pos` falls in.
+    ///
+    /// The clamp is a boundary guard - a position exactly at `max`, or float error at a
+    /// cell edge - not the wholesale fold-in the disc version did. Edge midpoints, which
+    /// genuinely can sit outside a node layer's box, get their own grid instead; see
+    /// [`build_edge_meshes`].
+    fn cell_of(&self, pos: Vec3) -> IVec3 {
+        let raw = (pos - self.min) / self.cell;
+        IVec3::new(
+            raw.x.floor() as i32,
+            raw.y.floor() as i32,
+            raw.z.floor() as i32,
+        )
+        .clamp(IVec3::ZERO, self.divisions - IVec3::ONE)
+    }
 }
 
 /// Merges nodes and edges into per-chunk meshes - see [`GraphMeshes`].
@@ -561,7 +794,7 @@ fn chunk_of(pos: Vec3, radius: f32, grid: usize) -> (i32, i32) {
 /// equal, which is the signature of a fill-rate (pixels shaded), not vertex-count or
 /// CPU, bottleneck. A real fix from here would have to reduce pixels touched per
 /// visible edge (distance-based fade/thinning, e.g.), not improve what's culled.
-fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
+fn build_meshes(graph: &ConstellationGraph, settings: BuildSettings) -> GraphMeshes {
     let sphere = node_mesh(NODE_RADIUS, 0);
     let local_positions = sphere
         .attribute(Mesh::ATTRIBUTE_POSITION)
@@ -570,22 +803,27 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
         .unwrap();
     let local_indices: Vec<u32> = sphere.indices().unwrap().iter().map(|i| i as u32).collect();
 
-    let (layer_grid, layer_rad, node_pegs, node_chunk) =
-        chunk_layout(&graph.nodes, &graph.layer_starts);
-
-    let mut node_buckets: std::collections::HashMap<(usize, i32, i32), Vec<usize>> =
-        std::collections::HashMap::new();
+    // One grid per layer, sized from that layer's own positions, so each chunk mesh
+    // gets a tight bounding box regardless of which layout produced them.
+    let mut nodes = Vec::new();
     for pegs in 1..=MAX_PEGS {
-        for node in graph.layer(pegs) {
-            node_buckets
-                .entry((pegs, node_chunk[node].0, node_chunk[node].1))
+        let layer = graph.layer(pegs);
+        if layer.is_empty() {
+            continue;
+        }
+        let (min, max) = aabb_of(layer.clone().map(|i| graph.nodes[i]));
+        let grid = ChunkGrid::new(min, max, layer.len(), settings.chunk_size);
+
+        let mut buckets: std::collections::HashMap<IVec3, Vec<usize>> =
+            std::collections::HashMap::new();
+        for node in layer {
+            buckets
+                .entry(grid.cell_of(graph.nodes[node]))
                 .or_default()
                 .push(node);
         }
-    }
-    let nodes = node_buckets
-        .into_iter()
-        .map(|((pegs, _, _), bucket)| {
+
+        for bucket in buckets.into_values() {
             let mut positions = Vec::with_capacity(bucket.len() * local_positions.len());
             let mut indices = Vec::with_capacity(bucket.len() * local_indices.len());
             for node in bucket {
@@ -604,104 +842,161 @@ fn build_meshes(graph: &ConstellationGraph) -> GraphMeshes {
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
             mesh.insert_indices(Indices::U32(indices));
-            (pegs, mesh)
-        })
-        .collect();
-
-    let edges = build_edge_meshes(
-        &graph.nodes,
-        &node_pegs,
-        &layer_rad,
-        &layer_grid,
-        &graph.edges,
-    );
-
-    GraphMeshes { nodes, edges }
-}
-
-/// Grid resolution, disc radius, and (peg count, chunk coordinate) per node - the
-/// setup [`build_meshes`] needs to chunk both nodes and edges consistently. Recomputing
-/// this is cheap (`O(nodes)`), so [`prune_unreachable_edges`] just redoes it from its
-/// own cloned `nodes`/`layer_starts` rather than needing a whole `ConstellationGraph`.
-#[allow(clippy::type_complexity)]
-fn chunk_layout(
-    nodes: &[Vec3],
-    layer_starts: &[u32],
-) -> (
-    [usize; MAX_PEGS + 1],
-    [f32; MAX_PEGS + 1],
-    Vec<usize>,
-    Vec<(i32, i32)>,
-) {
-    let layer = |pegs: usize| layer_starts[pegs] as usize..layer_starts[pegs + 1] as usize;
-
-    let mut layer_grid = [1usize; MAX_PEGS + 1];
-    let mut layer_rad = [0.0f32; MAX_PEGS + 1];
-    for pegs in 1..=MAX_PEGS {
-        let count = layer(pegs).len();
-        layer_grid[pegs] = ((count as f32 / TARGET_CHUNK_NODES).sqrt().ceil() as usize).max(1);
-        layer_rad[pegs] = layer_radius(count);
-    }
-
-    let mut node_pegs = vec![0usize; nodes.len()];
-    let mut node_chunk = vec![(0i32, 0i32); nodes.len()];
-    for pegs in 1..=MAX_PEGS {
-        for node in layer(pegs) {
-            node_pegs[node] = pegs;
-            node_chunk[node] = chunk_of(nodes[node], layer_rad[pegs], layer_grid[pegs]);
+            nodes.push((pegs, mesh));
         }
     }
 
-    (layer_grid, layer_rad, node_pegs, node_chunk)
+    let edges = build_edge_meshes(&graph.nodes, &graph.layer_starts, &graph.edges, settings);
+
+    GraphMeshes { nodes, edges }
 }
 
 /// Merges a set of edges into per-chunk line-list meshes - shared by [`build_meshes`]
 /// (the full edge set) and [`prune_unreachable_edges`] (whatever subset of it is still
 /// reachable from the current board).
 ///
-/// Chunked by each edge's own midpoint, not the `from` node's chunk: an edge's `to`
-/// node sits one layer down, in a differently-sized (usually narrower) disc, and the
-/// barycentric layout does not keep it directly "under" its predecessors - so a
-/// `from`-only chunk key produces bounding boxes that balloon to cover wherever this
-/// chunk's edges' `to` ends happen to land, often most of the layer below. Chunking by
-/// the midpoint instead groups edges by where they actually are in space, which is
-/// what makes the bounding box - and therefore frustum culling - tight. Confirmed by
-/// measurement: before this change, 87% of edge chunks (95% of all edges) were still
-/// "visible" from a single fixed viewpoint at the narrow neck just below the widest
-/// layer - the chunking was barely culling anything there.
+/// Chunked by each edge's own midpoint, in a grid built from the *midpoints'* bounding
+/// box rather than either endpoint layer's: an edge's `to` node sits one layer down, and
+/// neither layout keeps it directly "under" its predecessors, so a `from`-only chunk key
+/// produces boxes that balloon to cover wherever this chunk's `to` ends happen to land.
+/// Confirmed by measurement when this was `from`-keyed: 87% of edge chunks (95% of all
+/// edges) were still "visible" from a single fixed viewpoint at the narrow neck just
+/// below the widest layer - the chunking was barely culling anything there.
+///
+/// Two passes over each layer's edges rather than one: the grid needs the bounding box
+/// before it can place anything, and at this scale keeping every midpoint around to
+/// avoid recomputing it would cost more memory than the meshes themselves.
+///
+/// Note every chunk is a separate entity in [`Transparent3d`], which is a *sorted* phase
+/// that only batches adjacent items - so each one costs its own draw call, sort key and
+/// visibility check, and finer chunking is not free even where it culls well. Additive
+/// blending is order-independent, so that sorting buys the edges nothing at all.
+///
+/// [`Transparent3d`]: bevy::core_pipeline::core_3d::Transparent3d
 fn build_edge_meshes(
     nodes: &[Vec3],
-    node_pegs: &[usize],
-    layer_rad: &[f32; MAX_PEGS + 1],
-    layer_grid: &[usize; MAX_PEGS + 1],
+    layer_starts: &[u32],
     edges: &[(u32, u32)],
-) -> Vec<(usize, Mesh)> {
-    let mut edge_buckets: std::collections::HashMap<(usize, i32, i32), Vec<(u32, u32)>> =
-        std::collections::HashMap::new();
-    for &(from, to) in edges {
-        let pegs = node_pegs[from as usize];
-        let midpoint = (nodes[from as usize] + nodes[to as usize]) * 0.5;
-        let (cx, cz) = chunk_of(midpoint, layer_rad[pegs], layer_grid[pegs]);
-        edge_buckets
-            .entry((pegs, cx, cz))
-            .or_default()
-            .push((from, to));
-    }
-    edge_buckets
-        .into_iter()
-        .map(|((pegs, _, _), bucket)| {
+    settings: BuildSettings,
+) -> Vec<EdgeChunk> {
+    let midpoint = |(from, to): (u32, u32)| (nodes[from as usize] + nodes[to as usize]) * 0.5;
+    let mut chunks = Vec::new();
+    let mut kept_total = 0usize;
+    let mut busiest = 0usize;
+    let mut by_level = [0usize; MAX_DECIMATION_LEVEL as usize + 1];
+
+    for pegs in 1..=MAX_PEGS {
+        let layer = layer_starts[pegs] as usize..layer_starts[pegs + 1] as usize;
+        let slice = edges_from(edges, layer);
+        if slice.is_empty() {
+            continue;
+        }
+
+        let (min, max) = aabb_of(slice.iter().copied().map(midpoint));
+        let grid = ChunkGrid::new(min, max, slice.len(), settings.chunk_size);
+
+        let mut buckets: std::collections::HashMap<IVec3, Vec<(u32, u32)>> =
+            std::collections::HashMap::new();
+        for &edge in slice {
+            buckets
+                .entry(grid.cell_of(midpoint(edge)))
+                .or_default()
+                .push(edge);
+        }
+
+        for bucket in buckets.into_values() {
+            busiest = busiest.max(bucket.len());
+            let level = decimation_level(bucket.len(), settings.edge_budget);
+            by_level[level as usize] += 1;
+
             let mut positions = Vec::with_capacity(bucket.len() * 2);
             for (from, to) in bucket {
+                if !survives(from, to, level) {
+                    continue;
+                }
                 positions.push(nodes[from as usize].to_array());
                 positions.push(nodes[to as usize].to_array());
             }
-            let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)
-                .with_removed_attribute(Mesh::ATTRIBUTE_NORMAL)
-                .with_removed_attribute(Mesh::ATTRIBUTE_UV_0);
+            if positions.is_empty() {
+                continue;
+            }
+            kept_total += positions.len() / 2;
+
+            let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            (pegs, mesh)
-        })
-        .collect()
+            chunks.push(EdgeChunk { pegs, level, mesh });
+        }
+    }
+
+    info!(
+        "edges: {} -> {} kept ({:.1}%), busiest chunk {busiest}, chunks per decimation \
+         level {by_level:?}",
+        edges.len(),
+        kept_total,
+        100.0 * kept_total as f32 / edges.len().max(1) as f32,
+    );
+    chunks
+}
+
+/// One decimated edge chunk. `level` picks the material, whose brightness compensates for
+/// how much of the chunk was thrown away - see [`edge_material`].
+struct EdgeChunk {
+    pegs: usize,
+    level: u32,
+    mesh: Mesh,
+}
+
+/// Cap on how far one chunk may be decimated, i.e. the brightest a surviving edge may be
+/// made.
+///
+/// Compensation multiplies [`EDGE_ALPHA`] by `2^level`, so at 0.02 this bottoms out
+/// around 32x (0.64) before a lone strand starts reading as a solid bright line instead
+/// of one thread of a haze. Past it the very densest chunks stop being energy-preserving
+/// and genuinely dim - which, for regions that were saturating anyway, is the right way
+/// to run out of road.
+const MAX_DECIMATION_LEVEL: u32 = 5;
+
+/// How hard to thin a chunk holding `count` edges: keep `1 / 2^level` of them, chosen so
+/// no chunk keeps more than about `budget`.
+///
+/// Density-adaptive rather than a flat fraction, which is the whole point. A uniform
+/// keep-fraction is measurably effective (it is the only thing that moved the framerate)
+/// but visibly wrong: thinning a dense tangle by 4x is statistically invisible because
+/// what you see is the sum of thousands of overlapping strands, while thinning a sparse
+/// region by 4x removes lines you were looking at individually. Bounding *per chunk*
+/// leaves sparse chunks completely untouched - `count <= budget` gives level 0 - and
+/// spends the decimation only where there is enough overlap to hide it.
+fn decimation_level(count: usize, budget: usize) -> u32 {
+    let budget = budget.max(1);
+    if count <= budget {
+        return 0;
+    }
+    // ceil(log2(count / budget)), via the bit length of the ratio
+    let ratio = count.div_ceil(budget) as u64;
+    let level = u64::BITS - (ratio - 1).leading_zeros();
+    level.min(MAX_DECIMATION_LEVEL)
+}
+
+/// Whether an edge survives decimation at `level`, i.e. is in the `1 / 2^level` of edges
+/// whose hash starts with `level` zero bits.
+///
+/// Hashed rather than "keep every n-th": the edge list is sorted by endpoint index, which
+/// correlates strongly with position under either layout, so a stride would sample the
+/// graph on a lattice and alias into visible structure. Being a pure function of the
+/// endpoints also keeps the choice stable across rebuilds, so toggling some other setting
+/// does not reshuffle which edges are drawn.
+fn survives(from: u32, to: u32, level: u32) -> bool {
+    level == 0 || hash32(from ^ hash32(to)) >> (u32::BITS - level) == 0
+}
+
+/// Chris Wellons' `lowbias32`.
+fn hash32(mut h: u32) -> u32 {
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    h
 }
 
 /// Radius of the disc a layer of `count` nodes is spread over.
@@ -1039,32 +1334,44 @@ fn spans_two_dimensions(
     min_eigenvalue / trace > 1e-4
 }
 
-fn layout_cube(graph: &mut ConstellationGraph, feasible: &solitaire_solver::HashSet<Board>) {
-    for board in feasible {
-        if let Some(&idx) = graph.index.get(board) {
-            // const WIDTH: u64 = 52015;
-            const WIDTH: u64 = 2048;
-            // const WIDTH: u64 = 92682;
-            const WIDTH_SQ: u64 = WIDTH * WIDTH;
-            let compr = board.to_compressed_repr();
-            // let compr = board.0;
-            // const POW_2_47: u64 = 1 << 47;
-            // let compr: u64 = rand::random_range(0..POW_2_47);
+/// Plots each board's compressed representation straight into a cube - the
+/// [`GraphLayout::Cube`] layout.
+///
+/// Nothing here looks at the edges: this shows the shape of the *key space*
+/// (`Board::to_compressed_repr` read as three base-`WIDTH` digits) rather than the move
+/// structure [`layout`] draws, which is why both are kept.
+///
+/// Iterates `index` rather than the feasible set it used to, which is the same node set
+/// by construction - every node is in `index` - so the "no idx for board" warning that
+/// used to guard the lookup was unreachable and is gone.
+fn layout_cube(graph: &mut ConstellationGraph) {
+    // const WIDTH: u64 = 52015;
+    const WIDTH: u64 = 2048;
+    // const WIDTH: u64 = 92682;
+    const WIDTH_SQ: u64 = WIDTH * WIDTH;
+    const SCALE: f64 = 50.0;
 
-            let layer = compr / WIDTH_SQ;
-            let row = (compr % WIDTH_SQ) / WIDTH;
-            let col = compr % WIDTH;
+    // split borrow: writing `nodes` while reading `index`, both fields of `graph`
+    let (nodes, index) = (&mut graph.nodes, &graph.index);
+    for (board, &idx) in index {
+        let compr = board.to_compressed_repr();
+        // let compr = board.0;
+        // const POW_2_47: u64 = 1 << 47;
+        // let compr: u64 = rand::random_range(0..POW_2_47);
 
-            // let layer = 0;
-            // let row = compr / WIDTH;
-            // let col = compr % WIDTH;
+        let layer = compr / WIDTH_SQ;
+        let row = (compr % WIDTH_SQ) / WIDTH;
+        let col = compr % WIDTH;
 
-            graph.nodes[idx as usize].y = (layer as f64 / 50.) as f32;
-            graph.nodes[idx as usize].z = (row as f64 / 50.) as f32;
-            graph.nodes[idx as usize].x = (col as f64 / 50.) as f32;
-        } else {
-            warn!("no idx for board {board:?}!");
-        }
+        // let layer = 0;
+        // let row = compr / WIDTH;
+        // let col = compr % WIDTH;
+
+        nodes[idx as usize] = Vec3::new(
+            (col as f64 / SCALE) as f32,
+            (layer as f64 / SCALE) as f32,
+            (row as f64 / SCALE) as f32,
+        );
     }
 }
 
@@ -1091,7 +1398,8 @@ fn spawn_graph(
     // one material per peg count, shared across that layer's chunks - many chunks
     // would otherwise each add an identical material asset
     let mut node_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
-    let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
+    let mut edge_materials: std::collections::HashMap<(usize, u32), Handle<GraphMaterial>> =
+        std::collections::HashMap::new();
 
     // `mem::take` rather than borrowing: these meshes are merged megabytes-large
     // buffers, and moving them into `Assets<Mesh>` avoids cloning that data around
@@ -1100,15 +1408,20 @@ fn spawn_graph(
             .entry(pegs)
             .or_insert_with(|| materials.add(GraphMaterial::opaque(layer_color(pegs))))
             .clone();
-        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material)));
+        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), GraphChunk));
     }
 
-    for (pegs, mesh) in std::mem::take(&mut graph_meshes.edges) {
+    for EdgeChunk { pegs, level, mesh } in std::mem::take(&mut graph_meshes.edges) {
         let material = edge_materials
-            .entry(pegs)
-            .or_insert_with(|| materials.add(edge_material(pegs)))
+            .entry((pegs, level))
+            .or_insert_with(|| materials.add(edge_material(pegs, level)))
             .clone();
-        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), EdgeMesh));
+        commands.spawn((
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material),
+            EdgeMesh,
+            GraphChunk,
+        ));
     }
 
     commands.remove_resource::<GraphMeshes>();
@@ -1145,6 +1458,7 @@ fn prune_unreachable_edges(
     mut commands: Commands,
     graph: Option<Res<ConstellationGraph>>,
     board: Res<CurrentBoard>,
+    settings: Res<BuildSettings>,
     wake: Res<EventLoopProxyWrapper>,
 ) {
     let Some(graph) = graph else { return };
@@ -1157,6 +1471,7 @@ fn prune_unreachable_edges(
         return;
     };
 
+    let settings = *settings;
     let nodes = graph.nodes.clone();
     let edges = graph.edges.clone();
     let layer_starts = graph.layer_starts.clone();
@@ -1178,8 +1493,7 @@ fn prune_unreachable_edges(
             pruned.len()
         );
 
-        let (layer_grid, layer_rad, node_pegs, _node_chunk) = chunk_layout(&nodes, &layer_starts);
-        let edge_meshes = build_edge_meshes(&nodes, &node_pegs, &layer_rad, &layer_grid, &pruned);
+        let edge_meshes = build_edge_meshes(&nodes, &layer_starts, &pruned, settings);
 
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
@@ -1191,18 +1505,26 @@ fn prune_unreachable_edges(
                 world.despawn(old_entity);
             }
 
-            let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
-            for (pegs, mesh) in edge_meshes {
+            let mut edge_materials: std::collections::HashMap<
+                (usize, u32),
+                Handle<GraphMaterial>,
+            > = std::collections::HashMap::new();
+            for EdgeChunk { pegs, level, mesh } in edge_meshes {
                 let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
                 let material = edge_materials
-                    .entry(pegs)
+                    .entry((pegs, level))
                     .or_insert_with(|| {
                         world
                             .resource_mut::<Assets<GraphMaterial>>()
-                            .add(edge_material(pegs))
+                            .add(edge_material(pegs, level))
                     })
                     .clone();
-                world.spawn((Mesh3d(mesh_handle), MeshMaterial3d(material), EdgeMesh));
+                world.spawn((
+                    Mesh3d(mesh_handle),
+                    MeshMaterial3d(material),
+                    EdgeMesh,
+                    GraphChunk,
+                ));
             }
 
             world.entity_mut(entity).remove::<BackgroundTask>();
@@ -1219,8 +1541,12 @@ fn layer_color(pegs: usize) -> Color {
     Color::hsl(360.0 * (1.0 - t), 0.75, 0.55)
 }
 
-fn edge_material(pegs: usize) -> GraphMaterial {
-    GraphMaterial::additive(layer_color(pegs), EDGE_ALPHA)
+/// Brightness scaled by `2^level` to compensate for the `1 / 2^level` of the chunk that
+/// [`decimation_level`] threw away. Additive blending is linear, so this leaves the
+/// expected accumulated brightness where it was and only adds grain - which is what makes
+/// decimation a knob rather than a compromise.
+fn edge_material(pegs: usize, level: u32) -> GraphMaterial {
+    GraphMaterial::additive(layer_color(pegs), EDGE_ALPHA * (1u32 << level) as f32)
 }
 
 /// Moves the marker sphere onto the node for the board the player is on.
@@ -1243,8 +1569,11 @@ fn highlight_current(
 
 /// Left-drag orbits, scroll zooms, right-drag pans.
 ///
-/// The app is reactive (`WinitSettings::desktop_app`), so every change has to ask for
-/// a redraw or the view freezes until some other input happens to wake it.
+/// The [`RequestRedraw`] here (and in the other camera systems) is left over from when
+/// `WinitSettings::desktop_app` made the app reactive; it is commented out in
+/// `window.rs`, so the loop is continuous and these are redundant rather than load-
+/// bearing. Kept because reactive mode is worth having back for a scene this expensive -
+/// but note that while measuring, continuous is what you want.
 fn orbit_camera(
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
