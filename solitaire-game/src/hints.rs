@@ -13,7 +13,7 @@ impl Plugin for HintsPlugin {
         app.add_systems(
             Update,
             draw_possible_moves.run_if(
-                resource_exists::<ShowHints>.and(resource_exists::<FeasibleConstellations>),
+                resource_exists::<ShowHints>.and_then(resource_exists::<FeasibleConstellations>),
             ),
         );
     }

@@ -70,11 +70,11 @@ impl Plugin for StatsPlugin {
             Update,
             update_stats.run_if(
                 resource_added::<FeasibleConstellations>
-                    .or(resource_added::<RandomMoveChances>)
-                    .or(resource_added::<UniqueSolutions>)
-                    .or(resource_changed::<PossibleUniqueSolutions>)
-                    .or(resource_added::<UniquePaths>)
-                    .or(resource_changed::<CurrentBoard>),
+                    .or_else(resource_added::<RandomMoveChances>)
+                    .or_else(resource_added::<UniqueSolutions>)
+                    .or_else(resource_changed::<PossibleUniqueSolutions>)
+                    .or_else(resource_added::<UniquePaths>)
+                    .or_else(resource_changed::<CurrentBoard>),
             ),
         );
         app.add_observer(update_next_move_chance);
