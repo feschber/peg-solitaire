@@ -33,19 +33,39 @@ use crate::Board;
 /// number of bits in `Board::to_compressed_repr`'s output.
 const KEY_BITS: usize = Board::SLOTS;
 
-/// Largest number of keys any single round can produce: every board in a BFS round
-/// has the same peg count `k`, so its keys are not all `2^KEY_BITS` patterns but
-/// only the `C(33, k)` with popcount `k`, and `C(33, 16) = C(33, 17)` is the peak.
+/// Largest number of keys any single round can produce.
 ///
-/// This is what the bitmap is sized for, indexed by [`DenseKeySet::index`] rather
-/// than by the raw key - 139 MiB instead of 1 GiB, and a round with fewer pegs uses
-/// only a low prefix of it. See the module docs for what that buys.
-const MAX_LAYER_KEYS: usize = 1_166_803_110;
+/// Two independent constraints cut this down from `2^KEY_BITS`:
+///
+/// - every board in a BFS round has the same peg count `k`, so only the `C(33, k)` patterns
+///   with popcount `k` can occur, and `C(33, 16) = C(33, 17) = 1_166_803_110` is the peak;
+/// - every board the solver stores carries [`Board::INVARIANT_TARGET`] (see there), which is
+///   four GF(2) conditions and so admits one pattern in 16.
+///
+/// They are independent - one is a popcount, the other is linear - and compose almost
+/// exactly: measured layer by layer, `popcount and invariant` comes to `C(33, k) / 16` to
+/// within 0.01% for every `k` from 12 up, peaking at 72_922_839. Summed over all peg counts
+/// the invariant admits exactly `2^29` boards, which is the same statement from the other
+/// side.
+///
+/// This is what the bitmap is sized for, indexed by [`DenseKeySet::index`] rather than by the
+/// raw key: 8.7 MiB against the 139 MiB the popcount bound alone gives, and a round with fewer
+/// pegs uses only a low prefix of it. `examples/hamming_neighbors.rs` derives and verifies both
+/// bounds.
+///
+/// It buys memory, not speed. Measured over interleaved runs of `--repeat 5 calculate-all`,
+/// peak RSS falls from 206 MB to 157 MB - the 49 MB is the bitmap's *touched* footprint going
+/// from ~58 MB to ~8.7 MB - while the end-to-end time is unchanged within noise (paired
+/// medians 104.6/112.7/108.7 ms against 105.0/106.8/107.4 ms, distributions overlapping).
+/// Fitting the map in L3 was the hoped-for second win and it did not materialise, which fits
+/// what the prefetch ring in `feasible.rs`'s generator already implies: the DRAM latency was
+/// being hidden before this, so removing it had nothing left to save.
+const MAX_LAYER_KEYS: usize = 72_922_839;
 /// words covered by one summary word, i.e. one unit of the bulk operations below.
 /// Padding the bitmap up to a multiple of this keeps every chunk they take full,
 /// so none of them need a partial-chunk case.
 const CHUNK_WORDS: usize = BLOCK_WORDS * 64;
-/// one bit per rankable key, padded as above -> ~139 MiB.
+/// one bit per rankable key, padded as above -> ~8.7 MiB.
 const NUM_WORDS: usize = MAX_LAYER_KEYS.div_ceil(64).next_multiple_of(CHUNK_WORDS);
 
 /// bits of a key handled by the low half of the two-table rank; the high half gets
@@ -102,7 +122,7 @@ const HIGH_ENTRIES: usize = 1 << (KEY_BITS as u32 - LOW_BITS);
 /// as the next `hint`.
 fn unindex(
     high_cum: &[u32],
-    low_unrank: &[Vec<u16>],
+    low_unrank: &[Vec<Vec<u16>>],
     pegs: usize,
     index: u64,
     hint: usize,
@@ -120,9 +140,13 @@ fn unindex(
         used <= pegs,
         "index {index} decodes to a prefix with more pegs than the layer holds"
     );
-    let low = low_unrank[pegs - used][(index - high_cum[h] as u64) as usize];
+    // same reasoning as `retarget`: this prefix's keys are exactly those whose low half
+    // carries the state the prefix is missing
+    let wanted = (Board::invariant_state((h as u64) << LOW_BITS) ^ Board::INVARIANT_TARGET) as usize;
+    let low = low_unrank[pegs - used][wanted][(index - high_cum[h] as u64) as usize];
     let key = ((h as u64) << LOW_BITS) | low as u64;
     debug_assert_eq!(key.count_ones() as usize, pegs);
+    debug_assert_eq!(Board::invariant_state(key), Board::INVARIANT_TARGET);
     (key, h)
 }
 
@@ -260,18 +284,29 @@ fn disable_transparent_hugepages(_region: &[AtomicU64]) {}
 /// second instance of to store *ranks* instead of boards - see the note on
 /// `feasible.rs`'s `intersect_chunk` for why that was measured and dropped.
 pub(crate) struct LayerRanks {
-    /// `low_rank[l]` = how many 16-bit values below `l` share its popcount.
-    /// Independent of the layer, so built once.
+    /// `low_rank[l]` = how many 16-bit values below `l` share both its popcount *and* its
+    /// invariant state. Independent of the layer, so built once.
+    ///
+    /// Narrowing the class from popcount alone to popcount-and-state is the whole of the
+    /// invariant saving, and it costs [`LayerRanks::rank`] nothing: the state is a property of
+    /// `l`, so it is folded into this table at build time and the hot path is the same two
+    /// lookups and an add it always was.
     low_rank: Vec<u16>,
-    /// `low_unrank[j]` = the 16-bit values with popcount `j`, ascending; the inverse
-    /// of `low_rank`, needed only by the unranking direction.
-    low_unrank: Vec<Vec<u16>>,
+    /// `low_unrank[j][state]` = the 16-bit values with popcount `j` and invariant state
+    /// `state`, ascending; the inverse of `low_rank`, needed only by the unranking direction.
+    low_unrank: Vec<Vec<Vec<u16>>>,
+    /// `low_count[j][state]` = `low_unrank[j][state].len()`, kept separately so
+    /// [`Self::retarget`] can read the counts while holding `high_cum` mutably.
+    low_count: [[u32; 16]; LOW_BITS as usize + 1],
     /// `high_cum[h]` = keys below the prefix `h << LOW_BITS` that have this layer's
     /// peg count. Depends on that count, so rebuilt by [`Self::retarget`].
     high_cum: Vec<u32>,
     /// peg count shared by every key of this layer; the ranking is only a bijection
     /// within one such layer.
     pegs: usize,
+    /// how many keys this layer ranks onto, i.e. one past the largest index
+    /// [`Self::rank`] can return. Set by [`Self::retarget`].
+    layer_keys: u64,
 }
 
 impl LayerRanks {
@@ -282,22 +317,36 @@ impl LayerRanks {
         // running counter per popcount *is* the rank, and the position it is pushed
         // to is that rank.
         let mut low_rank = vec![0u16; 1 << LOW_BITS];
-        let mut low_unrank: Vec<Vec<u16>> = (0..=LOW_BITS as usize)
-            .map(|j| Vec::with_capacity(c[LOW_BITS as usize][j] as usize))
+        let mut low_unrank: Vec<Vec<Vec<u16>>> = (0..=LOW_BITS as usize)
+            .map(|j| {
+                // an even split over the 16 states is the right capacity hint, and is what
+                // the counts actually come out at away from the extreme popcounts
+                let per_state = (c[LOW_BITS as usize][j] as usize).div_ceil(16);
+                (0..16).map(|_| Vec::with_capacity(per_state)).collect()
+            })
             .collect();
         for l in 0..(1u32 << LOW_BITS) {
             let j = l.count_ones() as usize;
-            low_rank[l as usize] = low_unrank[j].len() as u16;
-            low_unrank[j].push(l as u16);
+            let state = Board::invariant_state(l as u64) as usize;
+            low_rank[l as usize] = low_unrank[j][state].len() as u16;
+            low_unrank[j][state].push(l as u16);
+        }
+        let mut low_count = [[0u32; 16]; LOW_BITS as usize + 1];
+        for (j, states) in low_unrank.iter().enumerate() {
+            for (state, values) in states.iter().enumerate() {
+                low_count[j][state] = values.len() as u32;
+            }
         }
         Self {
             low_rank,
             low_unrank,
+            low_count,
             high_cum: vec![0u32; HIGH_ENTRIES],
             // no layer yet: `retarget` must run before any key is ranked, and a peg
             // count no board can have makes forgetting it fail the assertions in
             // `rank` rather than silently mis-rank.
             pegs: usize::MAX,
+            layer_keys: 0,
         }
     }
 
@@ -308,16 +357,35 @@ impl LayerRanks {
         // high_cum[h] = keys with this peg count below prefix h. A prefix that has
         // already used more than `pegs` bits, or too few to be completed by the low
         // half, contributes nothing.
+        let counts = self.low_count;
         let mut acc = 0u64;
         for (h, slot) in self.high_cum.iter_mut().enumerate() {
             *slot = acc as u32;
             let used = (h as u64).count_ones() as usize;
             if used <= pegs && pegs - used <= LOW_BITS as usize {
-                acc += c[LOW_BITS as usize][pegs - used];
+                // Only the low halves that complete this prefix *to the target* count: the
+                // state is a XOR, so the low half must carry whatever the prefix is missing.
+                let wanted = Board::invariant_state((h as u64) << LOW_BITS)
+                    ^ Board::INVARIANT_TARGET;
+                acc += u64::from(counts[pegs - used][wanted as usize]);
             }
         }
-        debug_assert_eq!(acc, c[KEY_BITS][pegs], "high_cum must total C(33, pegs)");
+        debug_assert!(
+            acc <= MAX_LAYER_KEYS as u64,
+            "layer {pegs} ranks up to {acc}, past the {MAX_LAYER_KEYS} the bitmap is sized for"
+        );
+        debug_assert!(
+            acc <= c[KEY_BITS][pegs],
+            "layer {pegs} totals {acc}, more than the C(33, {pegs}) keys of that popcount"
+        );
         self.pegs = pegs;
+        self.layer_keys = acc;
+    }
+
+    /// How many keys the current layer ranks onto - the bound [`DenseKeySet::begin_round`]
+    /// checks the bitmap against.
+    pub(crate) fn layer_keys(&self) -> u64 {
+        self.layer_keys
     }
 
     /// Position of `key` within its layer: its rank among the keys of the same
@@ -331,6 +399,12 @@ impl LayerRanks {
             self.pegs,
             "key {key:#x} is not from this layer - its rank would collide with \
              another board's"
+        );
+        debug_assert_eq!(
+            Board::invariant_state(key),
+            Board::INVARIANT_TARGET,
+            "key {key:#x} is outside the invariant subspace the ranking is a bijection on, \
+             so its rank would collide with another board's"
         );
         self.high_cum[(key >> LOW_BITS) as usize] as u64
             + self.low_rank[(key & LOW_MASK) as usize] as u64
@@ -405,13 +479,18 @@ impl DenseKeySet {
     /// costs one scan of the (35 KiB) summary.
     pub(crate) fn begin_round(&mut self, pegs: usize) {
         self.clear();
+        // Bounded against what the layer actually ranks onto rather than against
+        // `C(33, pegs)`: the ranking is a bijection onto the popcount-`pegs` keys that also
+        // carry `Board::INVARIANT_TARGET`, which is a sixteenth of them, and sizing the map
+        // for the larger figure would waste 16x the memory this exists to save. `retarget`
+        // computes the real total as it builds `high_cum`, so ask it afterwards.
+        self.ranks.retarget(pegs);
+        let needed = self.ranks.layer_keys();
         assert!(
-            binomials()[KEY_BITS][pegs] as usize <= NUM_WORDS * 64,
-            "layer of {pegs} pegs needs {} bits, map holds {}",
-            binomials()[KEY_BITS][pegs],
+            needed as usize <= NUM_WORDS * 64,
+            "layer of {pegs} pegs needs {needed} bits, map holds {}",
             NUM_WORDS * 64
         );
-        self.ranks.retarget(pegs);
     }
 
     /// Position of `key` in this round's layer: its rank among the keys of the same
@@ -755,36 +834,81 @@ mod tests {
         (((r ^ v) >> 2) / c) | r
     }
 
+    /// Keys of the `pegs` layer that the ranking actually covers, ascending.
+    ///
+    /// Filtered to [`Board::INVARIANT_TARGET`]: the ranking is a bijection onto those keys
+    /// alone, and `rank` rejects the rest, so a test feeding it arbitrary popcount-`pegs`
+    /// patterns would be exercising an input the solver cannot produce - which is exactly
+    /// what these helpers used to do before the invariant narrowed the layer.
+    fn layer_iter(pegs: usize) -> impl Iterator<Item = u64> {
+        assert!(pegs > 0);
+        let mut v = (1u64 << pegs) - 1;
+        core::iter::from_fn(move || {
+            while v < 1 << KEY_BITS {
+                let key = v;
+                v = next_in_layer(v);
+                if Board::invariant_state(key) == Board::INVARIANT_TARGET {
+                    return Some(key);
+                }
+            }
+            None
+        })
+    }
+
     /// every key of the `pegs` layer, ascending. Only tractable for small `pegs`.
     fn layer_keys(pegs: usize) -> Vec<u64> {
-        assert!(pegs > 0);
-        let mut out = Vec::new();
-        let mut v = (1u64 << pegs) - 1;
-        while v < 1 << KEY_BITS {
-            out.push(v);
-            v = next_in_layer(v);
-        }
-        out
+        layer_iter(pegs).collect()
     }
 
     /// `n` keys of the `pegs` layer, `stride` apart in rank, from the bottom.
     fn layer_sample(pegs: usize, n: usize, stride: usize) -> Vec<u64> {
-        let mut out = Vec::with_capacity(n);
-        let mut v = (1u64 << pegs) - 1;
-        'outer: while out.len() < n {
-            out.push(v);
-            for _ in 0..stride {
-                v = next_in_layer(v);
-                if v >= 1 << KEY_BITS {
-                    break 'outer;
+        layer_iter(pegs).step_by(stride).take(n).collect()
+    }
+
+    /// `ways[i][j][s]` = ways to pick `j` of the positions below `i` whose weights XOR to `s`.
+    fn ways_below() -> Vec<[[u64; 16]; KEY_BITS + 1]> {
+        let mut ways = vec![[[0u64; 16]; KEY_BITS + 1]; KEY_BITS + 1];
+        ways[0][0][0] = 1;
+        for i in 0..KEY_BITS {
+            let w = Board::INVARIANT_WEIGHTS[i] as usize;
+            for j in 0..=KEY_BITS {
+                for state in 0..16 {
+                    ways[i + 1][j][state] = ways[i][j][state]
+                        + if j == 0 { 0 } else { ways[i][j - 1][state ^ w] };
                 }
             }
         }
-        out
+        ways
     }
 
-    /// The textbook rank: sum `C(p, i)` over the set bits, `i` counting from 1. An
-    /// independent implementation of what the two-table form computes.
+    /// Rank of `key` among its layer's *in-subspace* keys, the straightforward way.
+    ///
+    /// The independent reference for [`LayerRanks::rank`]'s two-table form, and the successor
+    /// to `colex_rank`, which counted among all popcount-`pegs` keys and so no longer
+    /// describes what `index` returns. Walks the bits from the top; at each set bit, every
+    /// smaller key agreeing above it has a zero there, so it counts the completions below that
+    /// carry whatever state the prefix still owes the target.
+    fn subspace_rank(key: u64, pegs: usize, ways: &[[[u64; 16]; KEY_BITS + 1]]) -> u64 {
+        let mut rank = 0u64;
+        let mut remaining = pegs;
+        let mut state = 0u8;
+        for i in (0..KEY_BITS).rev() {
+            if key >> i & 1 == 1 {
+                let owed = (Board::INVARIANT_TARGET ^ state) as usize;
+                rank += ways[i][remaining][owed];
+                state ^= Board::INVARIANT_WEIGHTS[i];
+                remaining -= 1;
+            }
+        }
+        rank
+    }
+
+    /// The textbook popcount-only rank: sum `C(p, i)` over the set bits, `i` counting from 1.
+    ///
+    /// No longer what `index` returns - the ranking is a bijection onto the *invariant*
+    /// subspace now, and `subspace_rank` is its reference. Kept because the two are related in
+    /// a way worth pinning: restricting to a subset of the keys can only pull ranks down, so
+    /// the subspace rank must never exceed the popcount rank.
     fn colex_rank(mut key: u64, c: &[[u64; KEY_BITS + 1]; KEY_BITS + 1]) -> u64 {
         let mut rank = 0;
         let mut i = 1;
@@ -803,13 +927,15 @@ mod tests {
         assert_eq!(c[KEY_BITS][1], 33);
         assert_eq!(c[KEY_BITS][2], 528);
         assert_eq!(c[16][8], 12_870);
-        // the sizing constant, and the claim that 16 is the peak layer
-        assert_eq!(c[KEY_BITS][16] as usize, MAX_LAYER_KEYS);
-        assert_eq!(c[KEY_BITS][17] as usize, MAX_LAYER_KEYS);
-        assert_eq!(
-            (0..=KEY_BITS).map(|k| c[KEY_BITS][k]).max().unwrap() as usize,
-            MAX_LAYER_KEYS,
-            "MAX_LAYER_KEYS must bound every layer, or the map is too small"
+        // 16 and 17 are the peak layers before the invariant is taken into account
+        assert_eq!(c[KEY_BITS][16], 1_166_803_110);
+        assert_eq!(c[KEY_BITS][17], 1_166_803_110);
+        // and `MAX_LAYER_KEYS` is now a sixteenth of that rather than that, because the
+        // ranking is a bijection onto the invariant subspace - `layer_sizes_fit_the_map`
+        // pins it against what `retarget` actually produces
+        assert!(
+            (MAX_LAYER_KEYS as u64) < c[KEY_BITS][16],
+            "the invariant must shrink the peak layer, not grow it"
         );
         // and the row must account for the whole key space
         assert_eq!(
@@ -818,15 +944,32 @@ mod tests {
         );
     }
 
+    /// Every layer has to fit the bitmap, and `MAX_LAYER_KEYS` has to be the tightest bound
+    /// on that - too small silently truncates a layer, too large wastes the memory the
+    /// invariant exists to save.
     #[test]
     fn map_holds_every_layer() {
-        let c = binomials();
+        let ways = ways_below();
+        let target = Board::INVARIANT_TARGET as usize;
+        let mut peak = 0u64;
         for pegs in 0..=KEY_BITS {
+            let keys = ways[KEY_BITS][pegs][target];
             assert!(
-                c[KEY_BITS][pegs] <= (NUM_WORDS * 64) as u64,
-                "layer of {pegs} pegs does not fit"
+                keys <= (NUM_WORDS * 64) as u64,
+                "layer of {pegs} pegs needs {keys} bits, map holds {}",
+                NUM_WORDS * 64
             );
+            peak = peak.max(keys);
         }
+        assert_eq!(
+            peak, MAX_LAYER_KEYS as u64,
+            "MAX_LAYER_KEYS must be exactly the peak layer"
+        );
+        // and the layers must partition the invariant subspace: one key in 16, i.e. 2^29
+        assert_eq!(
+            (0..=KEY_BITS).map(|k| ways[KEY_BITS][k][target]).sum::<u64>(),
+            1u64 << 29,
+        );
     }
 
     #[test]
@@ -834,12 +977,19 @@ mod tests {
         // exhaustive for the layers small enough to enumerate: every key must get a
         // distinct index, and together they must cover 0..C(33, pegs) exactly. A
         // collision here would silently merge two boards in the map.
-        let c = binomials();
+        let ways = ways_below();
         for pegs in [1usize, 2, 3] {
             let mut set = DenseKeySet::new();
             set.begin_round(pegs);
             let keys = layer_keys(pegs);
-            assert_eq!(keys.len() as u64, c[KEY_BITS][pegs]);
+            // the layer is the popcount-`pegs` keys carrying the target invariant, which the
+            // independent DP counts the same way `retarget` accumulates it
+            assert_eq!(
+                keys.len() as u64,
+                ways[KEY_BITS][pegs][Board::INVARIANT_TARGET as usize],
+                "enumeration and the DP disagree on the size of layer {pegs}"
+            );
+            assert!(!keys.is_empty(), "layer {pegs} came out empty");
             let mut seen: Vec<u64> = keys.iter().map(|&k| set.index(k)).collect();
             assert!(
                 seen.windows(2).all(|w| w[0] < w[1]),
@@ -849,20 +999,30 @@ mod tests {
             seen.dedup();
             assert_eq!(seen.len(), keys.len(), "indices collide for pegs={pegs}");
             assert_eq!(*seen.first().unwrap(), 0);
-            assert_eq!(*seen.last().unwrap(), c[KEY_BITS][pegs] - 1);
+            assert_eq!(*seen.last().unwrap(), keys.len() as u64 - 1);
         }
     }
 
     #[test]
     fn index_matches_the_textbook_rank_and_round_trips() {
-        let c = binomials();
+        let ways = ways_below();
         for pegs in [1usize, 2, 5, 16, 17, 32, 33] {
             let mut set = DenseKeySet::new();
             set.begin_round(pegs);
+            let total = ways[KEY_BITS][pegs][Board::INVARIANT_TARGET as usize];
             for key in layer_sample(pegs, 500, 977) {
                 let index = set.index(key);
-                assert_eq!(index, colex_rank(key, &c), "pegs={pegs} key={key:#x}");
-                assert!(index < c[KEY_BITS][pegs]);
+                assert_eq!(
+                    index,
+                    subspace_rank(key, pegs, &ways),
+                    "pegs={pegs} key={key:#x}"
+                );
+                assert!(index < total);
+                // dropping 15/16 of the keys can only pull a rank down, never up
+                assert!(
+                    index <= colex_rank(key, &binomials()),
+                    "subspace rank exceeds the popcount rank for {key:#x}"
+                );
                 // both from the bottom and with a hint, since extraction uses hints
                 assert_eq!(set.unindex_key(index, 0).0, key, "round trip from 0");
                 let hint = (key >> LOW_BITS) as usize;
@@ -968,9 +1128,14 @@ mod tests {
             set.summary[block / 64].load(Ordering::Relaxed) & (1u64 << (block % 64)) != 0
         };
         let mut keys = layer_sample(pegs, 8, BLOCK_WORDS * 64 * 37 + 1);
-        // include the extremes of the layer, whose indices are 0 and C(33,pegs)-1
-        keys.push((1u64 << pegs) - 1);
-        keys.push(((1u64 << pegs) - 1) << (KEY_BITS - pegs));
+        // Include the extremes of the layer, whose indices are 0 and total-1. Taken through
+        // `unindex_key` rather than built as the lowest and highest popcount-`pegs` patterns:
+        // those are no longer in the layer, since the ranking now covers only the keys
+        // carrying the target invariant, and walking Gosper's hack to find the real top of a
+        // 72M-key layer is not something a test should do.
+        let total = set.ranks.layer_keys();
+        keys.push(set.unindex_key(0, 0).0);
+        keys.push(set.unindex_key(total - 1, 0).0);
         for key in keys {
             set.set(key);
             assert!(set.test(key), "word bit missing for {key:#x}");
@@ -993,7 +1158,9 @@ mod tests {
         let mut keys = layer_sample(pegs, 300, CHUNK_WORDS * 64 / 7 + 1);
         let straddle = layer_sample(pegs, 2, 1);
         keys.extend(straddle);
-        keys.push((1u64 << pegs) - 1);
+        // the bottom of the layer, i.e. index 0 - see the note in
+        // `word_bit_set_implies_summary_bit_set` on why this is not `(1 << pegs) - 1`
+        keys.push(set.unindex_key(0, 0).0);
         for &k in &keys {
             set.set(k);
         }

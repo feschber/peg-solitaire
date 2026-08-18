@@ -363,6 +363,58 @@ fn test_compressed_repr_matches_portable() {
     }
 }
 
+/// Pins what `keyset.rs` relies on when it ranks keys inside the invariant subspace:
+/// every move preserves both GF(4) invariants, and start and solved agree on their value.
+///
+/// The move half is exhaustive rather than sampled, and cheaply so: a move is an XOR with a
+/// three-cell mask and the invariant is GF(2)-linear, so a move preserves it exactly when the
+/// mask's own state is zero. Checking every mask therefore covers every board any sequence of
+/// moves can reach. `examples/hamming_neighbors.rs` carries the same check for the eight
+/// symmetries, which needs the kernel basis and is too much machinery for here.
+#[test]
+fn test_invariant_target_matches_start_and_solved() {
+    let start = Board(Board::full().0 & !Board::solved().0);
+    assert_eq!(
+        Board::invariant_state(start.to_compressed_repr()),
+        Board::INVARIANT_TARGET,
+        "the start board must carry the target invariant"
+    );
+    assert_eq!(
+        Board::invariant_state(Board::solved().to_compressed_repr()),
+        Board::INVARIANT_TARGET,
+        "the solved board must carry the target invariant"
+    );
+
+    // Every move mask, enumerated from the geometry rather than from a board's legal moves -
+    // no single board offers all of them (a full board has no holes to jump into at all), and
+    // the masks are what the argument is about, not the positions they happen to be legal from.
+    let full = Board::full().0;
+    let on_board = |row: usize, col: usize| row < 7 && col < 7 && full >> (row * 8 + col) & 1 == 1;
+    let mut masks = 0usize;
+    for row in 0..7 {
+        for col in 0..7 {
+            for (dr, dc) in [(0usize, 1usize), (1, 0)] {
+                let cells = [
+                    (row, col),
+                    (row + dr, col + dc),
+                    (row + 2 * dr, col + 2 * dc),
+                ];
+                if !cells.iter().all(|&(r, c)| on_board(r, c)) {
+                    continue;
+                }
+                let mask = cells.iter().fold(0u64, |m, &(r, c)| m | 1 << (r * 8 + c));
+                assert_eq!(
+                    Board::invariant_state(Board(mask).to_compressed_repr()),
+                    0,
+                    "move mask {mask:#x} changes the invariant"
+                );
+                masks += 1;
+            }
+        }
+    }
+    assert_eq!(masks, 38, "the English cross has 38 three-in-a-row triples");
+}
+
 /// Pins the algebraic identity `Board::normalize_after_move` rests on:
 /// `g(board ^ mask) == g(board) ^ g(mask)` for every symmetry `g`, because the
 /// symmetry transforms are GF(2)-linear and a move is an XOR.
@@ -479,6 +531,76 @@ impl Board {
         b.0 |= 0x7 << (5 * Board::REPR + 2);
         b.0 |= 0x7 << (6 * Board::REPR + 2);
         b
+    }
+
+    /// GF(4) weight of each *compressed-key* bit, for the move invariant.
+    ///
+    /// Put GF(4) = {0, 1, w, w^2} with `1 + w + w^2 = 0` and weight cell `(row, col)` by
+    /// `w^(row+col)`. A move touches three consecutive collinear cells, so their exponents
+    /// are consecutive and their weights sum to `w^k (1 + w + w^2) = 0` - and in
+    /// characteristic 2 clearing a peg and filling a hole are the same operation, so
+    /// `XOR of w^(row+col) over the pegs` is *invariant* under every move. Likewise for
+    /// `w^(row-col)`. Each is two bits, packed here as `row+col` in bits 0-1 and `row-col`
+    /// in bits 2-3, so one XOR carries both.
+    ///
+    /// Indexed by compressed-key bit rather than by raw board bit, because that is what
+    /// `keyset.rs` ranks. The two orders agree: `to_compressed_repr` gathers in increasing
+    /// raw bit order, which is row-major over the cross.
+    ///
+    /// `examples/hamming_neighbors.rs` derives this and proves what `keyset.rs` relies on:
+    /// all 38 move masks evaluate to zero and all 8 symmetries map the resulting affine
+    /// subspace onto itself, so every board reachable by moves and normalization - which is
+    /// every board the solver ever stores - carries [`Self::INVARIANT_TARGET`].
+    pub(crate) const INVARIANT_WEIGHTS: [u8; Self::SLOTS] = Self::invariant_weights();
+
+    /// The value [`Self::invariant_state`] takes on every board the solver can reach.
+    ///
+    /// This is the solved board's - a single peg at the centre, compressed bit 16 - and the
+    /// start board's is the same, which is the only reason normalization is safe here: a
+    /// reflection maps `row+col` to `row-col` and so *swaps* the two invariants rather than
+    /// fixing them, and the swap is harmless precisely because both halves are equal.
+    /// `test_invariant_target_matches_start_and_solved` pins that.
+    pub(crate) const INVARIANT_TARGET: u8 = Self::INVARIANT_WEIGHTS[16];
+
+    const fn invariant_weights() -> [u8; Self::SLOTS] {
+        // w^0 = 1, w^1 = w, w^2 = w + 1, as pairs of GF(2) coefficients
+        const POWERS: [u8; 3] = [0b01, 0b10, 0b11];
+        let mut weights = [0u8; Self::SLOTS];
+        let mut index = 0usize;
+        let mut row = 0usize;
+        while row < 7 {
+            // the cross's four short rows carry only the middle three columns
+            let (first, last) = match row {
+                0 | 1 | 5 | 6 => (2usize, 4usize),
+                _ => (0usize, 6usize),
+            };
+            let mut col = first;
+            while col <= last {
+                // `+ 6` instead of a signed subtraction: 6 is a multiple of 3 so it leaves
+                // the residue alone, and it keeps this in `usize` for `const` evaluation
+                weights[index] = POWERS[(row + col) % 3] | (POWERS[(row + 6 - col) % 3] << 2);
+                index += 1;
+                col += 1;
+            }
+            row += 1;
+        }
+        assert!(index == Self::SLOTS, "the cross must have exactly SLOTS cells");
+        weights
+    }
+
+    /// Both GF(4) invariants of a compressed key, packed as in [`Self::INVARIANT_WEIGHTS`].
+    ///
+    /// Accepts a partial key too - `keyset.rs` takes the state of a key's high half alone by
+    /// passing `high << LOW_BITS` - because the weights are indexed absolutely and XOR over
+    /// a subset of the bits is just the state of that subset.
+    pub(crate) fn invariant_state(key: u64) -> u8 {
+        let mut state = 0u8;
+        let mut rest = key;
+        while rest != 0 {
+            state ^= Self::INVARIANT_WEIGHTS[rest.trailing_zeros() as usize];
+            rest &= rest - 1;
+        }
+        state
     }
 
     /// Gathers the 33 in-play cells of the 8x8 board representation down into the
