@@ -15,7 +15,7 @@ impl Plugin for FpsOverlay {
                     target_fps: 120.0,
                 },
                 text_config: TextFont {
-                    font_size: 10.0,
+                    font_size: FontSize::Px(10.0),
                     ..default()
                 },
                 text_color: Color::WHITE,

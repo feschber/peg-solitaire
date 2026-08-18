@@ -19,9 +19,10 @@ struct MoveText(usize);
 
 fn init_text(mut commands: Commands, asset_server: Res<AssetServer>) {
     let latin_modern = asset_server.load("fonts/latinmodern-math.otf");
+    let latin_modern = FontSource::from(latin_modern);
     let small_font = TextFont {
         font: latin_modern.clone(),
-        font_size: 50.0,
+        font_size: FontSize::Px(50.0),
         ..default()
     };
     for i in 0..31 {
@@ -29,7 +30,7 @@ fn init_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             Text2d::new(""),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             small_font.clone(),
-            TextLayout::new_with_justify(Justify::Center),
+            TextLayout::default().with_justify(Justify::Center),
             TextColor::WHITE,
             Anchor::CENTER,
             MoveText(i),

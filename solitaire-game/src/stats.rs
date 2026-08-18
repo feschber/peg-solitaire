@@ -122,19 +122,20 @@ fn update_stats(mut commands: Commands) {
 
 fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
     let latin_modern = asset_server.load("fonts/latinmodern-math.otf");
+    let latin_modern = FontSource::from(latin_modern);
     let large_font = TextFont {
         font: latin_modern.clone(),
-        font_size: 100.0,
+        font_size: FontSize::Px(100.0),
         ..default()
     };
     let medium_font = TextFont {
         font: latin_modern.clone(),
-        font_size: 80.0,
+        font_size: FontSize::Px(80.0),
         ..default()
     };
     let small_font = TextFont {
         font: latin_modern.clone(),
-        font_size: 50.0,
+        font_size: FontSize::Px(50.0),
         ..default()
     };
     commands
@@ -143,7 +144,7 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             Text2d::new("\u{1D4AB}(\u{1D437}) \u{2248} "),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             medium_font.clone(),
-            TextLayout::new_with_justify(Justify::Center),
+            TextLayout::default().with_justify(Justify::Center),
             Anchor::CENTER,
             OverallSuccessRatioText,
         ))
@@ -158,7 +159,7 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             Text2d::new("remaining\nunique solutions\n"),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             small_font.clone(),
-            TextLayout::new_with_justify(Justify::Center),
+            TextLayout::default().with_justify(Justify::Center),
             Anchor::CENTER,
             UniqueSolutionsText,
         ))
@@ -172,7 +173,7 @@ fn add_text(mut commands: Commands, asset_server: Res<AssetServer>) {
             Text2d::new(""),
             Transform::from_scale(Vec3::new(0.005, 0.005, 0.005)),
             large_font.clone(),
-            TextLayout::new_with_justify(Justify::Center),
+            TextLayout::default().with_justify(Justify::Center),
             Anchor::CENTER,
             NextMoveChanceText,
         ))

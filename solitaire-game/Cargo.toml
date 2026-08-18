@@ -14,12 +14,11 @@ crate-type = [
 ]
 
 [dependencies]
-bevy = { version = "0.18.1", default-features = false, features = [
+bevy = { version = "0.19.1", default-features = false, features = [
   "std",
   "async_executor",
   "android-game-activity",
   # "android-native-activity", # game activity seems to be broken :(
-  "android_shared_stdcxx",
   # "animation",
   "bevy_asset",
   # "bevy_audio",
@@ -76,7 +75,7 @@ bevy = { version = "0.18.1", default-features = false, features = [
   "debug",
   "zstd_rust",
 ] }
-bevy_vector_shapes = "0.12.0"
+bevy_vector_shapes = "0.13.1"
 log = { version = "*", features = ["release_max_level_info"] }
 futures-lite = "2.6.0"
 num-format = "0.4.4"
@@ -85,7 +84,7 @@ solitaire-solver = { path = "../solitaire-solver", version = "0.0.1" }
 rand = "0.10.2"
 
 [target.'cfg(all(target_family = "wasm", any(target_os = "unknown", target_os = "none")))'.dependencies]
-getrandom = { version = "0.4.2", features = ["wasm_js"] }
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
 getrandom_02 = { version = "0.2", features = ["js"], package = "getrandom" }
 uuid = { version = "1.17", features = ["js"] } # This can be changed with features `rng-getrandom` or `rng-rand`, but one must be specified
 

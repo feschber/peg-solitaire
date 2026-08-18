@@ -134,9 +134,10 @@ fn update_button_pos(
 
 fn add_buttons(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font_awesome = asset_server.load("fonts/Font Awesome 7 Free-Solid-900.otf");
+    let font_awesome = FontSource::from(font_awesome);
     let font_awesome = TextFont {
         font: font_awesome.clone(),
-        font_size: 100.0,
+        font_size: FontSize::Px(100.0),
         ..default()
     };
     // reset button
