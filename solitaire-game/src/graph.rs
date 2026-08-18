@@ -164,16 +164,24 @@ struct GraphChunk;
 enum GraphLayout {
     /// [`layout`] - an hourglass of barycentrically-relaxed layers, height from peg count.
     Hourglass,
-    /// [`layout_cube`] - position straight from `Board::to_compressed_repr`.
-    #[default]
+    /// [`layout_cube`] - the key read as three base-2048 digits, row-major.
     Cube,
+    /// [`layout_hilbert`] - the same cube, walked along a 3d Hilbert curve so that
+    /// numerically close keys stay close in space.
+    #[default]
+    Hilbert,
+    /// [`layout_shell`] - concentric shells growing outward from the start board, one
+    /// move per shell, which is the only one of the four that tries to keep edges short.
+    Shell,
 }
 
 impl GraphLayout {
     fn next(self) -> Self {
         match self {
             Self::Hourglass => Self::Cube,
-            Self::Cube => Self::Hourglass,
+            Self::Cube => Self::Hilbert,
+            Self::Hilbert => Self::Shell,
+            Self::Shell => Self::Hourglass,
         }
     }
 }
@@ -456,7 +464,7 @@ fn spawn_build_task(
     let entity = commands.spawn_empty().id();
     let feasible = feasible.clone();
     let task = thread_pool.spawn(async move {
-        let graph = derive_graph(&feasible, settings.layout);
+        let graph = derive_graph(&feasible, settings);
         info!(
             "constellation graph: {} nodes, {} edges",
             graph.nodes.len(),
@@ -538,7 +546,7 @@ fn rebuild_on_key(
 
 fn derive_graph(
     feasible: &solitaire_solver::HashSet<Board>,
-    graph_layout: GraphLayout,
+    settings: BuildSettings,
 ) -> ConstellationGraph {
     // bucket by peg count. `count_pegs` is the popcount, i.e. exactly the layer index.
     let mut layers: Vec<Vec<Board>> = vec![Vec::new(); MAX_PEGS + 1];
@@ -596,16 +604,70 @@ fn derive_graph(
         layer_starts,
         widest_pegs: 0, // placeholder - the layout pass below sets the real value
     };
-    match graph_layout {
+    match settings.layout {
         GraphLayout::Hourglass => layout(&mut graph),
+        // `layout` is otherwise the one that fills `widest_pegs` in, and it belongs to
+        // the graph rather than to any one layout
         GraphLayout::Cube => {
-            // `layout` is otherwise the one that fills this in, and it is part of the
-            // graph rather than of either layout
             graph.widest_pegs = graph.find_widest_pegs();
             layout_cube(&mut graph);
         }
+        GraphLayout::Hilbert => {
+            graph.widest_pegs = graph.find_widest_pegs();
+            layout_hilbert(&mut graph);
+        }
+        GraphLayout::Shell => {
+            graph.widest_pegs = graph.find_widest_pegs();
+            layout_shell(&mut graph);
+        }
     }
+    log_edge_lengths(&graph);
     graph
+}
+
+/// Reports how long the edges came out, for whichever layout just ran.
+///
+/// The point of having this at all is that "this layout shortens edges" is otherwise an
+/// impression rather than a fact, and the four layouts differ by orders of magnitude here.
+/// Median rather than mean is the headline number because the distribution has a long
+/// tail, and it is given as a fraction of the scene extent so it compares across layouts
+/// that are not the same size.
+///
+/// The median is taken from a stride sample rather than the full list: sorting 8.58M floats
+/// costs more than the whole rest of the layout, and a 100k sample pins a median far tighter
+/// than this is ever read to. Total and mean are exact - they stream.
+fn log_edge_lengths(graph: &ConstellationGraph) {
+    if graph.edges.is_empty() {
+        return;
+    }
+    let mut total = 0.0f64;
+    let mut sample = Vec::new();
+    let stride = (graph.edges.len() / 100_000).max(1);
+    for (i, &(from, to)) in graph.edges.iter().enumerate() {
+        let length = graph.nodes[from as usize].distance(graph.nodes[to as usize]);
+        total += length as f64;
+        if i % stride == 0 {
+            sample.push(length);
+        }
+    }
+    sample.sort_unstable_by(f32::total_cmp);
+    let median = sample[sample.len() / 2];
+    let (min, max) = aabb_of(graph.nodes.iter().copied());
+    // Per axis, not just the largest: a layout that has collapsed onto a line still has a
+    // perfectly healthy-looking `max_element`, and reports a *record* edge length while
+    // doing it, because collapsing everything onto a ray is the trivial minimum. Printing
+    // all three axes is what makes that failure visible instead of flattering.
+    let axes = max - min;
+    let extent = axes.max_element().max(f32::EPSILON);
+    info!(
+        "edge length: mean {:.3}, median {median:.3}, median/extent {:.4}, total {total:.0} \
+         (extent {:.1} x {:.1} x {:.1})",
+        total / graph.edges.len() as f64,
+        median / extent,
+        axes.x,
+        axes.y,
+        axes.z,
+    );
 }
 
 /// Target primitive count per spatial chunk - see [`build_meshes`].
@@ -632,7 +694,7 @@ const DEFAULT_CHUNK_SIZE: f32 = 1024.0;
 /// *averages* that many edges per cell, so a budget equal to it would only touch the
 /// above-average cells and leave the total roughly where it started. The edge pass needs
 /// to lose most of its 8.58M primitives, not trim the tail.
-const DEFAULT_EDGE_BUDGET: usize = 128;
+const DEFAULT_EDGE_BUDGET: usize = 512;
 
 /// Everything a graph (re)build is parameterized by - see [`rebuild_on_key`], which
 /// sweeps both at runtime so they can be A/B'd from one session at one viewpoint rather
@@ -1349,7 +1411,8 @@ fn layout_cube(graph: &mut ConstellationGraph) {
     const WIDTH: u64 = 2048;
     // const WIDTH: u64 = 92682;
     const WIDTH_SQ: u64 = WIDTH * WIDTH;
-    const SCALE: f64 = 50.0;
+    // shared with `layout_hilbert` so the two key-space layouts come out the same size
+    const SCALE: f64 = KEY_LAYOUT_SCALE as f64;
 
     // split borrow: writing `nodes` while reading `index`, both fields of `graph`
     let (nodes, index) = (&mut graph.nodes, &graph.index);
@@ -1373,6 +1436,237 @@ fn layout_cube(graph: &mut ConstellationGraph) {
             (row as f64 / SCALE) as f32,
         );
     }
+}
+
+/// Bits per axis for the key-space layouts.
+///
+/// `Board::SLOTS` is 33 and 33 = 3 * 11, so a 2048-per-side cube holds the entire
+/// `to_compressed_repr` key space exactly - every cell is some board, with no padding and
+/// no unused corner. Both [`layout_cube`] and [`layout_hilbert`] address that same grid,
+/// which is what makes switching between them a comparison of two *traversals* of one
+/// cube rather than of two different shapes.
+const KEY_BITS_PER_AXIS: u32 = Board::SLOTS as u32 / 3;
+const _: () = assert!(Board::SLOTS.is_multiple_of(3), "the key space must split evenly in 3");
+
+/// World units per grid cell for the key-space layouts - shared so the two stay the same
+/// size on screen, and matching what [`layout_cube`] used before there was a second one.
+const KEY_LAYOUT_SCALE: f32 = 50.0;
+
+/// Plots each board's compressed representation along a 3d Hilbert curve - the
+/// [`GraphLayout::Hilbert`] layout.
+///
+/// Same grid and scale as [`layout_cube`]; what differs is locality. Reading the key as
+/// three base-2048 digits keeps numerically close keys close only along `x`, and tears at
+/// every row and plane boundary, where consecutive keys land 2048 cells apart. A Hilbert
+/// curve never jumps at all: successive keys are always adjacent cells, and more usefully
+/// the converse mostly holds too, so a cluster in space really is a cluster in key space.
+/// Whether the feasible set clusters that way is exactly the kind of structure that shows
+/// up under one of these and not the other.
+fn layout_hilbert(graph: &mut ConstellationGraph) {
+    // split borrow: writing `nodes` while reading `index`, both fields of `graph`
+    let (nodes, index) = (&mut graph.nodes, &graph.index);
+    for (board, &idx) in index {
+        let cell = hilbert_to_xyz(board.to_compressed_repr(), KEY_BITS_PER_AXIS);
+        nodes[idx as usize] = cell.as_vec3() / KEY_LAYOUT_SCALE;
+    }
+}
+
+/// Position of `index` along an order-`bits` 3d Hilbert curve.
+///
+/// Skilling's algorithm (*Programming the Hilbert curve*, AIP Conf. Proc. 707, 381). The
+/// index is first de-interleaved into the "transpose" form - axis `i` collecting every
+/// third bit starting at `i`, most significant first - which is the representation in
+/// which the curve's structure is a plain Gray code plus a per-level rotation. Decoding
+/// that Gray code and then undoing each level's rotation, outward from the finest, leaves
+/// the axes.
+///
+/// Kept as index-to-position only; nothing here needs the inverse.
+fn hilbert_to_xyz(index: u64, bits: u32) -> UVec3 {
+    const N: u32 = 3;
+    let mut x = [0u32; N as usize];
+
+    for k in 0..N * bits {
+        let bit = (index >> (N * bits - 1 - k)) & 1;
+        x[(k % N) as usize] |= (bit as u32) << (bits - 1 - k / N);
+    }
+
+    // Gray decode by H ^ (H / 2)
+    let t = x[2] >> 1;
+    x[2] ^= x[1];
+    x[1] ^= x[0];
+    x[0] ^= t;
+
+    // Undo the excess work: at each level, an axis whose bit is set means that level
+    // inverted the low bits, and one whose bit is clear means it swapped them with axis 0.
+    let mut q = 2u32;
+    while q != 1 << bits {
+        let p = q - 1;
+        for i in (0..N as usize).rev() {
+            if x[i] & q != 0 {
+                x[0] ^= p;
+            } else {
+                let t = (x[0] ^ x[i]) & p;
+                x[0] ^= t;
+                x[i] ^= t;
+            }
+        }
+        q <<= 1;
+    }
+
+    UVec3::new(x[0], x[1], x[2])
+}
+
+/// Radius of the outermost shell in [`layout_shell`], i.e. half the scene's extent.
+///
+/// Sized to land in the same ballpark as the key-space layouts (see [`KEY_BITS_PER_AXIS`]
+/// and [`KEY_LAYOUT_SCALE`], which put those at ~41 units across) so that switching layouts
+/// compares pictures of the same size rather than of the same shape at different zooms.
+const SHELL_EXTENT: f32 = 20.0;
+
+
+
+/// Places nodes on concentric shells growing outward from the start board - the
+/// [`GraphLayout::Shell`] layout, and the only one that tries to keep edges short.
+///
+/// Every move removes exactly one peg, so a board with `k` pegs sits exactly `MAX_PEGS - k`
+/// moves from the start: **peg count already is the move depth**, and the shells are just
+/// the existing [`ConstellationGraph::layer`] ranges. No traversal is needed to find them.
+///
+/// Why this should beat [`layout`] on edge length, which is the whole point: that one puts a
+/// layer's nodes in a flat disc, so the ~230k-node layer needs a radius around 54 at
+/// [`NODE_SPACING`] while consecutive layers sit only [`LAYER_HEIGHT`] apart - edge length
+/// ends up dominated by sprawl *within* a layer rather than by the gap between them. A
+/// sphere spreads the same count over `4 pi r^2` instead of `pi r^2`, so it needs about half
+/// the radius for the same spacing, and the radial axis carries the move count so all three
+/// dimensions do work instead of two.
+///
+/// It is a heuristic, not an optimum: one greedy outward sweep, with a hard floor of one
+/// shell gap on every edge. The provable version is the Laplacian eigenvector problem, which
+/// [`barycenter_from_neighbors`] is one orthogonalisation away from solving - see the plan
+/// note in the module history. [`log_edge_lengths`] is what says whether that is worth it.
+fn layout_shell(graph: &mut ConstellationGraph) {
+    let radii = shell_radii(graph);
+
+    // The start shell: usually the single near-unique starting board, so it lands at the
+    // centre. Seeded from the even sphere rather than the barycentric pass, which has
+    // nothing to work from yet.
+    let start = graph.layer(MAX_PEGS);
+    let start_count = start.len();
+    for (rank, node) in start.enumerate() {
+        graph.nodes[node] = fibonacci_sphere(rank, start_count) * radii[MAX_PEGS];
+    }
+
+    // Outward, one shell at a time. Sweeping *away* from the placed anchor is what makes
+    // each step well defined - the same reason [`layout`]'s seeding sweeps do.
+    for pegs in (1..MAX_PEGS).rev() {
+        let layer = graph.layer(pegs);
+        let count = layer.len();
+        if count == 0 {
+            continue;
+        }
+        let base = layer.start;
+        let radius = radii[pegs];
+
+        // Sum of already-placed predecessors, exactly as `barycenter_from_predecessors`
+        // gathers them: edges out of layer `pegs + 1` are the ones landing in this shell.
+        let mut sum = vec![Vec3::ZERO; count];
+        for &(from, to) in edges_from(&graph.edges, graph.layer(pegs + 1)) {
+            sum[to as usize - base] += graph.nodes[from as usize];
+        }
+
+        // Group by inherited direction, quantised. This is what stops the layout
+        // collapsing, and it is why the spreading is derived rather than tuned: nodes that
+        // inherit the *same* direction have no information distinguishing them, so they
+        // have to be fanned out, while nodes inheriting different directions must not be.
+        // Bucketing by direction is exactly that distinction, and it self-adjusts - the
+        // shell just outside the single start board is one bucket holding everything, so it
+        // spreads over the whole sphere, while shells further out have many small buckets
+        // and stay tight around their parents.
+        let grid = (count as f32).sqrt().ceil().clamp(1.0, 512.0);
+        let mut buckets: std::collections::HashMap<IVec3, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, inherited) in sum.iter().enumerate() {
+            let cell = (inherited.normalize_or_zero() * grid).round().as_ivec3();
+            buckets.entry(cell).or_default().push(i);
+        }
+
+        for (cell, members) in buckets {
+            // A bucket's share of the shell's nodes is its fair share of the shell's
+            // surface, which is what sizes the cap its members fan out over. The zero cell
+            // is the nodes with no usable inherited direction at all - opposed
+            // predecessors, or predecessors still at the centre - and they get the sphere.
+            let axis = cell.as_vec3().normalize_or_zero();
+            let share = members.len() as f32 / count as f32;
+            for (rank, &i) in members.iter().enumerate() {
+                let direction = if axis == Vec3::ZERO {
+                    fibonacci_sphere(rank, members.len())
+                } else {
+                    fibonacci_cap(axis, rank, members.len(), share)
+                };
+                graph.nodes[base + i] = direction * radius;
+            }
+        }
+    }
+}
+
+/// Shell radius per peg count, filling a solid ball of uniform density.
+///
+/// `radius ~ cbrt(nodes enclosed)`, which is what uniform *volumetric* density means, so the
+/// result is a ball with the start at its centre and the solved board on its surface. Two
+/// things fall out of that for free, both of which matter because this graph is an hourglass
+/// rather than a funnel - counts grow from the single start board, peak around 230k, then
+/// shrink back to the single solved board:
+///
+/// - it is monotonic by construction, so shells never turn back on themselves, and
+/// - shell *thickness* adapts to the local count on its own, thick where the graph is wide
+///   and thin where it is not.
+///
+/// Sizing radius from each shell's own count instead - the obvious "keep surface density
+/// constant" choice - would have to keep growing while the counts fall past the peak, so the
+/// outer shells would be enormous and nearly empty.
+fn shell_radii(graph: &ConstellationGraph) -> [f32; MAX_PEGS + 1] {
+    let total = graph.nodes.len().max(1) as f32;
+    let mut radii = [0.0f32; MAX_PEGS + 1];
+    let mut enclosed = 0usize;
+    // inward-to-outward is descending peg count, so accumulate in that order
+    for pegs in (1..=MAX_PEGS).rev() {
+        enclosed += graph.layer(pegs).len();
+        radii[pegs] = SHELL_EXTENT * (enclosed as f32 / total).cbrt();
+    }
+    radii
+}
+
+/// `rank` of `count` points spread evenly over the spherical cap around `axis` that holds
+/// `share` of the sphere's area.
+///
+/// The cap's half-angle comes from the area it has to cover - solid angle `4*pi*share`
+/// means `cos(half-angle) = 1 - 2*share` - so a bucket entitled to the whole sphere gets it
+/// and a bucket entitled to a sliver stays in that sliver. Same golden-angle longitude as
+/// [`fibonacci_sphere`], with equal steps in height along the axis for equal-area bands.
+fn fibonacci_cap(axis: Vec3, rank: usize, count: usize, share: f32) -> Vec3 {
+    let count = count.max(1);
+    let cos_limit = (1.0 - 2.0 * share).clamp(-1.0, 1.0);
+    let height = 1.0 - (1.0 - cos_limit) * (rank as f32 + 0.5) / count as f32;
+    let ring = (1.0 - height * height).max(0.0).sqrt();
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+    let theta = golden_angle * rank as f32;
+    let (a, b) = axis.any_orthonormal_pair();
+    axis * height + (a * theta.cos() + b * theta.sin()) * ring
+}
+
+/// `rank` of `count` points spread evenly over the unit sphere.
+///
+/// The spherical counterpart of [`sunflower_disc`], and the same golden-angle trick: equal
+/// steps in height give equal-area bands, and advancing longitude by the golden angle stops
+/// successive points from lining up into spokes. Deterministic in `rank`, so the layout is
+/// identical across runs - the same property `derive_graph`'s sort exists to preserve.
+fn fibonacci_sphere(rank: usize, count: usize) -> Vec3 {
+    let count = count.max(1);
+    let y = 1.0 - 2.0 * (rank as f32 + 0.5) / count as f32;
+    let ring = (1.0 - y * y).max(0.0).sqrt();
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+    let theta = golden_angle * rank as f32;
+    Vec3::new(ring * theta.cos(), y, ring * theta.sin())
 }
 
 /// Spawns the scene once the graph and its meshes are ready.
@@ -1863,4 +2157,186 @@ fn toggle_graph(
     set_cursor_grab(cursor.into_inner(), fly_mode);
 
     request_redraw.write(RequestRedraw);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two properties that between them *define* a Hilbert curve, checked
+    /// exhaustively at a small order: it visits every cell of the cube exactly once, and
+    /// it never jumps.
+    ///
+    /// Worth pinning rather than eyeballing, because a subtly wrong version of Skilling's
+    /// transform still produces a plausible-looking cloud of points - it just quietly
+    /// stops being a space-filling curve, losing the locality that is the entire reason
+    /// [`layout_hilbert`] exists next to [`layout_cube`].
+    #[test]
+    fn hilbert_visits_every_cell_once_without_jumping() {
+        const BITS: u32 = 3;
+        let side = 1u32 << BITS;
+        let count = 1u64 << (3 * BITS);
+
+        let mut seen = vec![false; count as usize];
+        let mut previous: Option<UVec3> = None;
+        for index in 0..count {
+            let p = hilbert_to_xyz(index, BITS);
+            assert!(
+                p.x < side && p.y < side && p.z < side,
+                "index {index} left the cube at {p:?}"
+            );
+
+            let slot = (p.x * side * side + p.y * side + p.z) as usize;
+            assert!(!seen[slot], "index {index} revisited {p:?}");
+            seen[slot] = true;
+
+            if let Some(q) = previous {
+                let step = (p.as_ivec3() - q.as_ivec3()).abs();
+                assert_eq!(
+                    step.x + step.y + step.z,
+                    1,
+                    "index {index} jumped from {q:?} to {p:?}"
+                );
+            }
+            previous = Some(p);
+        }
+        assert!(seen.into_iter().all(|visited| visited));
+    }
+
+    /// A tiny hand-built graph: a single start board branching into two shells of two.
+    ///
+    /// `index` is left empty deliberately - `layout_shell` never consults it, only `nodes`,
+    /// `edges` and `layer_starts`, and building real `Board`s here would test nothing extra.
+    fn chain_graph() -> ConstellationGraph {
+        // node indices ascend with peg count, the order `derive_graph` builds them in, so
+        // layer 30 is 0..2, layer 31 is 2..4 and layer 32 (the start) is 4..5
+        let mut layer_starts = vec![0u32; MAX_PEGS + 2];
+        for (pegs, start) in [(31usize, 2u32), (32, 4), (33, 5)] {
+            layer_starts[pegs] = start;
+        }
+        ConstellationGraph {
+            nodes: vec![Vec3::ZERO; 5],
+            index: HashMap::default(),
+            // sorted by `from`, which `edges_from`'s binary search relies on
+            edges: vec![(2, 0), (3, 1), (4, 2), (4, 3)],
+            layer_starts,
+            widest_pegs: 31,
+        }
+    }
+
+    /// A root board branching into a wide shell, which is the shape that exposed the
+    /// collapse: every node in the shell just outside the start has the *same* single
+    /// predecessor, so it has no inherited direction distinguishing it from its siblings.
+    fn fan_graph(width: usize) -> ConstellationGraph {
+        // layer 31 is 0..width, layer 32 (the start) is the single node at `width`
+        let mut layer_starts = vec![0u32; MAX_PEGS + 2];
+        for pegs in 32..=33 {
+            layer_starts[pegs] = width as u32;
+        }
+        layer_starts[33] = width as u32 + 1;
+        ConstellationGraph {
+            nodes: vec![Vec3::ZERO; width + 1],
+            index: HashMap::default(),
+            edges: (0..width).map(|i| (width as u32, i as u32)).collect(),
+            layer_starts,
+            widest_pegs: 31,
+        }
+    }
+
+    /// Regression test for the collapse: with spreading derived from each direction
+    /// bucket's share of the shell, a shell whose nodes all inherit one direction must fan
+    /// out over the whole sphere rather than piling onto that one direction.
+    ///
+    /// This is the check that was missing when the layout shipped every node onto a single
+    /// ray - and it reported the *best* edge length in the file while doing it, because
+    /// collapsing onto a ray is the trivial minimum. Edge length alone cannot catch this;
+    /// only a spread check can.
+    #[test]
+    fn shell_layout_does_not_collapse_onto_one_direction() {
+        const WIDTH: usize = 256;
+        let mut graph = fan_graph(WIDTH);
+        let radius = shell_radii(&graph)[31];
+        layout_shell(&mut graph);
+
+        let shell: Vec<Vec3> = graph.layer(31).map(|i| graph.nodes[i]).collect();
+        let (min, max) = aabb_of(shell.iter().copied());
+        let axes = max - min;
+        for (name, extent) in [("x", axes.x), ("y", axes.y), ("z", axes.z)] {
+            assert!(
+                extent > radius,
+                "shell is flat in {name}: extent {axes:?} against radius {radius}"
+            );
+        }
+
+        // and an even spread over a sphere puts the centroid near its middle
+        let centroid = shell.iter().copied().sum::<Vec3>() / WIDTH as f32;
+        assert!(
+            centroid.length() < 0.1 * radius,
+            "spread is lopsided: centroid {centroid:?} at radius {radius}"
+        );
+    }
+
+    /// The two invariants that make it a *shell* layout: every node sits exactly on its
+    /// own shell, and shells grow outward with move depth.
+    ///
+    /// Worth pinning for the same reason as the Hilbert tests - a layout that quietly puts
+    /// nodes off their shells, or lets radii turn back on themselves past the hourglass's
+    /// waist, still renders as a perfectly plausible cloud of points.
+    #[test]
+    fn shell_layout_puts_every_node_on_its_own_shell() {
+        let mut graph = chain_graph();
+        let radii = shell_radii(&graph);
+        layout_shell(&mut graph);
+
+        for pegs in 1..=MAX_PEGS {
+            for node in graph.layer(pegs) {
+                let distance = graph.nodes[node].length();
+                assert!(
+                    (distance - radii[pegs]).abs() < 1e-4,
+                    "node {node} in shell {pegs} is {distance} from the centre, not {}",
+                    radii[pegs]
+                );
+            }
+        }
+
+        // outward is descending peg count, so radii must fall as `pegs` rises
+        for pegs in 1..MAX_PEGS {
+            assert!(
+                radii[pegs] >= radii[pegs + 1],
+                "shell {pegs} is inside shell {}", pegs + 1
+            );
+        }
+        // and the outermost shell defines the scene's half-extent
+        assert!((radii[30] - SHELL_EXTENT).abs() < 1e-4, "outermost shell is {}", radii[30]);
+    }
+
+    /// Points spread over a sphere have to actually be *on* it, and spread - a degenerate
+    /// version returning the same point every time would pass the shell test above.
+    #[test]
+    fn fibonacci_sphere_is_spread_over_the_unit_sphere() {
+        const COUNT: usize = 512;
+        let points: Vec<Vec3> = (0..COUNT).map(|r| fibonacci_sphere(r, COUNT)).collect();
+        for (rank, p) in points.iter().enumerate() {
+            assert!((p.length() - 1.0).abs() < 1e-5, "point {rank} is not on the sphere");
+        }
+        // an even spread has its centroid at the middle and covers both poles
+        let centroid: Vec3 = points.iter().copied().sum::<Vec3>() / COUNT as f32;
+        assert!(centroid.length() < 0.05, "spread is lopsided: centroid {centroid:?}");
+        assert!(points.iter().any(|p| p.y > 0.9) && points.iter().any(|p| p.y < -0.9));
+    }
+
+    /// The order the graph actually uses covers the key space exactly - no board maps
+    /// outside the cube, and no cell of the cube goes unaddressed.
+    #[test]
+    fn hilbert_order_matches_the_key_space() {
+        assert_eq!(3 * KEY_BITS_PER_AXIS, Board::SLOTS as u32);
+        let side = 1u32 << KEY_BITS_PER_AXIS;
+        for index in [0, 1, (1u64 << Board::SLOTS) - 1, 1 << 32, 0x1234_5678] {
+            let p = hilbert_to_xyz(index, KEY_BITS_PER_AXIS);
+            assert!(
+                p.x < side && p.y < side && p.z < side,
+                "key {index} left the cube at {p:?}"
+            );
+        }
+    }
 }
