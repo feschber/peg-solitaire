@@ -13,7 +13,6 @@ use log::info;
 // (see keyset.rs) brought it down to 139 MiB, of which ~167 MiB peak resident
 // across the whole process - which makes the Android case a lot more plausible
 // than when this was written.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use rayon::prelude::*;
 
 use crate::{
@@ -86,14 +85,12 @@ use crate::{
 /// `begin_round`'s table rebuild was the obvious suspect for that lower turn-up,
 /// since ranking added it, but it profiles at 0.09% of the run - the summary scans
 /// and rayon dispatch dominate the fixed cost instead.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 const BITSET_THRESHOLD_DEFAULT: usize = 2_000;
 
 /// [`BITSET_THRESHOLD_DEFAULT`], overridable for tuning sweeps as the `peeka_sort`
 /// knobs are. Read once; it only gates a per-round size comparison, so reading it
 /// from the environment cannot change any inner loop's codegen - a sweep measures
 /// exactly what hardcoding the value would do.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn bitset_threshold() -> usize {
     use std::sync::OnceLock;
     static T: OnceLock<usize> = OnceLock::new();
@@ -204,7 +201,6 @@ fn growth_survives_pagoda(board: Board) -> bool {
 /// `lock` prefix bars the overlapping misses that would otherwise hide it. The
 /// ~8 symmetries `normalize` evaluates per key are exactly the independent work
 /// needed to cover that latency.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> usize {
     /// how many keys ahead of the `set()` the prefetch runs. Must be a power of two
     /// (the ring index is masked, not divided).
@@ -283,32 +279,6 @@ fn generate_into_bitset(states: &[Board], set: &DenseKeySet, forward: bool) -> u
         .sum()
 }
 
-/// attempts the bitset path for one shrink-phase round; returns `None` (falling
-/// back to the existing sort+dedup+intersect path) below `bitset_threshold`, or
-/// wherever the bitset path is disabled entirely (see the module-level comment
-/// on the `rayon::prelude::*` import above).
-///
-/// on success, mutates `visited[remaining - 1]` in place (same effect as the
-/// existing `par::intersect_sorted` call it replaces) and returns
-/// `(num_moves, intersection)` for logging.
-///
-/// Note it deliberately does not report a deduped/distinct-key count. Nothing
-/// downstream uses one - the intersection below is what the algorithm actually
-/// carries forward - and on this path it is not a free by-product of any step the
-/// round already performs, unlike the growth phase where the extraction's length
-/// gives it away. Obtaining it cost a whole extra summary-guided scan over every
-/// touched block purely to fill in one column of a log line.
-#[cfg(any(target_arch = "wasm32", target_os = "android"))]
-fn try_bitset_shrink_round(
-    _keyset: &mut Option<DenseKeySet>,
-    _visited: &mut [Vec<Board>],
-    _remaining: usize,
-    _threads: usize,
-    _timer: &mut Timer,
-) -> Option<(usize, usize)> {
-    None
-}
-
 /// keeps the boards of `chunk` that `set` contains, in order - one chunk of the
 /// shrink phase's intersect.
 ///
@@ -349,7 +319,6 @@ fn try_bitset_shrink_round(
 ///
 /// The general lesson is in the 3.76 ms, not in the 46%: this loop was already too
 /// small a share of the run to be worth restructuring the data for.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
     /// how many boards ahead of the probe the prefetch runs. Matches
     /// `generate_into_bitset`'s distance; the two loops are covering the same
@@ -418,7 +387,6 @@ fn intersect_chunk(set: &DenseKeySet, chunk: &[Board]) -> Vec<Board> {
 /// layer. Pipelined exactly as the move loops are - the keys of an unsorted round
 /// scatter over the map, so these are the same DRAM round trips, just one per board
 /// instead of one per move.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn fill_bitset(states: &[Board], set: &DenseKeySet) -> usize {
     const PREFETCH_DISTANCE: usize = 16;
     const CHUNK: usize = 2048;
@@ -462,7 +430,6 @@ fn fill_bitset(states: &[Board], set: &DenseKeySet) -> usize {
 /// until the current one returns. That is exactly the serialization the prefetch
 /// pipeline exists to avoid, so all of a board's predecessors are issued and then
 /// tested, and `keep` is ORed into rather than short-circuited.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn reverse_probe_chunk(set: &DenseKeySet, chunk: &[Board]) -> (Vec<Board>, usize) {
     const PREFETCH_DISTANCE: usize = 16;
 
@@ -505,7 +472,21 @@ fn reverse_probe_chunk(set: &DenseKeySet, chunk: &[Board]) -> (Vec<Board>, usize
     (out, n)
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+/// attempts the bitset path for one shrink-phase round; returns `None` (falling
+/// back to the existing sort+dedup+intersect path) below `bitset_threshold`, or
+/// wherever the bitset path is disabled entirely (see the module-level comment
+/// on the `rayon::prelude::*` import above).
+///
+/// on success, mutates `visited[remaining - 1]` in place (same effect as the
+/// existing `par::intersect_sorted` call it replaces) and returns
+/// `(num_moves, intersection)` for logging.
+///
+/// Note it deliberately does not report a deduped/distinct-key count. Nothing
+/// downstream uses one - the intersection below is what the algorithm actually
+/// carries forward - and on this path it is not a free by-product of any step the
+/// round already performs, unlike the growth phase where the extraction's length
+/// gives it away. Obtaining it cost a whole extra summary-guided scan over every
+/// touched block purely to fill in one column of a log line.
 fn try_bitset_shrink_round(
     keyset: &mut Option<DenseKeySet>,
     visited: &mut [Vec<Board>],
@@ -588,7 +569,6 @@ fn try_bitset_shrink_round(
 /// The map holds `visited[remaining]` itself, on *its* layer rather than the layer
 /// below, and each `visited[remaining - 1]` board asks whether any of its
 /// predecessors is present. No moves are generated into the map at all.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn try_bitset_shrink_round_reversed(
     keyset: &mut Option<DenseKeySet>,
     visited: &mut [Vec<Board>],
@@ -639,16 +619,6 @@ fn try_bitset_shrink_round_reversed(
 /// unlike the shrink phase, the result here must persist as `visited[i + 1]` for
 /// many later rounds, so (unlike the shrink phase's probe-only approach) this
 /// does need to extract the bitset into a sorted `Vec<Board>`.
-#[cfg(any(target_arch = "wasm32", target_os = "android"))]
-fn try_bitset_growth_round(
-    _keyset: &mut Option<DenseKeySet>,
-    _states: &[Board],
-    _timer: &mut Timer,
-) -> Option<(usize, Vec<Board>)> {
-    None
-}
-
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn try_bitset_growth_round(
     keyset: &mut Option<DenseKeySet>,
     states: &[Board],
