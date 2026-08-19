@@ -40,6 +40,17 @@
 //!   dropped bits are *not* constant - they are set in 60.97%, 64.70%, 52.69% and 54.00% of
 //!   boards respectively. They are reconstructible, which is a different thing: in reduced row
 //!   echelon form each row reads `b[pivot] ^ (parity of its non-pivot bits) = target`.
+//! - Only about an eighth of a layer's ranks can ever be stored, since normalization returns
+//!   each orbit's minimum - measured exhaustively, 12.75% at 6 pegs and 12.58% at 8, a shade
+//!   over `1/8` because symmetric boards have orbits smaller than 8. But that space is *not*
+//!   trimmable: the highest normalized rank sits at 68.1% and 73.2% of its layer respectively,
+//!   rising with peg count, so only a ~27-32% tail is unreachable and the rest of the unused
+//!   space is interleaved with the used. Ranking has already removed every gap it can count;
+//!   orbit-minimality is not one of them. The 180-degree rotation alone would be - it is
+//!   bit-reversal on the compressed key, so a DP walking bit pairs outside-in could count it,
+//!   worth ~2x - but the reflections and transposes need bits the scan has not reached.
+//!   Not pursued, because the 16x this file already justified bought *no* measurable time (see
+//!   `MAX_LAYER_KEYS`), so a further 1.3x or even 8x would not either.
 //! - **0 feasible pairs at Hamming distance 1**, as proven.
 //! - Distance 2 is common: 5_864_442 pairs with equal peg count (one peg relocated) and
 //!   7_971_522 with peg counts differing by 2, each unordered pair counted twice, so ~6.92M
@@ -303,6 +314,58 @@ fn binomial(n: usize, k: usize) -> u128 {
     (0..k).fold(1u128, |acc, i| acc * (n - i) as u128 / (i + 1) as u128)
 }
 
+/// The 4-bit invariant state contributed by each *compressed-key* bit.
+fn weights_by_key_bit(slots: &[Slot], masks: &[u64; 4]) -> Vec<usize> {
+    slots
+        .iter()
+        .map(|slot| {
+            (0..4).fold(0usize, |acc, bit| {
+                acc | ((masks[bit] >> slot.bit & 1) as usize) << bit
+            })
+        })
+        .collect()
+}
+
+/// `below[i][j][state]` = ways to pick `j` of the key bits *below* `i` whose weights XOR to
+/// `state` - the orientation ranking needs, as opposed to `ways_table`'s from-`i`-onward.
+fn ways_below(weights: &[usize]) -> Vec<Vec<[u128; 16]>> {
+    let n = weights.len();
+    let mut below = vec![vec![[0u128; 16]; n + 1]; n + 1];
+    below[0][0][0] = 1;
+    for i in 0..n {
+        for j in 0..=n {
+            for state in 0..16 {
+                below[i + 1][j][state] = below[i][j][state]
+                    + if j == 0 { 0 } else { below[i][j - 1][state ^ weights[i]] };
+            }
+        }
+    }
+    below
+}
+
+/// Rank of `key` among the keys of its layer carrying the target invariant - the same
+/// bijection `keyset.rs` implements, recomputed here so this can ask *where in it* the boards
+/// the solver stores actually land.
+fn rank_of(
+    key: u64,
+    pegs: usize,
+    target: usize,
+    weights: &[usize],
+    below: &[Vec<[u128; 16]>],
+) -> u128 {
+    let mut rank = 0u128;
+    let mut remaining = pegs;
+    let mut state = 0usize;
+    for i in (0..weights.len()).rev() {
+        if key >> i & 1 == 1 {
+            rank += below[i][remaining][target ^ state];
+            state ^= weights[i];
+            remaining -= 1;
+        }
+    }
+    rank
+}
+
 fn main() {
     env_logger::init();
     let slots = slots();
@@ -491,6 +554,78 @@ fn main() {
             pivot_ones[i],
             feasible.len(),
             100.0 * pivot_ones[i] as f64 / feasible.len() as f64
+        );
+    }
+
+    // ---- Where in the rank space do the stored boards actually land?
+    //
+    // Normalization returns the minimum of each board's 8-symmetry orbit, so only about an
+    // eighth of the keys of a layer can ever be stored, and the minimum-of-8 biases them
+    // towards the low end of the *raw* key range. The question for `keyset.rs` is whether that
+    // leaves a trimmable tail at the top of the *rank* space, or whether the unused keys are
+    // interleaved with the used ones - because ranking has already removed every gap it can
+    // (wrong popcount, wrong invariant), and it cannot remove a gap it cannot count.
+    println!("\n== where the stored boards land in the rank space ==");
+    let weights = weights_by_key_bit(&slots, &masks);
+    let below = ways_below(&weights);
+    let mut by_layer: std::collections::HashMap<usize, Vec<u64>> = std::collections::HashMap::new();
+    for board in &feasible {
+        by_layer
+            .entry(board.count_pegs())
+            .or_default()
+            .push(board.to_compressed_repr());
+    }
+    println!("   k     boards      max rank    layer total   max/total   occupancy");
+    let mut layers: Vec<usize> = by_layer.keys().copied().collect();
+    // the biggest layers are the ones that size the bitmap, so rank by layer total
+    layers.sort_by_key(|&pegs| std::cmp::Reverse(below[slots.len()][pegs][target]));
+    let mut worst = 0.0f64;
+    for pegs in layers.into_iter().take(8) {
+        let keys = &by_layer[&pegs];
+        let total = below[slots.len()][pegs][target];
+        let max = keys
+            .par_iter()
+            .map(|&k| rank_of(k, pegs, target, &weights, &below))
+            .max()
+            .unwrap_or(0);
+        println!(
+            "  {pegs:2}  {:>9}  {:>12}  {:>13}  {:>9.3}  {:>8.4}",
+            keys.len(),
+            max,
+            total,
+            max as f64 / total.max(1) as f64,
+            keys.len() as f64 / total.max(1) as f64,
+        );
+        worst = worst.max(max as f64 / total.max(1) as f64);
+    }
+    println!(
+        "  highest max/total across these layers: {worst:.4} - the bitmap can only be trimmed \
+         by the {:.1}% above it",
+        100.0 * (1.0 - worst)
+    );
+
+    // The rows above cover the *feasible* boards, which is not the population the bitmap has
+    // to address: the solver stores everything reachable from either end and discards the rest
+    // later, ~3x as many boards. So the headroom above is a property of the answer, not a safe
+    // bound. This settles the real question on a layer small enough to enumerate exhaustively:
+    // of all normalized keys carrying the invariant, how high does the highest rank sit?
+    println!("\n== can the rank space be trimmed at the top? ==");
+    for pegs in [6usize, 8] {
+        let total = below[slots.len()][pegs][target];
+        let (count, max) = (0..1u64 << slots.len())
+            .into_par_iter()
+            .filter(|k| k.count_ones() as usize == pegs)
+            .filter(|&k| evaluate(&masks, Board::from_compressed_repr(k).0) == expected)
+            .filter(|&k| {
+                Board::from_compressed_repr(k).normalize().to_compressed_repr() == k
+            })
+            .map(|k| (1u64, rank_of(k, pegs, target, &weights, &below)))
+            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1.max(b.1)));
+        println!(
+            "  {pegs:2} pegs: {count} normalized of {total} ranks ({:.2}%), highest rank {max} \
+             = {:.4} of the space",
+            100.0 * count as f64 / total.max(1) as f64,
+            max as f64 / total.max(1) as f64,
         );
     }
 
