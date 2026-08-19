@@ -122,6 +122,7 @@ const HIGH_ENTRIES: usize = 1 << (KEY_BITS as u32 - LOW_BITS);
 /// as the next `hint`.
 fn unindex(
     high_cum: &[u32],
+    high_state: &[u8],
     low_unrank: &[Vec<Vec<u16>>],
     pegs: usize,
     index: u64,
@@ -142,8 +143,7 @@ fn unindex(
     );
     // same reasoning as `retarget`: this prefix's keys are exactly those whose low half
     // carries the state the prefix is missing
-    let wanted =
-        (Board::invariant_state((h as u64) << LOW_BITS) ^ Board::INVARIANT_TARGET) as usize;
+    let wanted = (high_state[h] ^ Board::INVARIANT_TARGET) as usize;
     let low = low_unrank[pegs - used][wanted][(index - high_cum[h] as u64) as usize];
     let key = ((h as u64) << LOW_BITS) | low as u64;
     debug_assert_eq!(key.count_ones() as usize, pegs);
@@ -223,6 +223,15 @@ pub(crate) struct LayerRanks {
     /// `low_count[j][state]` = `low_unrank[j][state].len()`, kept separately so
     /// [`Self::retarget`] can read the counts while holding `high_cum` mutably.
     low_count: [[u32; 16]; LOW_BITS as usize + 1],
+    /// `high_state[h]` = the invariant state of the prefix `h << LOW_BITS`.
+    ///
+    /// Precomputed because it does *not* depend on the layer, while both places that want it -
+    /// [`Self::retarget`] and [`unindex`] - are per-round or per-key. `Board::invariant_state`
+    /// is a loop over the prefix's set bits, up to 17 of them, and `retarget` wants it for all
+    /// `HIGH_ENTRIES` prefixes every time the peg count changes: a profile put 8.35% of the
+    /// whole run inside `begin_round`, almost all of it on that loop, which is what this
+    /// removes. One byte per prefix, 128 KiB, built once.
+    high_state: Vec<u8>,
     /// `high_cum[h]` = keys below the prefix `h << LOW_BITS` that have this layer's
     /// peg count. Depends on that count, so rebuilt by [`Self::retarget`].
     high_cum: Vec<u32>,
@@ -266,6 +275,9 @@ impl LayerRanks {
             low_rank,
             low_unrank,
             low_count,
+            high_state: (0..HIGH_ENTRIES)
+                .map(|h| Board::invariant_state((h as u64) << LOW_BITS))
+                .collect(),
             high_cum: vec![0u32; HIGH_ENTRIES],
             // no layer yet: `retarget` must run before any key is ranked, and a peg
             // count no board can have makes forgetting it fail the assertions in
@@ -283,6 +295,8 @@ impl LayerRanks {
         // already used more than `pegs` bits, or too few to be completed by the low
         // half, contributes nothing.
         let counts = self.low_count;
+        // borrowed apart from `high_cum`, which is held mutably below
+        let high_state = &self.high_state;
         let mut acc = 0u64;
         for (h, slot) in self.high_cum.iter_mut().enumerate() {
             *slot = acc as u32;
@@ -290,8 +304,7 @@ impl LayerRanks {
             if used <= pegs && pegs - used <= LOW_BITS as usize {
                 // Only the low halves that complete this prefix *to the target* count: the
                 // state is a XOR, so the low half must carry whatever the prefix is missing.
-                let wanted =
-                    Board::invariant_state((h as u64) << LOW_BITS) ^ Board::INVARIANT_TARGET;
+                let wanted = high_state[h] ^ Board::INVARIANT_TARGET;
                 acc += u64::from(counts[pegs - used][wanted as usize]);
             }
         }
@@ -338,7 +351,14 @@ impl LayerRanks {
     /// Inverse of [`Self::rank`]; see [`unindex`] for what `hint` is for.
     #[inline]
     pub(crate) fn unrank(&self, index: u64, hint: usize) -> (u64, usize) {
-        unindex(&self.high_cum, &self.low_unrank, self.pegs, index, hint)
+        unindex(
+            &self.high_cum,
+            &self.high_state,
+            &self.low_unrank,
+            self.pegs,
+            index,
+            hint,
+        )
     }
 
     /// The `hint` to start [`Self::unrank`] from when the first index to be decoded is
