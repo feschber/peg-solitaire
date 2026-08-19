@@ -3,10 +3,6 @@ use std::{collections::HashSet, num::NonZero};
 use clap::{Parser, Subcommand};
 use solitaire_solver::Board;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 #[derive(Parser)]
 struct Args {
     /// print the solution
@@ -56,40 +52,6 @@ enum Command {
     UniquePaths,
 }
 
-/// Turns transparent huge pages off for this process.
-///
-/// mimalloc reserves its heap in 1 GiB arenas and calls `madvise(MADV_HUGEPAGE)`
-/// on each. Where `transparent_hugepage/defrag` is `madvise` or `always` (the
-/// former is this distro's default), that makes every fault in those arenas a
-/// "try hard" huge-page allocation, which falls into *synchronous* direct
-/// compaction - physically migrating pages on the fault path - whenever no free
-/// 2 MiB block is around. On a fragmented machine that took an identical run from
-/// 0.44s to 2.75s of system time (0.30s -> 0.66s wall) for identical userspace
-/// work, with a kernel profile blaming `__do_huge_pmd_anonymous_page` and
-/// `compact_zone`, while 98% of the compaction attempts failed and the process
-/// still ended up with `AnonHugePages: 0 kB`.
-///
-/// `keyset.rs` already opts its 1 GiB bitmap out via `MADV_NOHUGEPAGE`, but that
-/// is only about half the resident memory - the board vectors live in a second
-/// mimalloc arena we do not control. This covers the rest.
-///
-/// Deliberately scoped to the solver subcommands rather than applied at startup:
-/// it is a process-wide policy, and the `game` build renders through bevy, which
-/// has not been evaluated against it.
-#[cfg(target_os = "linux")]
-fn disable_transparent_hugepages_for_process() {
-    // SAFETY: prctl with PR_SET_THP_DISABLE only sets a per-process flag telling
-    // the kernel not to back this process's anonymous memory with transparent huge
-    // pages. It touches no memory of ours and cannot fail in a way we care about
-    // (an older kernel returning EINVAL just leaves the default behaviour).
-    unsafe {
-        libc::prctl(libc::PR_SET_THP_DISABLE, 1, 0, 0, 0);
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn disable_transparent_hugepages_for_process() {}
-
 fn main() {
     let args = Args::parse();
     #[cfg(not(feature = "game"))]
@@ -101,7 +63,6 @@ fn main() {
     }
     match args.command {
         Some(command) => {
-            disable_transparent_hugepages_for_process();
             #[cfg(feature = "game")]
             {
                 use env_logger::Env;

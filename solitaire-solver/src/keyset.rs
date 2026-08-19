@@ -201,82 +201,6 @@ fn zeroed_atomic_vec(len: usize) -> Vec<AtomicU64> {
     unsafe { std::mem::transmute::<Vec<u64>, Vec<AtomicU64>>(zeros) }
 }
 
-/// Opts `region` out of transparent huge pages.
-///
-/// mimalloc calls `madvise(..., MADV_HUGEPAGE)` over the arena this 1 GiB bitmap
-/// is served from (confirmed by strace: a single call whose length is exactly
-/// 1073741824). Where `/sys/kernel/mm/transparent_hugepage/defrag` is `madvise`
-/// or `always` - `madvise` is the default on this distro - that turns every fault
-/// in the region into a "try hard" huge-page allocation, which drops into
-/// *synchronous* direct compaction when no free 2 MiB block is available:
-/// `__alloc_pages_direct_compact` -> `compact_zone` -> `migrate_pages`, physically
-/// relocating pages on the fault path.
-///
-/// That trade is catastrophically bad here. On a machine whose memory had become
-/// fragmented, the identical binary doing identical userspace work (2.3 CPU-seconds
-/// either way) spent 2.75s of system time instead of 0.44s, taking 0.66s wall
-/// instead of 0.30s - a kernel profile attributed ~95% of it to
-/// `__do_huge_pmd_anonymous_page` and ~89% to compaction. Meanwhile
-/// `compact_fail`/`compact_stall` showed 98% of those attempts failing, and the
-/// process ended up with `AnonHugePages: 0 kB`: we paid for the compaction and got
-/// no huge pages at all.
-///
-/// Huge pages would in principle suit this access pattern - the bitmap is probed
-/// randomly across 1 GiB - but hardware counters bound that upside at ~4.5% of
-/// cycles, against a measured downside of several hundred percent. So opt out
-/// rather than leave it to how the host happens to be tuned.
-///
-/// `MADV_COLLAPSE` is the obvious rejoinder - it is the one mechanism here that is
-/// *not* on the fault path, collapsing already-mapped memory once on request, so
-/// none of the above applies to it - and it was tried. It changes nothing: the
-/// process still reports `AnonHugePages: 0 kB`, and `dTLB-load-misses` move from
-/// 18.0M to 17.8M, i.e. not at all. The call returns success because it attempted
-/// and gave up, and the reason is visible in the host rather than in the program:
-///
-/// ```text
-///   /proc/buddyinfo, Normal zone, order 9 (2 MiB) free blocks: 0
-///   /proc/vmstat: compact_fail 101782 of compact_stall 106589   (95.5% fail)
-///                 thp_collapse_alloc 30
-/// ```
-///
-/// There is no 2 MiB block to be had on a machine in this state, so no advice can
-/// produce one. That does not mean the ~3M dTLB misses a run are not worth
-/// attacking - only that THP cannot be the thing that attacks them here. Reserving
-/// pages up front (`vm.nr_hugepages` + hugetlbfs) is the mechanism that would
-/// actually work, and it is a system configuration decision rather than something
-/// this allocation can ask for.
-#[cfg(target_os = "linux")]
-fn disable_transparent_hugepages(region: &[AtomicU64]) {
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if page_size <= 0 {
-        return;
-    }
-    let start = region.as_ptr() as usize;
-    let end = start + std::mem::size_of_val(region);
-    // madvise requires a page-aligned start; round inward so the advice only ever
-    // covers pages belonging to this allocation (mimalloc hands back 2 MiB-aligned
-    // memory here, so in practice nothing is trimmed).
-    let start = start.next_multiple_of(page_size as usize);
-    if start >= end {
-        return;
-    }
-    // SAFETY: [start, end) lies within the live `region` allocation. MADV_NOHUGEPAGE
-    // only tells the kernel how to back the range with page tables - it does not
-    // read, write, move or unmap it - so it can invalidate neither the reference nor
-    // the zeroed contents. The result is ignored: this is advisory, and a kernel
-    // without THP support rejecting it is fine.
-    unsafe {
-        libc::madvise(
-            start as *mut libc::c_void,
-            end - start,
-            libc::MADV_NOHUGEPAGE,
-        );
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn disable_transparent_hugepages(_region: &[AtomicU64]) {}
-
 /// The bijection between the boards of one layer - all the keys of a given peg
 /// count - and `0..C(33, pegs)`, in both directions.
 ///
@@ -437,9 +361,6 @@ pub(crate) struct DenseKeySet {
 impl DenseKeySet {
     pub(crate) fn new() -> Self {
         let words = zeroed_atomic_vec(NUM_WORDS);
-        // only `words` is worth advising; `summary` is 256 KiB, still well below
-        // the 2 MiB a transparent huge page would need.
-        disable_transparent_hugepages(&words);
         // Deliberately NOT prefaulted, and this is worth stating because a profile
         // of the whole process makes it look like it should be: 13.1% of cycles sit
         // under `exc_page_fault`/`handle_mm_fault` and 3.7% in `kernel_init_pages`,
