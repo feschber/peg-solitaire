@@ -66,6 +66,26 @@ fn into_mut_slices<'a, T>(mut v: &'a mut [T], lens: &[usize]) -> Vec<&'a mut [T]
     slices
 }
 
+/// [`par_join`] for chunks the caller owns: a lone chunk is handed back as-is instead of
+/// being copied into a fresh allocation.
+///
+/// Worth a separate entry point because one chunk is the *common* case at both ends of a run,
+/// not an edge case. [`par_map_chunks`] returns exactly one whenever the work is
+/// single-threaded or too small to be worth splitting (`len < 100 * nthreads`), and that
+/// second condition covers the many short rounds near the start and end of the BFS even on 16
+/// threads. Joining a lone chunk allocates a second full-size buffer and copies every element
+/// into it, to arrive at precisely the `Vec` that was already sitting there.
+///
+/// The multi-chunk path is unchanged - it still needs the parallel copy-out, because the
+/// chunks are separate allocations and the result has to be contiguous.
+pub(crate) fn par_join_owned<T: Copy + Send + Sync>(mut chunks: Vec<Vec<T>>) -> Vec<T> {
+    match chunks.len() {
+        0 => Vec::new(),
+        1 => chunks.pop().expect("just checked there is one"),
+        _ => par_join(&chunks),
+    }
+}
+
 pub(crate) fn par_join<T: Copy + Send + Sync, VT: Send + Sync + AsRef<[T]>>(
     slices: &[VT],
 ) -> Vec<T> {
@@ -144,7 +164,7 @@ where
     F: Fn(&[T]) -> Vec<R> + Send + Sync,
     R: Copy + Default + Send + Sync,
 {
-    par_join(&par_map_chunks(states, nthreads, f))
+    par_join_owned(par_map_chunks(states, nthreads, f))
 }
 
 /// filters `items` in parallel, pre-sizing each chunk's output buffer exactly
@@ -165,7 +185,7 @@ where
         out.extend(chunk.iter().copied().filter(|x| pred(x)));
         out
     });
-    par_join(&chunks)
+    par_join_owned(chunks)
 }
 
 pub(crate) trait ParDedup {
@@ -203,7 +223,7 @@ impl<T: Copy + std::fmt::Debug + Send + Sync + PartialEq> ParDedup for Vec<T> {
                 chunks[i].pop();
             }
         }
-        par_join(&chunks)
+        par_join_owned(chunks)
     }
 }
 
@@ -246,5 +266,5 @@ where
         }
         _ => vec![],
     });
-    par_join(&chunks)
+    par_join_owned(chunks)
 }

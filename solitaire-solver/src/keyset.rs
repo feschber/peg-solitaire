@@ -734,8 +734,9 @@ impl DenseKeySet {
             .collect();
         // parallel copy-out instead of `[Vec<T>]::concat()`, which is sequential -
         // that stood out sharply in a flamegraph of this exact call as a single
-        // core doing a large memmove while the other 15 sat idle.
-        crate::par::par_join(&chunks)
+        // core doing a large memmove while the other 15 sat idle. `_owned` so that a
+        // round whose bits all land in one summary chunk skips the copy entirely.
+        crate::par::par_join_owned(chunks)
     }
 }
 
@@ -870,8 +871,9 @@ mod tests {
         let ways = ways_below();
         let target = Board::INVARIANT_TARGET as usize;
         let mut peak = 0u64;
-        for pegs in 0..=KEY_BITS {
-            let keys = ways[KEY_BITS][pegs][target];
+        // `ways[KEY_BITS]` has one row per peg count, so enumerating it covers 0..=KEY_BITS
+        for (pegs, states) in ways[KEY_BITS].iter().enumerate() {
+            let keys = states[target];
             assert!(
                 keys <= (NUM_WORDS * 64) as u64,
                 "layer of {pegs} pegs needs {keys} bits, map holds {}",
