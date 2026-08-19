@@ -1311,3 +1311,46 @@ impl Iterator for PegIter {
         Some(idx)
     }
 }
+
+/// Pins a structural fact about the compressed key: rotating the board 180 degrees is
+/// exactly *bit reversal* of the 33-bit key.
+///
+/// `to_compressed_repr` gathers cells in increasing bit order, which is row-major over the
+/// cross; the 180-degree rotation sends `(row, col)` to `(6 - row, 6 - col)`, which reverses
+/// that enumeration. So compressed bit `i` maps to bit `32 - i`.
+///
+/// Worth pinning because it is the one symmetry whose action on the key aligns with a scan
+/// order: comparing a key against its reversal consumes bits in pairs from the outside in -
+/// (32, 0), (31, 1), ... , (17, 15), then the middle bit 16 - so a DP scanning in that order
+/// always holds exactly the two bits the comparison needs. Every other symmetry permutes
+/// indices so that deciding `b` against `g(b)` needs bits the scan has not reached.
+///
+/// That makes it the only candidate for *counting* the orbit minima, which is the ~1/8 of each
+/// layer `keyset.rs` addresses but can never store (see `MAX_LAYER_KEYS`). It does **not** make
+/// it a candidate for *ranking* them, which is what shrinking the bitmap would need, for two
+/// reasons worth recording so the idea is not re-attempted:
+///
+/// - The outside-in scan orders keys by bit 32, then 0, then 31, ... - not numerically. A rank
+///   built that way is not monotone in the key, and `DenseKeySet::drain_sorted_by_key` gets its
+///   sortedness *for free* from rank order being key order. The other side of the shrink
+///   phase's intersect is radix-sorted on the raw `u64`, so a permuted extraction order would
+///   silently mismatch it.
+/// - Reversal maps low bit `j` to high bit `32 - j`, coupling the two halves of the two-table
+///   rank. The admissible low halves would depend on all 17 bits of the high half rather than
+///   on its popcount and invariant state alone, so `low_rank[l]` becomes `low_rank[h][l]` -
+///   a 2^17 x 2^16 table. The two-lookup rank does not survive it.
+#[test]
+fn test_rotate_180_is_bit_reversal_of_the_compressed_key() {
+    let keys = [0u64, 1, (1 << Board::SLOTS) - 1, 0x1_5555_5555, 0xdead_beef]
+        .into_iter()
+        .chain((0..2000).map(|_| rand::random::<u64>() & ((1 << Board::SLOTS) - 1)));
+    for key in keys {
+        let board = Board::from_compressed_repr(key);
+        let rotated = board.reverse_rows().reverse_cols();
+        assert_eq!(
+            rotated.to_compressed_repr(),
+            key.reverse_bits() >> (64 - Board::SLOTS),
+            "rotating {key:#x} is not its bit reversal"
+        );
+    }
+}
