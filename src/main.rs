@@ -1,5 +1,81 @@
 use std::{collections::HashSet, num::NonZero};
 
+// TEMPORARY instrumentation: counts every allocation the run makes, so "reduce
+// allocations" has numbers behind it. dhat cannot be used here - valgrind fails to decode
+// the GFNI symmetry primitives - so this counts in-process at full speed instead.
+mod counting {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    pub static ALLOCS: AtomicU64 = AtomicU64::new(0);
+    pub static BYTES: AtomicU64 = AtomicU64::new(0);
+    pub static REALLOCS: AtomicU64 = AtomicU64::new(0);
+    pub static REALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+    /// allocations by power-of-two size class
+    pub static BUCKETS: [AtomicU64; 48] = [const { AtomicU64::new(0) }; 48];
+
+    pub struct Counting;
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            ALLOCS.fetch_add(1, Relaxed);
+            BYTES.fetch_add(layout.size() as u64, Relaxed);
+            let class = (64 - (layout.size() as u64 | 1).leading_zeros()).min(47) as usize;
+            BUCKETS[class].fetch_add(1, Relaxed);
+            log_big(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            REALLOCS.fetch_add(1, Relaxed);
+            REALLOC_BYTES.fetch_add(new_size as u64, Relaxed);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            ALLOCS.fetch_add(1, Relaxed);
+            BYTES.fetch_add(layout.size() as u64, Relaxed);
+            let class = (64 - (layout.size() as u64 | 1).leading_zeros()).min(47) as usize;
+            BUCKETS[class].fetch_add(1, Relaxed);
+            log_big(layout.size());
+            unsafe { System.alloc_zeroed(layout) }
+        }
+    }
+
+    /// Logs every allocation of 2 MiB or more, in order, so the big ones can be matched
+    /// against the algorithm's own logged layer sizes. Deliberately not a backtrace: taking
+    /// one inside a global allocator reenters the allocator.
+    fn log_big(size: usize) {
+        if size >= 2 << 20 {
+            let n = BIG.fetch_add(1, Relaxed);
+            eprintln!("BIG #{n} {size} bytes ({:.1} MiB)", size as f64 / 1048576.0);
+        }
+    }
+
+    pub static BIG: AtomicU64 = AtomicU64::new(0);
+
+    pub fn report() {
+        use std::sync::atomic::Ordering::Relaxed;
+        eprintln!(
+            "ALLOC allocs={} bytes={} reallocs={} realloc_bytes={}",
+            ALLOCS.load(Relaxed),
+            BYTES.load(Relaxed),
+            REALLOCS.load(Relaxed),
+            REALLOC_BYTES.load(Relaxed),
+        );
+        for (class, count) in BUCKETS.iter().enumerate() {
+            let n = count.load(Relaxed);
+            if n > 0 {
+                eprintln!("ALLOC   <2^{class:<2} {n:>10}");
+            }
+        }
+    }
+}
+
+#[global_allocator]
+static COUNTING: counting::Counting = counting::Counting;
+
 use clap::{Parser, Subcommand};
 use solitaire_solver::Board;
 
@@ -141,4 +217,6 @@ fn main() {
             }
         }
     }
+    counting::report();
 }
+
