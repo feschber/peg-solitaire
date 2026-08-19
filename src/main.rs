@@ -236,4 +236,3 @@ fn main() {
     #[cfg(feature = "count-allocs")]
     counting::report();
 }
-

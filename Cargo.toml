@@ -28,10 +28,10 @@ game = ["dep:solitaire-game"]
 count-allocs = []
 
 [profile.release]
-# lto = "thin"
-# strip = "symbols"
+lto = "fat"
+strip = "symbols"
 panic = "abort"
-# codegen-units = 1
+codegen-units = 1
 
 [profile.dev.package."*"]
 opt-level = 2

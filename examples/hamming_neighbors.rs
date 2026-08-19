@@ -343,7 +343,11 @@ fn ways_below(weights: &[usize]) -> Vec<Vec<[u128; 16]>> {
         for j in 0..=n {
             for state in 0..16 {
                 below[i + 1][j][state] = below[i][j][state]
-                    + if j == 0 { 0 } else { below[i][j - 1][state ^ weights[i]] };
+                    + if j == 0 {
+                        0
+                    } else {
+                        below[i][j - 1][state ^ weights[i]]
+                    };
             }
         }
     }
@@ -624,7 +628,10 @@ fn main() {
             .filter(|k| k.count_ones() as usize == pegs)
             .filter(|&k| evaluate(&masks, Board::from_compressed_repr(k).0) == expected)
             .filter(|&k| {
-                Board::from_compressed_repr(k).normalize().to_compressed_repr() == k
+                Board::from_compressed_repr(k)
+                    .normalize()
+                    .to_compressed_repr()
+                    == k
             })
             .map(|k| (1u64, rank_of(k, pegs, target, &weights, &below)))
             .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1.max(b.1)));
