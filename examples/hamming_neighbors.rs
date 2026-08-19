@@ -49,6 +49,13 @@
 //!   orbit-minimality is not one of them. The 180-degree rotation alone would be - it is
 //!   bit-reversal on the compressed key, so a DP walking bit pairs outside-in could count it,
 //!   worth ~2x - but the reflections and transposes need bits the scan has not reached.
+//!   Packing the used values into the lower eighth by a linear map, the way the invariant's
+//!   four dependent bits were dropped, is ruled out twice over. It does not fit - the used set
+//!   *overflows* an eighth, by 176 keys at 6 pegs and 712 at 8, because Burnside's
+//!   `(1/8)(2^33 + sum |Fix(g)|)` counts symmetric boards into orbits smaller than 8 and so
+//!   yields more minima than `total / 8`. And it could not be linear anyway: the invariant was
+//!   a GF(2)-linear condition of codimension exactly 4, whereas orbit-minimality is an
+//!   *inequality* whose solution set is not a coset - its size is not even a power of two.
 //!   Not pursued, because the 16x this file already justified bought *no* measurable time (see
 //!   `MAX_LAYER_KEYS`), so a further 1.3x or even 8x would not either.
 //! - **0 feasible pairs at Hamming distance 1**, as proven.
@@ -621,11 +628,18 @@ fn main() {
             })
             .map(|k| (1u64, rank_of(k, pegs, target, &weights, &below)))
             .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1.max(b.1)));
+        // An eighth is a strict *lower* bound on the count, not an estimate of it: orbits are
+        // 8 boards only when nothing fixes them, and Burnside's count
+        // `(1/8)(2^33 + sum |Fix(g)|)` says the symmetric boards contribute more minima than
+        // `total / 8`. So the used set does not fit in the lower eighth of the space, which
+        // rules out packing it there by any means, linear or otherwise.
+        let eighth = total as f64 / 8.0;
         println!(
             "  {pegs:2} pegs: {count} normalized of {total} ranks ({:.2}%), highest rank {max} \
-             = {:.4} of the space",
+             = {:.4} of the space; one eighth would be {eighth:.1}, so it overflows it by {}",
             100.0 * count as f64 / total.max(1) as f64,
             max as f64 / total.max(1) as f64,
+            count as f64 - eighth,
         );
     }
 
