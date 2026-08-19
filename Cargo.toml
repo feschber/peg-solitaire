@@ -21,6 +21,15 @@ rayon = "1.11.0"
 opt-level = 2
 debug = false
 
+# `release` but with symbols, since `release` strips them and a stripped profile
+# reports bare addresses. Same codegen as release - inherits every setting including
+# `lto`, `codegen-units = 1` and `panic = "abort"` - so timings taken here are
+# comparable to the shipped binary's.
+[profile.profiling]
+inherits = "release"
+strip = "none"
+debug = 1
+
 [features]
 default = ["game"]
 game = ["dep:solitaire-game"]
