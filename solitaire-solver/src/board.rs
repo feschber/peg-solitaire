@@ -670,14 +670,7 @@ impl Board {
     }
 
     pub fn normalize(self) -> Self {
-        let mut symmetries = self.symmetries().into_iter();
-        let mut min = symmetries.next().unwrap();
-        for b in symmetries {
-            if b < min {
-                min = b;
-            }
-        }
-        min
+        self.symmetries().into_iter().min().unwrap()
     }
 
     /// `(board ^ direction_mask(idx, dir)).normalize()`, given `syms = board.symmetries()`.
