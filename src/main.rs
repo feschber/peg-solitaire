@@ -1,8 +1,23 @@
 use std::{collections::HashSet, num::NonZero};
 
-// TEMPORARY instrumentation: counts every allocation the run makes, so "reduce
-// allocations" has numbers behind it. dhat cannot be used here - valgrind fails to decode
-// the GFNI symmetry primitives - so this counts in-process at full speed instead.
+/// Counts every allocation the run makes, behind the `count-allocs` feature.
+///
+/// Exists because the obvious tools do not work here: `dhat` and `massif` both need
+/// valgrind, and valgrind cannot decode the GFNI symmetry primitives
+/// (`VGF2P8AFFINEQB`) this builds with, so it dies with SIGILL before reaching the
+/// solver. This counts in-process at full speed instead, which is enough to answer
+/// "how many allocations, how many bytes, and how big" - the questions that actually
+/// bear on whether allocation is worth optimizing.
+///
+/// What it found, for the record: `calculate-all` makes ~1_791 allocations and churns
+/// ~172 MB per solve, so the count is negligible and the bytes are what matter. The
+/// bytes are ~13 large blocks - the 8.7 MiB keyset bitmap, the retained per-layer
+/// `Vec<Board>`s that are the answer itself, and two exactly-sized tail buffers of
+/// 6.4 and 12.8 MiB. That is why swapping the allocator moved so little.
+///
+/// Enable with `cargo run --release --features count-allocs -- --repeat 1 calculate-all`.
+/// Differencing two repeat counts separates per-solve cost from startup.
+#[cfg(feature = "count-allocs")]
 mod counting {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -73,6 +88,7 @@ mod counting {
     }
 }
 
+#[cfg(feature = "count-allocs")]
 #[global_allocator]
 static COUNTING: counting::Counting = counting::Counting;
 
@@ -217,6 +233,7 @@ fn main() {
             }
         }
     }
+    #[cfg(feature = "count-allocs")]
     counting::report();
 }
 

@@ -24,6 +24,8 @@ debug = false
 [features]
 default = ["game"]
 game = ["dep:solitaire-game"]
+# wraps the global allocator to count allocations - see `counting` in src/main.rs
+count-allocs = []
 
 [profile.release]
 # lto = "thin"
