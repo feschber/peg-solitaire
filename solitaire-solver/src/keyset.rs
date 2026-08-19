@@ -201,8 +201,8 @@ fn zeroed_atomic_vec(len: usize) -> Vec<AtomicU64> {
     unsafe { std::mem::transmute::<Vec<u64>, Vec<AtomicU64>>(zeros) }
 }
 
-/// The bijection between the boards of one layer - all the keys of a given peg
-/// count - and `0..C(33, pegs)`, in both directions.
+/// The bijection between the boards of one layer - the keys of a given peg count that also
+/// carry [`Board::INVARIANT_TARGET`] - and `0..layer_keys`, in both directions.
 ///
 /// Its own type rather than four fields on [`DenseKeySet`] because the ranking is a
 /// separable concern from the bitmap, and because it is what a caller would need a
@@ -361,29 +361,25 @@ pub(crate) struct DenseKeySet {
 impl DenseKeySet {
     pub(crate) fn new() -> Self {
         let words = zeroed_atomic_vec(NUM_WORDS);
-        // Deliberately NOT prefaulted, and this is worth stating because a profile
-        // of the whole process makes it look like it should be: 13.1% of cycles sit
-        // under `exc_page_fault`/`handle_mm_fault` and 3.7% in `kernel_init_pages`,
-        // spread through the run, which is first touch of this mapping arriving one
-        // 4 KiB page at a time (4 KiB because of the advice above).
+        // Deliberately NOT prefaulted, though the reason has changed and is now weaker than
+        // it was. Populating this up front with `MADV_POPULATE_WRITE`, issued from parallel
+        // chunks so as not to serialize what the lazy faults do across all workers, measured
+        // *worse* by 38 ms (+25.8%, slower in 14 of 14 interleaved reps).
         //
-        // Populating it up front with `MADV_POPULATE_WRITE`, issued from parallel
-        // chunks so as not to serialize what the lazy faults do across all workers,
-        // measured *worse* by 38 ms (+25.8%, slower in 14 of 14 interleaved reps).
+        // That was measured against a 1 GiB mapping indexed by the raw key, of which only a
+        // quarter was ever touched - peak RSS 261 MiB, because `normalize` returns the minimum
+        // of each board's 8-symmetry orbit and a minimum-of-8 leaves the high bits of the
+        // compressed key clear far more often than not, so the keys crowded into the low
+        // quarter of the range. Prefaulting therefore committed and zeroed ~760 MiB nothing
+        // would ever read, which was the whole of the regression.
         //
-        // Because only a quarter of this mapping is ever touched: peak RSS of the
-        // 1 GiB region is 261 MiB, reproducibly. The keys are not spread over the
-        // space uniformly - `normalize` returns the minimum of each board's
-        // 8-symmetry orbit, and a minimum-of-8 leaves the high bits of the
-        // compressed key clear far more often than not, so the keys crowd into the
-        // low quarter of the range. Prefaulting therefore commits and zeroes ~760
-        // MiB that nothing will ever read, which is the whole of the regression.
-        //
-        // So the fault cost in the profile is first touch of memory the run
-        // genuinely uses, not waste, and the untouched three quarters of the
-        // mapping costs nothing but address space. Shrinking the key space - e.g.
-        // ranking each round's boards within `C(33, pegs)` instead of `2^33` - is
-        // the lever that would actually cut it, at the price of computing the rank.
+        // None of that still holds. Ranking within the layer and then within the invariant
+        // subspace (see `MAX_LAYER_KEYS`) has taken the mapping to ~8.7 MiB, essentially all
+        // of which a round touches, so the waste the regression consisted of is gone - and so
+        // is most of the fault cost that made prefaulting tempting in the first place, since
+        // first touch now covers ~8.7 MiB rather than ~58 MiB. Whether prefaulting would now
+        // win is genuinely open; it has not been re-measured, and the old number should not be
+        // read as saying no.
         Self {
             words,
             summary: zeroed_atomic_vec(SUMMARY_WORDS),

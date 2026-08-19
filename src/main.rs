@@ -15,9 +15,9 @@ struct Args {
     ///
     /// For profiling and benchmarking a computation that takes ~100ms: sampling one
     /// run yields few samples, and repeating the *process* instead charges every
-    /// iteration for startup, first-touch faulting ~40MB, and mimalloc's teardown
-    /// purge - which together are a couple of percent of a run, all of it noise
-    /// relative to the loops one is usually trying to measure. Repeating in-process
+    /// iteration for startup and first touch of the maps - which together are a
+    /// couple of percent of a run, all of it noise relative to the loops one is
+    /// usually trying to measure. Repeating in-process
     /// keeps the allocator and page tables warm, so iterations after the first
     /// measure steady state.
     ///
