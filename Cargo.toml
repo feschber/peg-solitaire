@@ -38,7 +38,7 @@ game = ["dep:solitaire-game"]
 count-allocs = []
 
 [profile.release]
-lto = "fat"
+lto = "thin"
 strip = "symbols"
 panic = "abort"
 codegen-units = 1

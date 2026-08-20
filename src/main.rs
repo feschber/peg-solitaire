@@ -178,16 +178,20 @@ fn main() {
                     solitaire_solver::calculate_all_solutions_naive();
                 }
                 Command::CalculateRandomChanceSuccessRatio => {
-                    let feasible = solitaire_solver::calculate_feasible_set(None);
+                    let feasible = solitaire_solver::calculate_feasible_set(args.threads);
                     let start = std::time::Instant::now();
-                    let feasible = feasible.into_iter().collect();
+                    let feasible: Vec<_> = feasible.into_iter().collect();
                     let success_probabilities =
-                        solitaire_solver::calculate_p_random_chance_success(feasible);
+                        solitaire_solver::calculate_p_random_chance_success(feasible.into_iter());
                     let p = *success_probabilities.get(&Board::default()).unwrap();
                     let percentage = p * 100.;
 
                     println!("took {:?}", start.elapsed());
                     println!("success probability when chosing moves at random: {percentage}%");
+                    let (b, p) = success_probabilities.iter().map(|(b, p)| (*b, *p)).fold((Board::default(), f64::INFINITY), |(b1, p1), (b2, p2)| if p2 < p1 { (b2, p2) } else { (b1, p1) });
+                    let perc = p * 100.;
+                    println!("minimum success chance: \n{b} ({perc}%)");
+
                 }
                 Command::CalculateSingle => {
                     let solution = solitaire_solver::calculate_first_solution();
