@@ -1,73 +1,185 @@
 use crate::solution::SolutionMultiset;
 use crate::dir::Dir;
 use crate::par;
+use crate::board::Idx;
 use crate::{Board, Move};
 use crate::{HashMap, HashSet, Solution};
 use std::collections::BTreeMap;
 use std::num::NonZero;
+
+/// Dense slot for a move, keyed by its starting bit and direction: 64 positions x 4
+/// directions. Sparse - only 76 of the 256 are reachable - but it makes the occurrence
+/// counter a flat array indexed by arithmetic rather than a map.
+const MOVE_SLOTS: usize = 64 * 4;
+
+/// A solution is 31 moves, so no single move can occur more often than that.
+const MAX_OCCURRENCES: usize = 32;
+
+fn move_slot(idx: usize, dir: Dir) -> usize {
+    idx * 4 + dir.index()
+}
+
+/// The `Move` a starting bit and direction describe.
+///
+/// Pure geometry, so it needs no board: `skip` is one step along `dir` and `target` two.
+/// `test_move_at_matches_get_legal_moves` pins it against `Board::get_legal_moves`, which
+/// derives the same thing the long way round.
+fn move_at(idx: usize, dir: Dir) -> Move {
+    let row = (idx / Board::REPR as usize) as i32;
+    let col = (idx % Board::REPR as usize) as i32;
+    let (d_row, d_col) = match dir {
+        Dir::North => (-1, 0),
+        Dir::South => (1, 0),
+        Dir::West => (0, -1),
+        Dir::East => (0, 1),
+    };
+    let step = |k: i32| (((row + d_row * k) as Idx), ((col + d_col * k) as Idx));
+    Move {
+        pos: (row as Idx, col as Idx),
+        skip: step(1),
+        target: step(2),
+    }
+}
+
+/// Random value per (move slot, occurrence count), for hashing a move *multiset*
+/// incrementally.
+///
+/// Deterministic rather than `rand::random`: the table is a pure function of the seed, so a
+/// run is reproducible, and it is built once up front instead of being filled lazily through
+/// a `HashMap` lookup on every edge.
+///
+/// `count == 0` is deliberately zero, which makes the hash of a multiset exactly the XOR of
+/// `table[slot][count]` over the slots present - a move at count zero contributes nothing.
+struct Zobrist {
+    table: Vec<[u64; MAX_OCCURRENCES]>,
+}
+
+impl Zobrist {
+    fn new() -> Self {
+        // splitmix64, so each entry is an independent-looking constant with no state to carry
+        const fn mix(mut x: u64) -> u64 {
+            x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            x ^ (x >> 31)
+        }
+        Self {
+            table: (0..MOVE_SLOTS)
+                .map(|slot| {
+                    let mut row = [0u64; MAX_OCCURRENCES];
+                    for (count, value) in row.iter_mut().enumerate().skip(1) {
+                        *value = mix(((slot as u64) << 8) | count as u64);
+                    }
+                    row
+                })
+                .collect(),
+        }
+    }
+
+    /// XOR to apply when a move's count goes from `count - 1` to `count`, or back.
+    fn delta(&self, slot: usize, count: usize) -> u64 {
+        self.table[slot][count - 1] ^ self.table[slot][count]
+    }
+}
+
+type MultisetHash = u64;
+
+/// Depth-first search over the feasible graph, collecting the distinct move multisets that
+/// reach the solved board.
+///
+/// The state is maintained *in place* and undone on the way back out, which is the whole
+/// point: the previous version pushed `(board, multiset, hash)` onto an explicit stack and
+/// so cloned a `BTreeMap` for every edge it pushed - around 85 million of them for the
+/// central game. Here the multiset is one flat counter array, a move costs an increment and
+/// an XOR, and a `BTreeMap` is built only when a solution is actually found (12_752 times).
+struct Search<'a> {
+    feasible: &'a HashSet<Board>,
+    zobrist: Zobrist,
+    /// occurrences of each move slot along the current path
+    counts: Vec<u8>,
+    /// multiset hashes already expanded - see `visit` for why the board is not part of the key
+    visited: std::collections::HashSet<MultisetHash>,
+    solutions: std::collections::HashSet<SolutionMultiset>,
+}
+
+impl Search<'_> {
+    /// Expands `board`, whose path so far hashes to `hash`.
+    ///
+    /// `visited` keys on the multiset hash *alone*, where the previous version used
+    /// `(board, hash)`. That is not a weakening: a move is an XOR with a fixed mask and XOR
+    /// commutes, so the board is `start ^ (XOR of the masks applied, with even multiplicities
+    /// cancelling)` - i.e. the multiset determines the board. Adding the board to the key
+    /// therefore partitions nothing further, and dropping it halves the table, which at ~85M
+    /// entries was most of the 3.4 GB this used to need.
+    fn visit(&mut self, board: Board, hash: MultisetHash) {
+        if board.is_solved() {
+            self.solutions.insert(self.materialize());
+            return;
+        }
+
+        // `symmetries` once per board, then `normalize_after_move` XORs each move's mask into
+        // the eight images - the identity `g(b ^ m) = g(b) ^ g(m)`. The previous version
+        // called `board.mov(mov).normalize()`, normalizing every successor from scratch: eight
+        // full symmetry transforms per edge instead of eight XORs.
+        let syms = board.symmetries();
+        for dir in Dir::enumerate() {
+            for idx in board.mov_pattern_mask(dir) {
+                if !self
+                    .feasible
+                    .contains(&Board::normalize_after_move(&syms, idx, dir))
+                {
+                    continue;
+                }
+                let slot = move_slot(idx, dir);
+                self.counts[slot] += 1;
+                let next_hash = hash ^ self.zobrist.delta(slot, self.counts[slot] as usize);
+                if self.visited.insert(next_hash) {
+                    // the search itself walks un-normalized boards, as it did before; only the
+                    // feasibility test above is symmetry-reduced
+                    self.visit(board.toggle_mov_idx_unchecked(idx, dir), next_hash);
+                }
+                self.counts[slot] -= 1;
+            }
+        }
+    }
+
+    /// Turns the current counter array into the `BTreeMap` the API returns. Only ever called
+    /// on reaching a solution, so it can afford to be the slow part.
+    fn materialize(&self) -> SolutionMultiset {
+        let mut multiset = BTreeMap::new();
+        for (slot, &count) in self.counts.iter().enumerate() {
+            if count > 0 {
+                multiset.insert(move_at(slot / 4, Dir::from_index(slot % 4)), count as usize);
+            }
+        }
+        multiset
+    }
+}
 
 /// we define two solutions as "equal" when the
 ///  multiset of steps is equivalent between them
 ///
 /// Finds all *unique* solutions (by step-multiset) from `start` to any board in `goals`.
 ///
-/// Uses BFS/DFS over the feasible graph, accumulating the multiset of steps along
-/// each path.  When a goal is reached the current multiset is inserted into the
-/// result set — duplicates collapse automatically.
+/// For the central game this is 12_752 multisets, against 40_861_647_040_079_968 move
+/// sequences - so each multiset admits on the order of 10^12 valid orderings, which is why
+/// enumerating the classes is tractable at all while enumerating the sequences is not.
 pub fn all_unique_solutions(
     start: Board,
-    feasible: impl Iterator<Item = Board>,
+    feasible: impl IntoIterator<Item = Board>,
 ) -> std::collections::HashSet<SolutionMultiset> {
     log::info!("calculating unique solutions ....");
-    let feasible: HashSet<Board> = feasible.collect();
-
-    // Work-stack entry: (current_board, accumulated_multiset, hash of multiset)
-    // Using a stack (DFS) keeps memory proportional to path depth;
-    // swap for a VecDeque + pop_front if you prefer BFS.
-    let mut stack: Vec<(Board, SolutionMultiset, MultisetHash)> = vec![(start, BTreeMap::new(), 0)];
-
-    let mut unique_solutions: std::collections::HashSet<SolutionMultiset> =
-        std::collections::HashSet::default();
-
-    let mut visited: std::collections::HashSet<(Board, MultisetHash)> =
-        std::collections::HashSet::new();
-    println!();
-    let mut zobrist = ZobristTable::default();
-    visited.insert((start, 0));
-
-    while let Some((board, multiset, hash)) = stack.pop() {
-        if board.is_solved() {
-            unique_solutions.insert(multiset);
-            // Do NOT continue here if a goal board can still have outgoing
-            // moves that lead to *other* goals; change to `continue` if goals
-            // are always terminal.
-            continue;
-        }
-
-        for mov in board.get_legal_moves() {
-            let next_board = board.mov(mov);
-            // Only follow edges that stay within the feasible set
-            if !feasible.contains(&next_board.normalize()) {
-                continue;
-            }
-
-            // Extend the multiset with this step
-            let mut next_multiset = multiset.clone();
-
-            let new_count = {
-                let c = next_multiset.entry(mov).or_insert(0);
-                *c += 1;
-                *c
-            };
-            let next_hash = hash ^ zobrist.delta(&mov, new_count);
-
-            // Only push if this (board, multiset) state is genuinely new
-            if visited.insert((next_board, next_hash)) {
-                stack.push((next_board, next_multiset, next_hash));
-            }
-        }
-    }
-    unique_solutions
+    let feasible: HashSet<Board> = feasible.into_iter().collect();
+    let mut search = Search {
+        feasible: &feasible,
+        zobrist: Zobrist::new(),
+        counts: vec![0u8; MOVE_SLOTS],
+        visited: std::collections::HashSet::default(),
+        solutions: std::collections::HashSet::default(),
+    };
+    search.visited.insert(0);
+    search.visit(start, 0);
+    search.solutions
 }
 
 #[allow(unused)]
@@ -135,7 +247,6 @@ impl ZobristTable {
     }
 }
 
-type MultisetHash = u64;
 
 /// Upper bound on the moves available from one board.
 ///
@@ -293,4 +404,41 @@ fn successors_of(board: Board, buffer: &mut [Board; MAX_MOVES], kind: PathKind) 
         len = write;
     }
     &buffer[..len]
+}
+
+/// `move_at` derives a `Move` from a starting bit and direction by pure geometry, while
+/// `Board::get_legal_moves` derives the same thing from the board via `get_legal_move`.
+/// The search uses the former for every edge, so they had better agree.
+#[test]
+fn test_move_at_matches_get_legal_moves() {
+    let boards = [
+        Board::default(),
+        Board(Board::full().0 & !Board::solved().0),
+        Board::solved(),
+    ]
+    .into_iter()
+    .chain((0..500).map(|_| {
+        Board::from_compressed_repr(rand::random::<u64>() & ((1 << Board::SLOTS) - 1))
+    }));
+
+    let mut checked = 0usize;
+    for board in boards {
+        let mut expected = board.get_legal_moves();
+        expected.sort_unstable();
+
+        let mut derived: Vec<Move> = Dir::enumerate()
+            .into_iter()
+            .flat_map(|dir| {
+                board
+                    .mov_pattern_mask(dir)
+                    .into_iter()
+                    .map(move |idx| move_at(idx, dir))
+            })
+            .collect();
+        derived.sort_unstable();
+
+        assert_eq!(derived, expected, "move sets differ for {board:?}");
+        checked += expected.len();
+    }
+    assert!(checked > 0, "no moves were compared");
 }
