@@ -188,10 +188,14 @@ fn main() {
 
                     println!("took {:?}", start.elapsed());
                     println!("success probability when chosing moves at random: {percentage}%");
-                    let (b, p) = success_probabilities.iter().map(|(b, p)| (*b, *p)).fold((Board::default(), f64::INFINITY), |(b1, p1), (b2, p2)| if p2 < p1 { (b2, p2) } else { (b1, p1) });
+                    let (b, p) = success_probabilities
+                        .iter()
+                        .map(|(b, p)| (*b, *p))
+                        .fold((Board::default(), f64::INFINITY), |(b1, p1), (b2, p2)| {
+                            if p2 < p1 { (b2, p2) } else { (b1, p1) }
+                        });
                     let perc = p * 100.;
                     println!("minimum success chance: \n{b} ({perc}%)");
-
                 }
                 Command::CalculateSingle => {
                     let solution = solitaire_solver::calculate_first_solution();
@@ -226,8 +230,7 @@ fn main() {
                         "distinct move sequences:  {}",
                         moves.get(&Board::default()).unwrap()
                     );
-                    let boards =
-                        solitaire_solver::all_unique_board_paths(feasible, args.threads);
+                    let boards = solitaire_solver::all_unique_board_paths(feasible, args.threads);
                     log::info!(
                         "distinct board sequences: {}",
                         boards.get(&Board::default()).unwrap()

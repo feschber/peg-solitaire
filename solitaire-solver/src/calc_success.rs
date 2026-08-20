@@ -6,7 +6,9 @@ use super::{
 };
 
 /// calculate the chances of winning the game by chosing possible moves at random
-pub fn calculate_p_random_chance_success(feasible: impl Iterator<Item = Board>) -> HashMap<Board, f64> {
+pub fn calculate_p_random_chance_success(
+    feasible: impl Iterator<Item = Board>,
+) -> HashMap<Board, f64> {
     let mut chances = HashMap::default();
     chances.insert(Board::solved(), 1.0);
 
@@ -50,7 +52,10 @@ fn successors_of(board: Board, buffer: &mut [Board; MAX_MOVES]) -> &[Board] {
     let mut len = 0;
     for dir in Dir::enumerate() {
         for idx in board.mov_pattern_mask(dir) {
-            debug_assert!(len < MAX_MOVES, "more than {MAX_MOVES} moves from one board");
+            debug_assert!(
+                len < MAX_MOVES,
+                "more than {MAX_MOVES} moves from one board"
+            );
             buffer[len] = Board::normalize_after_move(&syms, idx, dir);
             len += 1;
         }

@@ -85,7 +85,8 @@ fn calculate_random_move_chances(
     let wake = wake.clone();
     let task = thread_pool.spawn(async move {
         let feasible = feasible;
-        let p_random_chance = solitaire_solver::calculate_p_random_chance_success(feasible.into_iter());
+        let p_random_chance =
+            solitaire_solver::calculate_p_random_chance_success(feasible.into_iter());
 
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {

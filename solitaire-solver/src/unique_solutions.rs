@@ -1,12 +1,12 @@
-use crate::solution::SolutionMultiset;
+use crate::board::Idx;
 use crate::dir::Dir;
 use crate::par;
-use crate::board::Idx;
+use crate::solution::SolutionMultiset;
 use crate::{Board, Move};
 use crate::{HashMap, HashSet, Solution};
+use rustc_hash::FxHashSet;
 use std::collections::BTreeMap;
 use std::num::NonZero;
-use rustc_hash::FxHashSet;
 
 /// Dense slot for a move, keyed by its starting bit and direction: 64 positions x 4
 /// directions. Sparse - only 76 of the 256 are reachable - but it makes the occurrence
@@ -248,7 +248,6 @@ impl ZobristTable {
     }
 }
 
-
 /// Upper bound on the moves available from one board.
 ///
 /// The cross holds 38 collinear triples and each can be jumped from either end, so no
@@ -386,7 +385,10 @@ fn successors_of(board: Board, buffer: &mut [Board; MAX_MOVES], kind: PathKind) 
     let mut len = 0;
     for dir in Dir::enumerate() {
         for idx in board.mov_pattern_mask(dir) {
-            debug_assert!(len < MAX_MOVES, "more than {MAX_MOVES} moves from one board");
+            debug_assert!(
+                len < MAX_MOVES,
+                "more than {MAX_MOVES} moves from one board"
+            );
             buffer[len] = Board::normalize_after_move(&syms, idx, dir);
             len += 1;
         }
@@ -412,15 +414,16 @@ fn successors_of(board: Board, buffer: &mut [Board; MAX_MOVES], kind: PathKind) 
 /// The search uses the former for every edge, so they had better agree.
 #[test]
 fn test_move_at_matches_get_legal_moves() {
-    let boards = [
-        Board::default(),
-        Board(Board::full().0 & !Board::solved().0),
-        Board::solved(),
-    ]
-    .into_iter()
-    .chain((0..500).map(|_| {
-        Board::from_compressed_repr(rand::random::<u64>() & ((1 << Board::SLOTS) - 1))
-    }));
+    let boards =
+        [
+            Board::default(),
+            Board(Board::full().0 & !Board::solved().0),
+            Board::solved(),
+        ]
+        .into_iter()
+        .chain((0..500).map(|_| {
+            Board::from_compressed_repr(rand::random::<u64>() & ((1 << Board::SLOTS) - 1))
+        }));
 
     let mut checked = 0usize;
     for board in boards {
