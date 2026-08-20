@@ -6,6 +6,7 @@ use crate::{Board, Move};
 use crate::{HashMap, HashSet, Solution};
 use std::collections::BTreeMap;
 use std::num::NonZero;
+use rustc_hash::FxHashSet;
 
 /// Dense slot for a move, keyed by its starting bit and direction: 64 positions x 4
 /// directions. Sparse - only 76 of the 256 are reachable - but it makes the occurrence
@@ -98,8 +99,8 @@ struct Search<'a> {
     /// occurrences of each move slot along the current path
     counts: Vec<u8>,
     /// multiset hashes already expanded - see `visit` for why the board is not part of the key
-    visited: std::collections::HashSet<MultisetHash>,
-    solutions: std::collections::HashSet<SolutionMultiset>,
+    visited: FxHashSet<MultisetHash>,
+    solutions: FxHashSet<SolutionMultiset>,
 }
 
 impl Search<'_> {
@@ -167,15 +168,15 @@ impl Search<'_> {
 pub fn all_unique_solutions(
     start: Board,
     feasible: impl IntoIterator<Item = Board>,
-) -> std::collections::HashSet<SolutionMultiset> {
+) -> FxHashSet<SolutionMultiset> {
     log::info!("calculating unique solutions ....");
     let feasible: HashSet<Board> = feasible.into_iter().collect();
     let mut search = Search {
         feasible: &feasible,
         zobrist: Zobrist::new(),
         counts: vec![0u8; MOVE_SLOTS],
-        visited: std::collections::HashSet::default(),
-        solutions: std::collections::HashSet::default(),
+        visited: FxHashSet::default(),
+        solutions: FxHashSet::default(),
     };
     search.visited.insert(0);
     search.visit(start, 0);
@@ -184,7 +185,7 @@ pub fn all_unique_solutions(
 
 #[allow(unused)]
 fn canonicalize(
-    unique_solutions: std::collections::HashSet<SolutionMultiset>,
+    unique_solutions: FxHashSet<SolutionMultiset>,
     feasible: HashSet<Board>,
 ) -> Vec<[Board; 32]> {
     for s in &unique_solutions {
@@ -198,7 +199,7 @@ fn canonicalize(
     // canonicalize => sort multiset,
     // then always take first possible move on initial board.
     // Deduplicate by normalizing the boards and rehashing
-    let unique_solutions: std::collections::HashSet<Solution> = unique_solutions
+    let unique_solutions: FxHashSet<Solution> = unique_solutions
         .into_iter()
         .map(|b| Solution::from((b, &feasible)))
         .collect();
@@ -210,7 +211,7 @@ fn canonicalize(
         println!("{s}");
     }
 
-    let unique_solutions: std::collections::HashSet<[Board; 32]> = unique_solutions
+    let unique_solutions: FxHashSet<[Board; 32]> = unique_solutions
         .into_iter()
         .map(<[Board; 32]>::from)
         .map(|mut s| {
