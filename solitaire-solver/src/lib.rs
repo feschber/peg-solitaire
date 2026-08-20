@@ -27,4 +27,4 @@ pub use calc_naive::calculate_all_solutions_naive;
 pub use calc_success::calculate_p_random_chance_success;
 pub use feasible::calculate_feasible_set;
 pub use solution::print_solution;
-pub use unique_solutions::{all_unique_paths, all_unique_solutions};
+pub use unique_solutions::{all_unique_board_paths, all_unique_paths, all_unique_solutions};

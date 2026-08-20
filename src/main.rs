@@ -215,10 +215,19 @@ fn main() {
                     log::info!("unique solutions: {}", solutions.len());
                 }
                 Command::UniquePaths => {
-                    let feasible = solitaire_solver::calculate_feasible_set(None);
+                    let feasible = solitaire_solver::calculate_feasible_set(args.threads);
                     log::info!("feasible: {}", feasible.len());
-                    let paths = solitaire_solver::all_unique_paths(feasible);
-                    log::info!("unique paths: {}", paths.get(&Board::default()).unwrap());
+                    let moves = solitaire_solver::all_unique_paths(feasible.clone(), args.threads);
+                    log::info!(
+                        "distinct move sequences:  {}",
+                        moves.get(&Board::default()).unwrap()
+                    );
+                    let boards =
+                        solitaire_solver::all_unique_board_paths(feasible, args.threads);
+                    log::info!(
+                        "distinct board sequences: {}",
+                        boards.get(&Board::default()).unwrap()
+                    );
                 }
             }
         }

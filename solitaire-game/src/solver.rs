@@ -135,7 +135,9 @@ fn calculate_unique_paths(
     let feasible = feasible.0.clone();
     let wake = wake.clone();
     let task = thread_pool.spawn(async move {
-        let unique_paths = solitaire_solver::all_unique_paths(feasible.iter().copied());
+        // `None` = all cores: this already runs on the async pool, off the main thread,
+        // so there is no frame budget to protect here
+        let unique_paths = solitaire_solver::all_unique_paths(feasible.iter().copied(), None);
         info!("unique solutions: {}", unique_paths.len());
 
         let mut command_queue = CommandQueue::default();
