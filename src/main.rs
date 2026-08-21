@@ -190,12 +190,12 @@ fn main() {
 
                     println!("took {:?}", start.elapsed());
                     println!("success probability when chosing moves at random: {percentage}%");
-                    let (b, p) = success_probabilities
-                        .iter()
-                        .map(|(b, p)| (*b, *p))
-                        .fold((Board::default(), f64::INFINITY), |(b1, p1), (b2, p2)| {
+                    let (b, p) = success_probabilities.iter().map(|(b, p)| (*b, *p)).fold(
+                        (Board::default(), f64::INFINITY),
+                        |(b1, p1), (b2, p2)| {
                             if p2 < p1 { (b2, p2) } else { (b1, p1) }
-                        });
+                        },
+                    );
                     let perc = p * 100.;
                     println!("minimum success chance: \n{b} ({perc}%)");
                 }
@@ -218,8 +218,7 @@ fn main() {
                 Command::UniqueJumpMaps => {
                     let feasible = solitaire_solver::calculate_feasible_set(args.threads);
                     log::info!("feasible: {}", feasible.len());
-                    let maps =
-                        solitaire_solver::all_unique_jump_maps(Board::default(), feasible);
+                    let maps = solitaire_solver::all_unique_jump_maps(Board::default(), feasible);
                     log::info!("unique jump maps: {}", maps.len());
                 }
                 Command::UniqueSolutions => {

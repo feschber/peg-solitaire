@@ -318,7 +318,9 @@ pub fn all_unique_jump_maps(
     let mut search = JumpSearch {
         feasible: &feasible,
         placed: (0..64 * 64).map(|i| mix(i as u64)).collect(),
-        jumped: (0..64 * 64).map(|i| mix(0x5EED_0000_0000_0000 | i as u64)).collect(),
+        jumped: (0..64 * 64)
+            .map(|i| mix(0x5EED_0000_0000_0000 | i as u64))
+            .collect(),
         identity,
         map: [NOT_REMOVED; 64],
         visited: FxHashSet::default(),
