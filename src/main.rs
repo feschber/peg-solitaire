@@ -142,6 +142,8 @@ enum Command {
     UniqueSolutions,
     /// calculate unique paths of solutions
     UniquePaths,
+    /// count solutions distinct by which peg jumped which, tracking pegs by start slot
+    UniqueJumpMaps,
 }
 
 fn main() {
@@ -213,13 +215,18 @@ fn main() {
                             .collect();
                     assert_eq!(solutions, solutions_naive)
                 }
-                Command::UniqueSolutions => {
-                    let feasible = solitaire_solver::calculate_feasible_set(None);
+                Command::UniqueJumpMaps => {
+                    let feasible = solitaire_solver::calculate_feasible_set(args.threads);
                     log::info!("feasible: {}", feasible.len());
-                    let solutions = solitaire_solver::all_unique_solutions(
-                        Board::default(),
-                        feasible.into_iter(),
-                    );
+                    let maps =
+                        solitaire_solver::all_unique_jump_maps(Board::default(), feasible);
+                    log::info!("unique jump maps: {}", maps.len());
+                }
+                Command::UniqueSolutions => {
+                    let feasible = solitaire_solver::calculate_feasible_set(args.threads);
+                    log::info!("feasible: {}", feasible.len());
+                    let solutions =
+                        solitaire_solver::all_unique_solutions(Board::default(), feasible);
                     log::info!("unique solutions: {}", solutions.len());
                 }
                 Command::UniquePaths => {

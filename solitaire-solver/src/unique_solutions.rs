@@ -183,6 +183,153 @@ pub fn all_unique_solutions(
     search.solutions
 }
 
+/// Sentinel in a [`JumpMap`] for the one peg that is never removed.
+pub const NOT_REMOVED: u8 = u8::MAX;
+
+/// Which peg jumped which, both identified by the slot the peg *started* in.
+///
+/// Indexed by the victim's starting slot; the value is the jumper's. Every peg is removed
+/// exactly once - 32 pegs down to 1, one removal per move - so this is a *function* with 31
+/// entries and distinct keys, not a multiset. That is what makes the whole equivalence
+/// cheaper than the move-multiset one: no occurrence counting, and the canonical form is a
+/// fixed-size array rather than a `BTreeMap`.
+///
+/// Raw bit positions, so the array is 64 wide with the off-board indices unused.
+pub type JumpMap = [u8; 64];
+
+/// Skip and target bit positions of the move starting at `idx` and going in `dir`.
+fn move_bits(idx: usize, dir: Dir) -> (usize, usize) {
+    let step = match dir {
+        Dir::North => -(Board::REPR as isize),
+        Dir::South => Board::REPR as isize,
+        Dir::West => -1,
+        Dir::East => 1,
+    };
+    let at = |k: isize| (idx as isize + step * k) as usize;
+    (at(1), at(2))
+}
+
+/// Depth-first search collecting the distinct [`JumpMap`]s that reach the solved board.
+///
+/// Separate from [`Search`] rather than sharing it, because the two equivalences need
+/// genuinely different state: the multiset one is a function of the moves alone, while this
+/// one depends on *peg identity*, which is a function of the whole path.
+///
+/// That difference is also why this may not be tractable where the multiset version is. The
+/// multiset version prunes on the multiset alone, since a move is an XOR with a fixed mask
+/// and so the multiset determines the board. Here two paths can reach the same board with the
+/// same partial jump map and still have their pegs arranged differently, which changes every
+/// pair they can produce afterwards - so the state that determines the future is
+/// `(board, identity assignment, partial map)`, and there are far more of those than boards.
+struct JumpSearch<'a> {
+    feasible: &'a HashSet<Board>,
+    /// random value per (slot, peg identity), for hashing the identity assignment
+    placed: Vec<u64>,
+    /// random value per (victim, jumper), for hashing the partial map
+    jumped: Vec<u64>,
+    /// slot -> starting slot of the peg currently in it; only occupied slots are meaningful
+    identity: JumpMap,
+    /// the canonical form being built
+    map: JumpMap,
+    visited: FxHashSet<(Board, u64)>,
+    maps: FxHashSet<JumpMap>,
+    states: u64,
+}
+
+impl JumpSearch<'_> {
+    fn visit(&mut self, board: Board, hash: u64) {
+        if board.is_solved() {
+            self.maps.insert(self.map);
+            return;
+        }
+        self.states += 1;
+        if self.states.is_multiple_of(50_000_000) {
+            log::info!(
+                "jump maps: {} states expanded, {} distinct maps so far",
+                self.states,
+                self.maps.len()
+            );
+        }
+
+        let syms = board.symmetries();
+        for dir in Dir::enumerate() {
+            for idx in board.mov_pattern_mask(dir) {
+                if !self
+                    .feasible
+                    .contains(&Board::normalize_after_move(&syms, idx, dir))
+                {
+                    continue;
+                }
+                let (skip, target) = move_bits(idx, dir);
+                let jumper = self.identity[idx];
+                let victim = self.identity[skip];
+
+                // The hash covers the identity assignment *and* the partial map, so that two
+                // states are merged only when both agree - see the note on the struct.
+                let next_hash = hash
+                    ^ self.placed[idx * 64 + jumper as usize]
+                    ^ self.placed[skip * 64 + victim as usize]
+                    ^ self.placed[target * 64 + jumper as usize]
+                    ^ self.jumped[victim as usize * 64 + jumper as usize];
+
+                let next_board = board.toggle_mov_idx_unchecked(idx, dir);
+                if !self.visited.insert((next_board, next_hash)) {
+                    continue;
+                }
+
+                let vacated = self.identity[target];
+                self.identity[target] = jumper;
+                self.map[victim as usize] = jumper;
+
+                self.visit(next_board, next_hash);
+
+                self.map[victim as usize] = NOT_REMOVED;
+                self.identity[target] = vacated;
+            }
+        }
+    }
+}
+
+/// Finds the distinct [`JumpMap`]s of all solutions from `start`.
+///
+/// Two solutions are the same here when every peg was jumped by the same peg, tracking pegs
+/// by where they started - the equivalence [`all_unique_solutions`]'s move multiset does not
+/// capture, since that identifies moves by *slots* and so cannot tell which physical peg made
+/// the jump.
+pub fn all_unique_jump_maps(
+    start: Board,
+    feasible: impl IntoIterator<Item = Board>,
+) -> FxHashSet<JumpMap> {
+    log::info!("calculating unique jump maps ....");
+    let feasible: HashSet<Board> = feasible.into_iter().collect();
+
+    const fn mix(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^ (x >> 31)
+    }
+
+    let mut identity = [NOT_REMOVED; 64];
+    for bit in start {
+        identity[bit] = bit as u8;
+    }
+
+    let mut search = JumpSearch {
+        feasible: &feasible,
+        placed: (0..64 * 64).map(|i| mix(i as u64)).collect(),
+        jumped: (0..64 * 64).map(|i| mix(0x5EED_0000_0000_0000 | i as u64)).collect(),
+        identity,
+        map: [NOT_REMOVED; 64],
+        visited: FxHashSet::default(),
+        maps: FxHashSet::default(),
+        states: 0,
+    };
+    search.visit(start, 0);
+    log::info!("jump maps: {} states expanded", search.states);
+    search.maps
+}
+
 #[allow(unused)]
 fn canonicalize(
     unique_solutions: FxHashSet<SolutionMultiset>,
@@ -223,29 +370,6 @@ fn canonicalize(
     unique_solutions.sort();
 
     unique_solutions
-}
-
-/// Precomputed random values for each (Step, occurrence_index) pair.
-/// occurrence_index 0 means "going from 0 to 1 occurrences", etc.
-#[derive(Default)]
-struct ZobristTable {
-    table: std::collections::HashMap<(Move, usize), u64>,
-}
-
-impl ZobristTable {
-    fn delta(&mut self, step: &Move, new_count: usize) -> u64 {
-        // XOR out the old count contribution, XOR in the new one
-        let old = self.get(step, new_count - 1);
-        let new = self.get(step, new_count);
-        old ^ new
-    }
-
-    fn get(&mut self, step: &Move, count: usize) -> u64 {
-        *self
-            .table
-            .entry((*step, count))
-            .or_insert_with(rand::random)
-    }
 }
 
 /// Upper bound on the moves available from one board.
