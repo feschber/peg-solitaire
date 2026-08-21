@@ -237,8 +237,7 @@ pub struct ForcedJump {
 /// widest at the opening and collapses quickly as pegs come off. Returns empty when `from` is
 /// already lost - nothing is forced when nothing wins.
 pub fn forced_jumps(from: Board, counts: &HashMap<Board, u64>) -> Vec<ForcedJump> {
-    let winnable =
-        |board: &Board| counts.get(&board.normalize()).copied().unwrap_or(0) > 0;
+    let winnable = |board: &Board| counts.get(&board.normalize()).copied().unwrap_or(0) > 0;
     if !winnable(&from) {
         return Vec::new();
     }
@@ -256,7 +255,11 @@ pub fn forced_jumps(from: Board, counts: &HashMap<Board, u64>) -> Vec<ForcedJump
         // only a layer that has narrowed to one board can host a forced jump, and then only
         // if that board has exactly one winning move - but the sweep has to continue either
         // way, since a later layer may still collapse
-        let sole = if layer.len() == 1 { layer.first() } else { None };
+        let sole = if layer.len() == 1 {
+            layer.first()
+        } else {
+            None
+        };
         let mut only: Option<ForcedJump> = None;
         let mut candidates = 0usize;
 
@@ -344,7 +347,8 @@ mod tests {
                 let lines = winning_lines(board, &set);
                 assert!(!lines.is_empty(), "counts claim {board:?} is winnable");
                 assert_eq!(
-                    lines.len() as u64, counts[&board],
+                    lines.len() as u64,
+                    counts[&board],
                     "brute force and the DP disagree on the line count for {board:?}"
                 );
 
@@ -366,7 +370,10 @@ mod tests {
             }
         }
         assert!(checked > 50, "only {checked} boards exercised");
-        assert!(with_forced > 0, "no board had any forced move - test proves nothing");
+        assert!(
+            with_forced > 0,
+            "no board had any forced move - test proves nothing"
+        );
     }
 
     /// Every winning line from `board` in the un-normalized game, as its list of jumps.
@@ -413,7 +420,8 @@ mod tests {
             for board in boards {
                 let lines = winning_jumps(board, &set);
                 assert_eq!(
-                    lines.len() as u64, counts[&board],
+                    lines.len() as u64,
+                    counts[&board],
                     "the move-sequence count must be the un-normalized line count for {board:?}"
                 );
 
@@ -433,7 +441,10 @@ mod tests {
             }
         }
         assert!(checked > 50, "only {checked} boards exercised");
-        assert!(with_forced > 0, "no board had any forced jump - test proves nothing");
+        assert!(
+            with_forced > 0,
+            "no board had any forced jump - test proves nothing"
+        );
     }
 
     /// The opening's four first moves are symmetric images of each other, so the player really
@@ -473,8 +484,14 @@ mod tests {
             .expect("a winnable two-peg board must exist");
 
         let verdicts = classify_moves(two_pegs, &set, &counts);
-        let required = verdicts.iter().filter(|(_, v)| *v == Verdict::Required).count();
-        assert_eq!(required, 1, "exactly one move can finish a won two-peg board");
+        let required = verdicts
+            .iter()
+            .filter(|(_, v)| *v == Verdict::Required)
+            .count();
+        assert_eq!(
+            required, 1,
+            "exactly one move can finish a won two-peg board"
+        );
         assert_eq!(forced_moves(two_pegs, &set, &counts).len(), 1);
     }
 }

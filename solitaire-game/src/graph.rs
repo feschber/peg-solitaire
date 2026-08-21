@@ -754,9 +754,9 @@ fn log_edge_lengths(graph: &ConstellationGraph) {
 /// full graph, 8.58M edges at this size come out as ~7.5k edge chunks, i.e. ~7.5k draw
 /// calls a frame - and the viewpoint that actually hurts is the one where culling rejects
 /// almost nothing, so there the draw calls are pure loss. Sweep it with `[` and `]`.
-#[cfg(not(target_arch="wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_CHUNK_SIZE: f32 = 1024.0;
-#[cfg(target_arch="wasm32")]
+#[cfg(target_arch = "wasm32")]
 const DEFAULT_CHUNK_SIZE: f32 = 8192.0;
 
 /// Default [`BuildSettings::edge_budget`] - the edge count above which a chunk gets

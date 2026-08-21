@@ -2,6 +2,7 @@ use futures_lite::future::{self, block_on};
 use solitaire_solver::dominators::{ForcedJump, forced_jumps};
 use solitaire_solver::{HashMap, HashSet, SolutionMultiset};
 
+use crate::CurrentBoard;
 use bevy::{
     ecs::world::CommandQueue,
     prelude::*,
@@ -9,7 +10,6 @@ use bevy::{
     window::RequestRedraw,
     winit::{EventLoopProxyWrapper, WinitUserEvent::WakeUp},
 };
-use crate::CurrentBoard;
 use solitaire_solver::Board;
 
 pub struct Solver;
@@ -32,8 +32,9 @@ impl Plugin for Solver {
         );
         app.add_systems(
             Update,
-            schedule_forced_jumps
-                .run_if(resource_exists::<UniquePaths>.and_then(not(resource_exists::<ForcedJumpsPending>))),
+            schedule_forced_jumps.run_if(
+                resource_exists::<UniquePaths>.and_then(not(resource_exists::<ForcedJumpsPending>)),
+            ),
         );
         app.add_systems(Update, poll_task);
     }
