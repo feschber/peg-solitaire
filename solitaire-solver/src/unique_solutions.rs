@@ -25,7 +25,7 @@ fn move_slot(idx: usize, dir: Dir) -> usize {
 /// Pure geometry, so it needs no board: `skip` is one step along `dir` and `target` two.
 /// `test_move_at_matches_get_legal_moves` pins it against `Board::get_legal_moves`, which
 /// derives the same thing the long way round.
-fn move_at(idx: usize, dir: Dir) -> Move {
+pub(crate) fn move_at(idx: usize, dir: Dir) -> Move {
     let row = (idx / Board::REPR as usize) as i32;
     let col = (idx % Board::REPR as usize) as i32;
     let (d_row, d_col) = match dir {

@@ -3,7 +3,7 @@ mod calc_first;
 mod calc_naive;
 mod calc_success;
 mod dir;
-mod dominators;
+pub mod dominators;
 mod feasible;
 mod hash;
 mod keyset;
