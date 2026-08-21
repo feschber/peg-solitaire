@@ -16,6 +16,7 @@ solitaire-solver = { path = "./solitaire-solver", version = "0.0.1" }
 
 [dev-dependencies]
 rayon = "1.11.0"
+rand = "0.10"
 
 # run build.rs in release mode, otherwise it takes 100 years
 [profile.dev.build-override]

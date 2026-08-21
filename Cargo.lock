@@ -3920,6 +3920,7 @@ dependencies = [
  "clap",
  "env_logger",
  "log",
+ "rand",
  "rayon",
  "rustc-hash 2.1.3",
  "solitaire-game",

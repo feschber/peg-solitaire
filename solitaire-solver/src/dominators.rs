@@ -185,6 +185,113 @@ pub fn forced_moves(
     forced
 }
 
+/// A jump every winning continuation has to make, named in the player's own frame.
+///
+/// [`ForcedMove`]'s `realizations` exists because the normalized graph has parallel edges;
+/// this does not, because in the un-normalized graph two distinct moves from a board always
+/// leave distinct boards - they clear and fill different slots. So a forced step here names
+/// exactly one jump at literal board coordinates, which is what it takes to *draw* the hint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForcedJump {
+    /// board the jump is made from, in the same frame as the board passed in
+    pub board: Board,
+    /// the jump; no other move from `board` will do
+    pub mov: Move,
+    /// board it leads to
+    pub next: Board,
+}
+
+/// Every jump all winning continuations from `from` must make, in play order, in `from`'s frame.
+///
+/// The un-normalized counterpart of [`forced_moves`], and the one a hint wants. Working in the
+/// quotient is fine for *counting* but not for pointing at a square: `forced_moves` reports the
+/// forced step out of the opening as one move with four realizations, when what is true of the
+/// real game is that the player picks freely among four symmetric first moves. Here that step
+/// simply is not forced, which is the honest answer.
+///
+/// No path counts are multiplied, because the identity in the module docs collapses. Write
+/// `S(p)` for the boards with `p` pegs that are reachable from `from` through still-winnable
+/// positions. Every winning line passes through exactly one board per peg count - a move
+/// removes exactly one peg - so
+///
+/// ```text
+///     total  =  sum over u in S(p) of  forward(u) * count(u)
+/// ```
+///
+/// and `forward(u) * count(v) == total` therefore needs both factors to be maximal at once:
+/// `count(v) == count(u)`, i.e. `v` is `u`'s *only* winning move, and `u` the only member of
+/// `S(p)`. So a forced jump is exactly **a peg count at which the reachable set has collapsed
+/// to a single board, from which a single move wins**. Both are decidable from reachability
+/// alone, which is why this needs only the winnable predicate out of `counts` and never its
+/// values - no products, and no overflow to guard.
+///
+/// That also says what the hint means, and it is worth knowing before trusting it: a forced
+/// jump is never a hidden constraint on an otherwise open game, it is a stretch of the game
+/// that has already funnelled.
+///
+/// `counts` is used only as "can this board still win", and is symmetry-invariant - it counts
+/// winning move sequences, and a symmetry is a bijection on those - so the normalized map
+/// answers for un-normalized boards through one `normalize` call.
+///
+/// The traversal is bounded by the boards reachable from `from` that can still win, so it is
+/// widest at the opening and collapses quickly as pegs come off. Returns empty when `from` is
+/// already lost - nothing is forced when nothing wins.
+pub fn forced_jumps(from: Board, counts: &HashMap<Board, u64>) -> Vec<ForcedJump> {
+    let winnable =
+        |board: &Board| counts.get(&board.normalize()).copied().unwrap_or(0) > 0;
+    if !winnable(&from) {
+        return Vec::new();
+    }
+
+    // `layers[p]` accumulates S(p). Filled downwards, so a layer is complete before it is
+    // judged: every predecessor of a board sits in the layer above it.
+    let mut layers: Vec<Vec<Board>> = vec![Vec::new(); from.count_pegs() + 1];
+    layers[from.count_pegs()].push(from);
+    let mut seen: HashSet<Board> = HashSet::default();
+    seen.insert(from);
+
+    let mut forced = Vec::new();
+    for pegs in (2..=from.count_pegs()).rev() {
+        let layer = std::mem::take(&mut layers[pegs]);
+        // only a layer that has narrowed to one board can host a forced jump, and then only
+        // if that board has exactly one winning move - but the sweep has to continue either
+        // way, since a later layer may still collapse
+        let sole = if layer.len() == 1 { layer.first() } else { None };
+        let mut only: Option<ForcedJump> = None;
+        let mut candidates = 0usize;
+
+        for u in &layer {
+            for dir in Dir::enumerate() {
+                for idx in u.mov_pattern_mask(dir) {
+                    let mov = move_at(idx, dir);
+                    let v = u.mov(mov);
+                    if !winnable(&v) {
+                        // a dead end: no winning line uses it, so it is neither forced nor a
+                        // prefix for anything beyond it
+                        continue;
+                    }
+                    if sole == Some(u) {
+                        candidates += 1;
+                        only = Some(ForcedJump {
+                            board: *u,
+                            mov,
+                            next: v,
+                        });
+                    }
+                    if seen.insert(v) {
+                        layers[pegs - 1].push(v);
+                    }
+                }
+            }
+        }
+
+        if candidates == 1 {
+            forced.extend(only);
+        }
+    }
+    forced
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +367,96 @@ mod tests {
         }
         assert!(checked > 50, "only {checked} boards exercised");
         assert!(with_forced > 0, "no board had any forced move - test proves nothing");
+    }
+
+    /// Every winning line from `board` in the un-normalized game, as its list of jumps.
+    fn winning_jumps(board: Board, feasible: &HashSet<Board>) -> Vec<Vec<(Board, Move)>> {
+        if board.is_solved() {
+            return vec![Vec::new()];
+        }
+        let mut lines = Vec::new();
+        for dir in Dir::enumerate() {
+            for idx in board.mov_pattern_mask(dir) {
+                let mov = move_at(idx, dir);
+                let next = board.mov(mov);
+                if !feasible.contains(&next.normalize()) {
+                    continue;
+                }
+                for mut tail in winning_jumps(next, feasible) {
+                    tail.insert(0, (board, mov));
+                    lines.push(tail);
+                }
+            }
+        }
+        lines
+    }
+
+    /// Same shape of check as [`forced_moves_match_brute_force_near_the_end`], one frame down:
+    /// the enumeration here never normalizes, so it is a direct statement about the game the
+    /// player is actually playing.
+    #[test]
+    fn forced_jumps_match_brute_force_near_the_end() {
+        let feasible = calculate_feasible_set(None);
+        let counts = all_unique_paths(feasible.clone(), None);
+        let set: HashSet<Board> = feasible.iter().copied().collect();
+
+        let mut checked = 0usize;
+        let mut with_forced = 0usize;
+        for pegs in [3usize, 4, 5, 6] {
+            let boards: Vec<Board> = feasible
+                .iter()
+                .copied()
+                .filter(|b| b.count_pegs() == pegs)
+                .filter(|b| counts.get(b).copied().unwrap_or(0) > 0)
+                .take(40)
+                .collect();
+            for board in boards {
+                let lines = winning_jumps(board, &set);
+                assert_eq!(
+                    lines.len() as u64, counts[&board],
+                    "the move-sequence count must be the un-normalized line count for {board:?}"
+                );
+
+                let mut expected: Vec<(Board, Move)> = lines[0].clone();
+                expected.retain(|jump| lines.iter().all(|line| line.contains(jump)));
+                expected.sort_unstable();
+
+                let mut actual: Vec<(Board, Move)> = forced_jumps(board, &counts)
+                    .into_iter()
+                    .map(|f| (f.board, f.mov))
+                    .collect();
+                actual.sort_unstable();
+
+                assert_eq!(actual, expected, "forced jumps differ for {board:?}");
+                checked += 1;
+                with_forced += usize::from(!expected.is_empty());
+            }
+        }
+        assert!(checked > 50, "only {checked} boards exercised");
+        assert!(with_forced > 0, "no board had any forced jump - test proves nothing");
+    }
+
+    /// The opening's four first moves are symmetric images of each other, so the player really
+    /// does have a choice - and unlike [`forced_moves`], the un-normalized answer says so.
+    #[test]
+    fn nothing_is_forced_out_of_the_opening() {
+        let feasible = calculate_feasible_set(None);
+        let counts = all_unique_paths(feasible.clone(), None);
+        let set: HashSet<Board> = feasible.iter().copied().collect();
+
+        let start = Board::default();
+        assert!(
+            forced_moves(start, &set, &counts)
+                .iter()
+                .any(|f| f.board == start.normalize() && f.realizations == 4),
+            "the quotient reports the first move as one forced step with four realizations"
+        );
+        assert!(
+            !forced_jumps(start, &counts)
+                .iter()
+                .any(|f| f.board == start),
+            "no single first jump is forced in the game as played"
+        );
     }
 
     /// The last jump of a won game is unavoidable, and nothing else is legal by then.

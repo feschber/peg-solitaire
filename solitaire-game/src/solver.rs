@@ -1,4 +1,5 @@
 use futures_lite::future::{self, block_on};
+use solitaire_solver::dominators::{ForcedJump, forced_jumps};
 use solitaire_solver::{HashMap, HashSet, SolutionMultiset};
 
 use bevy::{
@@ -8,6 +9,7 @@ use bevy::{
     window::RequestRedraw,
     winit::{EventLoopProxyWrapper, WinitUserEvent::WakeUp},
 };
+use crate::CurrentBoard;
 use solitaire_solver::Board;
 
 pub struct Solver;
@@ -28,6 +30,11 @@ impl Plugin for Solver {
             Update,
             calculate_unique_paths.run_if(resource_added::<FeasibleConstellations>),
         );
+        app.add_systems(
+            Update,
+            schedule_forced_jumps
+                .run_if(resource_exists::<UniquePaths>.and_then(not(resource_exists::<ForcedJumpsPending>))),
+        );
         app.add_systems(Update, poll_task);
     }
 }
@@ -42,7 +49,23 @@ pub struct RandomMoveChances(pub HashMap<Board, f64>);
 pub struct UniqueSolutions(pub Vec<SolutionMultiset>);
 
 #[derive(Resource)]
-pub struct UniquePaths(pub HashMap<Board, u64>);
+pub struct UniquePaths(pub std::sync::Arc<HashMap<Board, u64>>);
+
+/// The jumps every winning continuation from [`board`](Self::board) still has to make.
+///
+/// Carries the board it was computed for because it is computed off-thread and the player can
+/// move meanwhile: a result for a position that has since been left is worse than none, so
+/// consumers compare against [`crate::CurrentBoard`] before trusting it.
+#[derive(Resource)]
+pub struct ForcedJumps {
+    pub board: Board,
+    pub jumps: Vec<ForcedJump>,
+}
+
+/// Present while a [`ForcedJumps`] computation is in flight, so moves made during a long one
+/// queue up as "recompute when it lands" rather than stacking a task per move.
+#[derive(Resource)]
+struct ForcedJumpsPending;
 
 /// A unit of work running on the async pool, polled by [`poll_task`].
 ///
@@ -143,7 +166,56 @@ fn calculate_unique_paths(
 
         let mut command_queue = CommandQueue::default();
         command_queue.push(move |world: &mut World| {
-            world.insert_resource(UniquePaths(unique_paths));
+            world.insert_resource(UniquePaths(std::sync::Arc::new(unique_paths)));
+            world.entity_mut(entity).remove::<BackgroundTask>();
+        });
+        wake.send_event(WakeUp).unwrap();
+        command_queue
+    });
+    commands.entity(entity).insert(BackgroundTask { task });
+}
+
+/// Recomputes [`ForcedJumps`] whenever it is missing or stale for the current board.
+///
+/// Not cheap early on - the traversal covers every still-winnable board reachable from the
+/// current one, which near the opening is most of the game: measured at ~16 s and ~190 MB of
+/// transient set at 32 pegs, falling to ~460 ms by 26 pegs and under 10 ms by 24. That is why
+/// it runs on the async pool and why the result is stamped with its board instead of assumed
+/// current. It is also why it is worth doing at all rather than per-frame: the answer only
+/// changes when the board does.
+///
+/// The opening is also where it has nothing to report - the earliest position with a forced
+/// jump over 60 sampled winning lines was 27 pegs - so the expensive end of the range is the
+/// end that returns empty. Left uncapped anyway: a peg-count cutoff would be a silent claim
+/// that nothing is forced above it, which the sampling does not establish.
+fn schedule_forced_jumps(
+    mut commands: Commands,
+    board: Res<CurrentBoard>,
+    paths: Res<UniquePaths>,
+    forced: Option<Res<ForcedJumps>>,
+    wake: Res<EventLoopProxyWrapper>,
+) {
+    if forced.is_some_and(|forced| forced.board == board.0) {
+        return;
+    }
+    let thread_pool = AsyncComputeTaskPool::get();
+    let entity = commands.spawn_empty().id();
+    let target = board.0;
+    // an `Arc` clone: this runs on every move, and the counts map is one entry per
+    // feasible board - copying it per move would dwarf the traversal it feeds
+    let counts = paths.0.clone();
+    let wake = wake.clone();
+    commands.insert_resource(ForcedJumpsPending);
+    let task = thread_pool.spawn(async move {
+        let jumps = forced_jumps(target, &counts);
+
+        let mut command_queue = CommandQueue::default();
+        command_queue.push(move |world: &mut World| {
+            world.insert_resource(ForcedJumps {
+                board: target,
+                jumps,
+            });
+            world.remove_resource::<ForcedJumpsPending>();
             world.entity_mut(entity).remove::<BackgroundTask>();
         });
         wake.send_event(WakeUp).unwrap();
