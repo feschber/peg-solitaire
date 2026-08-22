@@ -21,6 +21,15 @@
 //! which is 129_207 nodes up to 12 pegs. The next layers are 112_788 / 162_319 /
 //! 204_992 / 230_230, and the full graph is 1_679_072 nodes - see [`MAX_PEGS`].
 //!
+//! The edges are not drawn all at once. There are 8.58M of them, and about half the cost
+//! of drawing one is per-primitive work that no fragment-level thinning can reach, so they
+//! are split into [`BuildSettings::strata`] fair shares and one share is drawn per frame
+//! into a buffer that is only cleared when the view changes - see [`Accumulation`]. Moving
+//! the camera therefore costs a fraction of the edge set, standing still converges to all
+//! of it within a few frames, and once converged the edge pass stops running entirely.
+//! Nothing is permanently discarded, which is what the adaptive per-chunk decimation this
+//! replaced had to do.
+//!
 //! Toggled with the graph button or `G`. Starts in orbit mode: left-drag orbits,
 //! right-drag pans, the wheel zooms, and `WASD` + `space`/`shift` pans the pivot.
 //! `O` switches to a free-flying first-person mode instead, grabbing the mouse so it
@@ -30,12 +39,20 @@
 
 use bevy::{
     asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path},
+    camera::{
+        CameraOutputMode, CompositingSpace, Hdr, ImageRenderTarget, RenderTarget,
+        visibility::{NoFrustumCulling, RenderLayers},
+    },
     core_pipeline::tonemapping::Tonemapping,
     ecs::world::CommandQueue,
+    image::ImageSampler,
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
-    render::render_resource::AsBindGroup,
+    render::render_resource::{
+        AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, Extent3d,
+        TextureDimension, TextureFormat, TextureUsages,
+    },
     shader::ShaderRef,
     tasks::AsyncComputeTaskPool,
     ui::IsDefaultUiCamera,
@@ -85,7 +102,9 @@ pub struct GraphPlugin;
 impl Plugin for GraphPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "graph.wgsl");
+        embedded_asset!(app, "composite.wgsl");
         app.add_plugins(MaterialPlugin::<GraphMaterial>::default());
+        app.add_plugins(MaterialPlugin::<CompositeMaterial>::default());
         app.init_resource::<CameraMode>();
         app.init_resource::<BuildSettings>();
         app.add_systems(Startup, spawn_graph_camera);
@@ -110,12 +129,26 @@ impl Plugin for GraphPlugin {
                 toggle_camera_mode,
                 rebuild_on_key,
             )
+                .in_set(GraphCameras)
                 .run_if(resource_exists::<ShowGraph>),
         );
+        // After [`GraphCameras`] because it mirrors whichever graph camera is active into
+        // the accumulation camera, and a frame-late mirror would accumulate the previous
+        // view into the buffer the current one is composited from. Still in `Update`, so
+        // the stratum visibility it sets is picked up by this frame's propagation rather
+        // than next frame's. Deliberately not gated on `ShowGraph`: parking the
+        // accumulation camera while the 2d board is up has to happen when the graph is
+        // *not* shown.
+        app.add_systems(Update, drive_accumulation.after(GraphCameras));
         app.add_systems(Update, toggle_on_key);
         app.add_observer(toggle_graph);
     }
 }
+
+/// The camera systems, so [`drive_accumulation`] can be ordered after all of them
+/// without naming each one - see [`GraphPlugin::build`].
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+struct GraphCameras;
 
 /// Which control scheme [`GraphCamera`] currently responds to - toggled by `O`.
 #[derive(Resource, Default, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +183,19 @@ struct EdgeMesh;
 /// the whole scene in one query. [`EdgeMesh`] entities carry both.
 #[derive(Component)]
 struct GraphChunk;
+
+/// Which frame of the accumulation cycle an [`EdgeMesh`] chunk is drawn on - see
+/// [`stratum_of`] and [`drive_accumulation`].
+#[derive(Component)]
+struct Stratum(u32);
+
+/// Render layer the edge chunks live on.
+///
+/// Everything else in the scene - the node chunks, the current-board marker, the
+/// composite quad - stays on the default layer 0. That split is the whole reason the
+/// accumulation camera can draw the edges *and only the edges* into its own buffer while
+/// the graph cameras draw the rest straight to the window; see [`Accumulation`].
+const EDGE_LAYER: usize = 1;
 
 /// Which of the two node layouts the graph is drawn with - switched with `L`.
 ///
@@ -421,13 +467,334 @@ fn node_mesh(radius: f32, subdivisions: u32) -> Mesh {
 /// module keep querying "the orbit camera" / "the fly camera" just by requiring that
 /// component, with no extra marker needed; [`toggle_camera_mode`] is the only place
 /// that has to know about both at once, to swap which is [`Camera::is_active`].
-fn spawn_graph_camera(mut commands: Commands) {
+fn spawn_graph_camera(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut composites: ResMut<Assets<CompositeMaterial>>,
+) {
     let orbit = Orbit::default();
     let transform = orbit.transform();
     commands.spawn((graph_camera_bundle(), orbit.transform(), orbit));
     // seeded with an arbitrary transform - `toggle_camera_mode` overwrites it with the
     // orbit camera's current view the first time `O` is pressed, before it ever renders
     commands.spawn((graph_camera_bundle(), transform, FreeFly::default()));
+
+    // Sized 1x1 to start with. `drive_accumulation` reallocates it to the window on its
+    // first run and on every resize, so there is no point racing the window here.
+    let image = images.add(accumulation_image(UVec2::ONE));
+    let material = composites.add(CompositeMaterial {
+        gain: Vec4::ZERO,
+        image: image.clone(),
+    });
+
+    commands.spawn((
+        Camera3d::default(),
+        RenderTarget::Image(ImageRenderTarget {
+            handle: image.clone(),
+            scale_factor: 1.0,
+        }),
+        // Rgba16Float end to end. Summing thousands of `EDGE_ALPHA`-sized contributions
+        // into an 8-bit intermediate would band long before the cycle converged, and the
+        // whole point of the buffer is that the running sum stays linear and exact.
+        Hdr,
+        Camera {
+            // Black every frame, which looks backwards for an accumulating camera and is
+            // not. This clears the *intermediate* texture the main pass draws into, not
+            // the buffer - so the intermediate ends the frame holding this frame's stratum
+            // alone, and `output_mode` below is what adds it to the running total.
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            // The accumulation proper. `bevy_core_pipeline`'s upscaling node
+            // unconditionally blits the intermediate over the camera's target, so no
+            // `clear_color` on the camera can preserve the image - only this blend state
+            // can, and `ClearColorConfig::None` alone would have quietly drawn one stratum
+            // per frame and looked like a broken sampler rather than a broken composite.
+            // `drive_accumulation` swaps the clear here to `Custom` for exactly one frame
+            // to restart the cycle.
+            output_mode: CameraOutputMode::Write {
+                blend_state: Some(ACCUMULATE_BLEND),
+                clear_color: ClearColorConfig::None,
+            },
+            // Negative, so this runs before the graph cameras: by the time the composite
+            // quad samples the buffer, this frame's deposit is already in it and the
+            // `1 / n` gain matches what is actually there.
+            order: -1,
+            is_active: false,
+            ..default()
+        },
+        // Linear in, linear out. The composite adds into the graph camera's *pre*-tonemap
+        // buffer, so the scene is still tonemapped exactly once, there - tonemapping here
+        // as well would apply the curve twice and break the additive sum besides.
+        Tonemapping::None,
+        // Stated rather than left to the default, which is the *absence* of the component
+        // and happens to mean "no conversion". `CompositingSpace::Srgb` - what the
+        // component defaults to when it is present - would make the blit above run
+        // `SRGB_TO_LINEAR` on its way into the buffer, and a running sum that gets
+        // gamma-mangled once per frame is not a running sum of anything.
+        CompositingSpace::Linear,
+        Msaa::Off,
+        RenderLayers::layer(EDGE_LAYER),
+        AccumulationCamera,
+    ));
+
+    // Vertices already sit at +/-1 and `composite.wgsl` passes them through as clip space
+    // untouched, so this covers the viewport whatever the camera is doing. Which is also
+    // why it needs `NoFrustumCulling`: its actual world-space box is a 2x2 quad at the
+    // origin, and the graph cameras are essentially never pointed at that.
+    let quad = Rectangle::new(2.0, 2.0)
+        .mesh()
+        .build()
+        .with_removed_attribute(Mesh::ATTRIBUTE_NORMAL)
+        .with_removed_attribute(Mesh::ATTRIBUTE_UV_0);
+    commands.spawn((
+        Mesh3d(meshes.add(quad)),
+        MeshMaterial3d(material.clone()),
+        NoFrustumCulling,
+    ));
+
+    commands.insert_resource(Accumulation {
+        image,
+        material,
+        deposited: 0,
+        view: None,
+        size: UVec2::ONE,
+    });
+}
+
+/// Marks the camera that draws the edge chunks into [`Accumulation::image`].
+#[derive(Component)]
+struct AccumulationCamera;
+
+/// `dst = dst + src` for the blit that lands the accumulation camera's frame in its
+/// buffer - see the `output_mode` in [`spawn_graph_camera`]. Straight `One`/`One` rather
+/// than any of the premultiplied variants, because summing estimates is exactly what this
+/// is: nothing here is occluding anything.
+const ACCUMULATE_BLEND: BlendState = BlendState {
+    color: BlendComponent {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::One,
+        operation: BlendOperation::Add,
+    },
+    alpha: BlendComponent {
+        src_factor: BlendFactor::One,
+        dst_factor: BlendFactor::One,
+        operation: BlendOperation::Add,
+    },
+};
+
+/// Filter for the two graph cameras in [`drive_accumulation`] - `Without` is what
+/// disjoint-proves it against that system's `Single` on the accumulation camera, which
+/// takes `Transform` mutably to mirror the active view into it.
+type GraphCameraFilter = (With<GraphCamera>, Without<AccumulationCamera>);
+
+/// The progressive edge buffer: an offscreen image that is only ever cleared when the view
+/// changes, so the edge set can be drawn a stratum at a time and summed over frames.
+///
+/// The edge pass is the expensive one - `graph.wgsl` records that cutting *every* edge
+/// fragment only took the worst viewpoint from ~5 to ~10 fps, so roughly half its cost is
+/// per-primitive work that no amount of fragment thinning can touch. The only thing that
+/// helps is submitting fewer primitives per frame, and the only reason the old code could
+/// not is that every frame had to redraw the whole picture from scratch.
+///
+/// Accumulating removes that constraint. [`build_edge_meshes`] splits the edges into
+/// `BuildSettings::strata` fair shares, [`edge_material`] brightens each share by the same
+/// factor so one frame is an unbiased estimate of the whole image, and this buffer sums
+/// `n` of those estimates while `composite.wgsl` divides by `n`. The exposure is therefore
+/// right on *every* frame of the cycle - only the grain changes - and motion, which is
+/// exactly when grain is least visible, is the only time it is ever coarse.
+///
+/// The end of the cycle is the part worth noticing. Once `deposited` reaches `strata`
+/// every edge has been drawn exactly once, so the buffer is not a good approximation of
+/// the full 8.58M-edge image, it *is* that image - and the camera is switched off
+/// entirely until the view changes. A still viewpoint costs nothing, which is also what
+/// would make the reactive `WinitSettings::desktop_app` mode commented out in `window.rs`
+/// worth having back.
+#[derive(Resource)]
+struct Accumulation {
+    image: Handle<Image>,
+    material: Handle<CompositeMaterial>,
+    /// strata summed into the buffer since the last reset
+    deposited: u32,
+    /// the view the buffer was accumulated for; `None` means "nothing valid in there"
+    view: Option<(Vec3, Quat)>,
+    /// the size the buffer is currently allocated at, tracked so a resize is noticed
+    size: UVec2,
+}
+
+impl Accumulation {
+    /// Throws the buffer away, so the next frame starts a fresh cycle.
+    ///
+    /// Needed wherever the *edges* change under a view that did not: a rebuild, a layout
+    /// switch, or [`prune_unreachable_edges`] replacing the set with the reachable subset.
+    /// Camera movement is caught by the view check in [`drive_accumulation`] instead.
+    fn invalidate(&mut self) {
+        self.deposited = 0;
+        self.view = None;
+    }
+}
+
+/// Backing image for [`Accumulation`].
+fn accumulation_image(size: UVec2) -> Image {
+    let size = size.max(UVec2::ONE);
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        // one black texel: Rgba16Float is 4 channels x 2 bytes
+        &[0; 8],
+        TextureFormat::Rgba16Float,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.usage =
+        TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+    // the composite is a 1:1 blit, so there is nothing to interpolate between texels and
+    // nearest keeps the accumulated values exactly as they were written
+    image.sampler = ImageSampler::nearest();
+    image
+}
+
+/// Composites [`Accumulation::image`] into the graph view - see `composite.wgsl`.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct CompositeMaterial {
+    /// `x` holds `1 / deposited`; a uniform gets padded to 16 bytes either way
+    #[uniform(0)]
+    gain: Vec4,
+    #[texture(1)]
+    #[sampler(2)]
+    image: Handle<Image>,
+}
+
+impl Material for CompositeMaterial {
+    fn vertex_shader() -> ShaderRef {
+        composite_shader()
+    }
+    fn fragment_shader() -> ShaderRef {
+        composite_shader()
+    }
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Add
+    }
+    fn enable_prepass() -> bool {
+        false
+    }
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+fn composite_shader() -> ShaderRef {
+    ShaderRef::Path(
+        AssetPath::from_path_buf(embedded_path!("composite.wgsl")).with_source("embedded"),
+    )
+}
+
+/// Runs the accumulation cycle: mirrors the active view, resets the buffer when it moves,
+/// reveals one stratum per frame and parks the camera once the picture is exact.
+///
+/// Mirroring rather than sharing a camera is what keeps the edges in their own buffer
+/// while the nodes go straight to the window. The two have to agree exactly or the edges
+/// land offset from the boards they connect, which is why this reads `Transform` and not
+/// `GlobalTransform` - propagation happens in `PostUpdate`, so the global one is a frame
+/// stale here - and why the buffer is allocated at the window's *physical* size, which is
+/// what the perspective projection derives its aspect ratio from.
+#[allow(clippy::too_many_arguments)]
+fn drive_accumulation(
+    show_graph: Option<Res<ShowGraph>>,
+    settings: Res<BuildSettings>,
+    mut accumulation: ResMut<Accumulation>,
+    mut images: ResMut<Assets<Image>>,
+    mut composites: ResMut<Assets<CompositeMaterial>>,
+    window: Option<Single<&Window, With<PrimaryWindow>>>,
+    graph_cameras: Query<(&Camera, &Transform), GraphCameraFilter>,
+    accumulation_camera: Single<(&mut Camera, &mut Transform), With<AccumulationCamera>>,
+    mut chunks: Query<(&Stratum, &mut Visibility)>,
+    mut request_redraw: MessageWriter<RequestRedraw>,
+) {
+    let (mut camera, mut transform) = accumulation_camera.into_inner();
+
+    // the 2d board is up, so there is nothing to accumulate - and leaving this active
+    // would keep drawing millions of edges into a buffer nobody is looking at
+    if show_graph.is_none() {
+        camera.is_active = false;
+        return;
+    }
+    let Some(window) = window else { return };
+
+    // whichever of the orbit/fly cameras `toggle_camera_mode` last made active
+    let Some((_, view)) = graph_cameras.iter().find(|(camera, _)| camera.is_active) else {
+        return;
+    };
+    let view = *view;
+
+    let mut reset = false;
+
+    let size = window.physical_size();
+    if size.x > 0 && size.y > 0 && size != accumulation.size {
+        // a failure here means the handle went stale, which would leave the composite
+        // sampling a buffer the wrong size rather than anything visibly broken - worth a
+        // line in the log, not worth giving up the frame over
+        if let Err(error) = images.insert(&accumulation.image, accumulation_image(size)) {
+            warn!("could not resize the edge accumulation buffer to {size}: {error}");
+        }
+        accumulation.size = size;
+        reset = true;
+    }
+
+    if accumulation.view != Some((view.translation, view.rotation)) {
+        accumulation.view = Some((view.translation, view.rotation));
+        reset = true;
+    }
+    if reset {
+        accumulation.deposited = 0;
+    }
+    *transform = view;
+
+    let strata = settings.strata.max(1);
+    if accumulation.deposited >= strata {
+        // every edge is in the buffer exactly once, so this is the finished picture rather
+        // than an approximation of it - there is nothing left to add until the view moves
+        camera.is_active = false;
+        return;
+    }
+
+    // One frame of `Custom` is the whole clearing mechanism; every other frame loads what
+    // is already in the buffer and adds to it. Note this is the *output* clear - the main
+    // pass clears to black unconditionally, see `spawn_graph_camera`.
+    camera.output_mode = CameraOutputMode::Write {
+        blend_state: Some(ACCUMULATE_BLEND),
+        clear_color: if reset {
+            ClearColorConfig::Custom(Color::NONE)
+        } else {
+            ClearColorConfig::None
+        },
+    };
+    camera.is_active = true;
+
+    let current = accumulation.deposited;
+    for (stratum, mut visibility) in &mut chunks {
+        let wanted = if stratum.0 == current {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        // compared first: assigning through `Mut` marks the component changed either way,
+        // and re-propagating visibility for every chunk every frame is the cost this whole
+        // exercise is trying to avoid
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
+
+    accumulation.deposited += 1;
+    if let Some(mut material) = composites.get_mut(&accumulation.material) {
+        material.gain = Vec4::splat(1.0 / accumulation.deposited as f32);
+    }
+    // keeps the cycle running to completion under a reactive winit mode, where otherwise
+    // nothing would ask for the frames that finish converging the picture
+    request_redraw.write(RequestRedraw);
 }
 
 /// Derives the graph and its render meshes from the feasible set on the async pool,
@@ -494,7 +861,7 @@ fn spawn_build_task(
 }
 
 /// Clears the scene and rebuilds it: `L` switches [`GraphLayout`], `[`/`]` halve/double
-/// the chunk size, `-`/`=` halve/double the edge budget.
+/// the chunk size, `-`/`=` halve/double the stratum count.
 ///
 /// Both are here so the two knobs this module has can be swept from one session without
 /// rebuilding the binary or having to find the same viewpoint again - which is the only
@@ -532,11 +899,11 @@ fn rebuild_on_key(
         settings.chunk_size *= 2.0;
     }
     if thinner {
-        settings.edge_budget = (settings.edge_budget / 2).max(1);
+        // fewer strata: more edges per frame, fewer frames to converge
+        settings.strata = (settings.strata / 2).max(1);
     }
     if denser {
-        // no ceiling: past the busiest chunk's size this is simply "no decimation"
-        settings.edge_budget *= 2;
+        settings.strata *= 2;
     }
 
     for chunk in &chunks {
@@ -748,25 +1115,29 @@ fn log_edge_lengths(graph: &ConstellationGraph) {
 /// enough that the chunk count stays well below the per-node-entity counts this
 /// replaced.
 ///
-/// This is a real trade in *both* directions, which is why it is a [`ChunkSize`] resource
-/// rather than only a constant: every chunk is a separate entity in a sorted render phase
-/// (see [`build_edge_meshes`]), so finer chunking buys culling and pays draw calls. At the
-/// full graph, 8.58M edges at this size come out as ~7.5k edge chunks, i.e. ~7.5k draw
-/// calls a frame - and the viewpoint that actually hurts is the one where culling rejects
-/// almost nothing, so there the draw calls are pure loss. Sweep it with `[` and `]`.
+/// This is a real trade in *both* directions, which is why it lives in [`BuildSettings`]
+/// rather than only in a constant: every chunk is a separate entity in a sorted render
+/// phase (see [`build_edge_meshes`]), so finer chunking buys culling and pays draw calls.
+/// At the full graph, 8.58M edges at this size come out as ~7.5k edge chunks - but only
+/// one stratum is drawn per frame, so that is ~940 draw calls a frame at the default 8,
+/// not 7.5k. The viewpoint that actually hurts is the one where culling rejects almost
+/// nothing, so there the draw calls are pure loss. Sweep it with `[` and `]`, and against
+/// `strata` rather than on its own: stratifying already made the per-share grids coarser,
+/// so the two knobs push on the same thing from opposite ends.
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_CHUNK_SIZE: f32 = 1024.0;
 #[cfg(target_arch = "wasm32")]
 const DEFAULT_CHUNK_SIZE: f32 = 8192.0;
 
-/// Default [`BuildSettings::edge_budget`] - the edge count above which a chunk gets
-/// thinned. See [`decimation_level`].
+/// Default [`BuildSettings::strata`] - how many frames a converged edge image costs.
 ///
-/// Set well under [`DEFAULT_CHUNK_SIZE`] on purpose: the chunk grid is sized so a layer
-/// *averages* that many edges per cell, so a budget equal to it would only touch the
-/// above-average cells and leave the total roughly where it started. The edge pass needs
-/// to lose most of its 8.58M primitives, not trim the tail.
-const DEFAULT_EDGE_BUDGET: usize = 512;
+/// This is the one knob that trades motion framerate against how long standing still
+/// takes to sharpen. Each frame draws one stratum, i.e. `1 / strata` of the 8.58M edges,
+/// so raising it makes movement cheaper and convergence slower in exact proportion. 8
+/// puts a converged image about 130ms after the camera stops at 60fps, which is below
+/// the point where the sharpening reads as a separate event from letting go of the
+/// mouse. Sweep it with `-` and `=`.
+const DEFAULT_STRATA: u32 = 8;
 
 /// Everything a graph (re)build is parameterized by - see [`rebuild_on_key`], which
 /// sweeps both at runtime so they can be A/B'd from one session at one viewpoint rather
@@ -776,8 +1147,9 @@ struct BuildSettings {
     layout: GraphLayout,
     /// target primitives per chunk - see [`DEFAULT_CHUNK_SIZE`]
     chunk_size: f32,
-    /// max edges kept per chunk before [`decimation_level`] starts thinning it
-    edge_budget: usize,
+    /// how many equal shares the edge set is split into, one drawn per frame - see
+    /// [`DEFAULT_STRATA`] and [`Accumulation`]
+    strata: u32,
 }
 
 impl Default for BuildSettings {
@@ -785,7 +1157,7 @@ impl Default for BuildSettings {
         Self {
             layout: GraphLayout::default(),
             chunk_size: DEFAULT_CHUNK_SIZE,
-            edge_budget: DEFAULT_EDGE_BUDGET,
+            strata: DEFAULT_STRATA,
         }
     }
 }
@@ -921,13 +1293,19 @@ impl ChunkGrid {
 /// layer-pair is legitimately in frame - there's nothing off to the side to cull.
 /// Confirmed by counting: at that viewpoint 93-95% of all edges were still
 /// `ViewVisibility` true regardless of chunk size (tested from the shipped
-/// [`TARGET_CHUNK_NODES`] down to 32, i.e. ~19x more/smaller chunks - negligible
+/// [`DEFAULT_CHUNK_SIZE`] down to 32, i.e. ~19x more/smaller chunks - negligible
 /// difference). No spatial partitioning scheme fixes that, because it isn't a
-/// culling failure; it's fill-rate for genuinely-visible geometry. Confirmed
-/// separately: framerate drops further at 4K vs windowed with everything else held
-/// equal, which is the signature of a fill-rate (pixels shaded), not vertex-count or
-/// CPU, bottleneck. A real fix from here would have to reduce pixels touched per
-/// visible edge (distance-based fade/thinning, e.g.), not improve what's culled.
+/// culling failure; it's cost for genuinely-visible geometry.
+///
+/// What that cost *is* took two measurements that read as contradicting each other and do
+/// not. Framerate drops further at 4K than windowed with everything else held equal, which
+/// is the signature of fill rate; but discarding every edge fragment in the shader, so no
+/// blend write happened at all, still only took the worst viewpoint from ~5 to ~10 fps
+/// (see `graph.wgsl`). Both hold: roughly half the edge pass is pixels and roughly half is
+/// per-primitive work - vertex shading, setup, clipping, rasterization - that no amount of
+/// fragment thinning can reach. Which is why the fix that landed attacks primitives per
+/// *frame* rather than either half directly: see [`Accumulation`], which draws
+/// `1 / strata` of them per frame and none at all once the picture is complete.
 fn build_meshes(graph: &ConstellationGraph, settings: BuildSettings) -> GraphMeshes {
     let sphere = node_mesh(NODE_RADIUS, 0);
     let local_positions = sphere
@@ -989,6 +1367,27 @@ fn build_meshes(graph: &ConstellationGraph, settings: BuildSettings) -> GraphMes
 /// (the full edge set) and [`prune_unreachable_edges`] (whatever subset of it is still
 /// reachable from the current board).
 ///
+/// The edge set is first split into `settings.strata` equal shares by [`stratum_of`], and
+/// only then chunked, each share getting its own [`ChunkGrid`] over its own midpoints. One
+/// share is drawn per frame into the never-cleared accumulation buffer (see
+/// [`Accumulation`]), so a stratum is not a subset that gets thrown away - which is what
+/// the adaptive per-chunk decimation this replaced did - but one instalment of an image
+/// that converges to *every* edge a second or so after the camera stops.
+///
+/// Splitting before chunking rather than after is what keeps the entity count flat.
+/// Chunking targets a primitive count, not a volume, so a share holding `1 / strata` of
+/// the edges simply gets a correspondingly coarser grid: chunks stay the same size, there
+/// are `1 / strata` as many per share, and the total across all shares lands back where it
+/// was before stratification. Per *frame* only one share is visible, so the draw calls
+/// drop by the full factor. Chunking first and splitting each chunk instead would have
+/// multiplied the entity count by `strata` while leaving per-frame draw calls unchanged -
+/// the wrong end of both trades.
+///
+/// The price is weaker frustum culling: a grid built over `1 / strata` of the points is
+/// about `strata^(1/3)` coarser along each axis, so the default 8 makes chunks twice as
+/// wide. That is a good trade against 8x fewer primitives a frame, but it is the reason
+/// `chunk_size` and `strata` want sweeping together rather than one at a time.
+///
 /// Chunked by each edge's own midpoint, in a grid built from the *midpoints'* bounding
 /// box rather than either endpoint layer's: an edge's `to` node sits one layer down, and
 /// neither layout keeps it directly "under" its predecessors, so a `from`-only chunk key
@@ -997,9 +1396,12 @@ fn build_meshes(graph: &ConstellationGraph, settings: BuildSettings) -> GraphMes
 /// edges) were still "visible" from a single fixed viewpoint at the narrow neck just
 /// below the widest layer - the chunking was barely culling anything there.
 ///
-/// Two passes over each layer's edges rather than one: the grid needs the bounding box
-/// before it can place anything, and at this scale keeping every midpoint around to
-/// avoid recomputing it would cost more memory than the meshes themselves.
+/// Three passes over each share rather than one: the grid needs the bounding box before it
+/// can place anything, and at this scale keeping every midpoint around to avoid
+/// recomputing it would cost more memory than the meshes themselves. Re-filtering per
+/// stratum rather than bucketing all `strata` shares at once is the same trade - it costs
+/// `strata` extra scans of an integer-pair list and saves holding a second copy of all
+/// 8.58M edges.
 ///
 /// Note every chunk is a separate entity in [`Transparent3d`], which is a *sorted* phase
 /// that only batches adjacent items - so each one costs its own draw call, sort key and
@@ -1014,10 +1416,10 @@ fn build_edge_meshes(
     settings: BuildSettings,
 ) -> Vec<EdgeChunk> {
     let midpoint = |(from, to): (u32, u32)| (nodes[from as usize] + nodes[to as usize]) * 0.5;
+    let strata = settings.strata.max(1);
     let mut chunks = Vec::new();
-    let mut kept_total = 0usize;
     let mut busiest = 0usize;
-    let mut by_level = [0usize; MAX_DECIMATION_LEVEL as usize + 1];
+    let mut per_stratum = vec![0usize; strata as usize];
 
     for pegs in 1..=MAX_PEGS {
         let layer = layer_starts[pegs] as usize..layer_starts[pegs + 1] as usize;
@@ -1026,101 +1428,80 @@ fn build_edge_meshes(
             continue;
         }
 
-        let (min, max) = aabb_of(slice.iter().copied().map(midpoint));
-        let grid = ChunkGrid::new(min, max, slice.len(), settings.chunk_size);
-
-        let mut buckets: std::collections::HashMap<IVec3, Vec<(u32, u32)>> =
-            std::collections::HashMap::new();
-        for &edge in slice {
-            buckets
-                .entry(grid.cell_of(midpoint(edge)))
-                .or_default()
-                .push(edge);
-        }
-
-        for bucket in buckets.into_values() {
-            busiest = busiest.max(bucket.len());
-            let level = decimation_level(bucket.len(), settings.edge_budget);
-            by_level[level as usize] += 1;
-
-            let mut positions = Vec::with_capacity(bucket.len() * 2);
-            for (from, to) in bucket {
-                if !survives(from, to, level) {
-                    continue;
-                }
-                positions.push(nodes[from as usize].to_array());
-                positions.push(nodes[to as usize].to_array());
-            }
-            if positions.is_empty() {
+        for stratum in 0..strata {
+            let share = || {
+                slice
+                    .iter()
+                    .copied()
+                    .filter(move |&(from, to)| stratum_of(from, to, strata) == stratum)
+            };
+            let count = share().count();
+            if count == 0 {
                 continue;
             }
-            kept_total += positions.len() / 2;
+            per_stratum[stratum as usize] += count;
 
-            let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            chunks.push(EdgeChunk { pegs, level, mesh });
+            let (min, max) = aabb_of(share().map(midpoint));
+            let grid = ChunkGrid::new(min, max, count, settings.chunk_size);
+
+            let mut buckets: std::collections::HashMap<IVec3, Vec<(u32, u32)>> =
+                std::collections::HashMap::new();
+            for edge in share() {
+                buckets
+                    .entry(grid.cell_of(midpoint(edge)))
+                    .or_default()
+                    .push(edge);
+            }
+
+            for bucket in buckets.into_values() {
+                busiest = busiest.max(bucket.len());
+                let mut positions = Vec::with_capacity(bucket.len() * 2);
+                for (from, to) in bucket {
+                    positions.push(nodes[from as usize].to_array());
+                    positions.push(nodes[to as usize].to_array());
+                }
+                let mut mesh =
+                    Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                chunks.push(EdgeChunk {
+                    pegs,
+                    stratum,
+                    mesh,
+                });
+            }
         }
     }
 
     info!(
-        "edges: {} -> {} kept ({:.1}%), busiest chunk {busiest}, chunks per decimation \
-         level {by_level:?}",
+        "edges: {} in {strata} strata -> {} chunks ({} drawn per frame), busiest chunk \
+         {busiest}, edges per stratum {per_stratum:?}",
         edges.len(),
-        kept_total,
-        100.0 * kept_total as f32 / edges.len().max(1) as f32,
+        chunks.len(),
+        chunks.len() / strata as usize,
     );
     chunks
 }
 
-/// One decimated edge chunk. `level` picks the material, whose brightness compensates for
-/// how much of the chunk was thrown away - see [`edge_material`].
+/// One stratum of one spatial chunk of edges. `pegs` picks the colour, `stratum` picks
+/// which frame of the accumulation cycle it is drawn on - see [`build_edge_meshes`].
 struct EdgeChunk {
     pegs: usize,
-    level: u32,
+    stratum: u32,
     mesh: Mesh,
 }
 
-/// Cap on how far one chunk may be decimated, i.e. the brightest a surviving edge may be
-/// made.
+/// Which stratum an edge belongs to, i.e. which frame of the cycle draws it.
 ///
-/// Compensation multiplies [`EDGE_ALPHA`] by `2^level`, so at 0.02 this bottoms out
-/// around 32x (0.64) before a lone strand starts reading as a solid bright line instead
-/// of one thread of a haze. Past it the very densest chunks stop being energy-preserving
-/// and genuinely dim - which, for regions that were saturating anyway, is the right way
-/// to run out of road.
-const MAX_DECIMATION_LEVEL: u32 = 5;
-
-/// How hard to thin a chunk holding `count` edges: keep `1 / 2^level` of them, chosen so
-/// no chunk keeps more than about `budget`.
-///
-/// Density-adaptive rather than a flat fraction, which is the whole point. A uniform
-/// keep-fraction is measurably effective (it is the only thing that moved the framerate)
-/// but visibly wrong: thinning a dense tangle by 4x is statistically invisible because
-/// what you see is the sum of thousands of overlapping strands, while thinning a sparse
-/// region by 4x removes lines you were looking at individually. Bounding *per chunk*
-/// leaves sparse chunks completely untouched - `count <= budget` gives level 0 - and
-/// spends the decimation only where there is enough overlap to hide it.
-fn decimation_level(count: usize, budget: usize) -> u32 {
-    let budget = budget.max(1);
-    if count <= budget {
-        return 0;
-    }
-    // ceil(log2(count / budget)), via the bit length of the ratio
-    let ratio = count.div_ceil(budget) as u64;
-    let level = u64::BITS - (ratio - 1).leading_zeros();
-    level.min(MAX_DECIMATION_LEVEL)
-}
-
-/// Whether an edge survives decimation at `level`, i.e. is in the `1 / 2^level` of edges
-/// whose hash starts with `level` zero bits.
-///
-/// Hashed rather than "keep every n-th": the edge list is sorted by endpoint index, which
+/// Hashed rather than "every n-th": the edge list is sorted by endpoint index, which
 /// correlates strongly with position under either layout, so a stride would sample the
-/// graph on a lattice and alias into visible structure. Being a pure function of the
-/// endpoints also keeps the choice stable across rebuilds, so toggling some other setting
-/// does not reshuffle which edges are drawn.
-fn survives(from: u32, to: u32, level: u32) -> bool {
-    level == 0 || hash32(from ^ hash32(to)) >> (u32::BITS - level) == 0
+/// graph on a lattice and alias into visible structure. Here that matters twice over,
+/// because each frame's share has to be a fair sample of the whole graph rather than a
+/// coherent slab of it - otherwise the picture would not just be grainy while converging,
+/// it would be *wrong*, showing one region at a time. Being a pure function of the
+/// endpoints also keeps the split stable across rebuilds, so changing some other setting
+/// does not reshuffle which edges land on which frame.
+fn stratum_of(from: u32, to: u32, strata: u32) -> u32 {
+    hash32(from ^ hash32(to)) % strata.max(1)
 }
 
 /// Chris Wellons' `lowbias32`.
@@ -1651,7 +2032,7 @@ fn layout_spectral(graph: &mut ConstellationGraph) {
     }
     let degree_total: f64 = degree.iter().map(|&d| d as f64).sum();
 
-    // Deterministic start, from the hash already used for edge decimation rather than an
+    // Deterministic start, from the hash already used to stratify the edges rather than an
     // rng, so the layout is identical across runs like every other one here.
     let mut position: Vec<Vec3> = (0..count as u32)
         .map(|i| {
@@ -1956,9 +2337,12 @@ fn fibonacci_sphere(rank: usize, count: usize) -> Vec3 {
 /// spawns one entity per chunk. Deliberately no `NoFrustumCulling` here (unlike the
 /// per-layer meshes this replaced): each chunk's bounding box is tight enough that
 /// Bevy's ordinary per-entity culling is exactly what makes chunking pay off.
+#[allow(clippy::too_many_arguments)]
 fn spawn_graph(
     mut commands: Commands,
     graph: Res<ConstellationGraph>,
+    settings: Res<BuildSettings>,
+    mut accumulation: ResMut<Accumulation>,
     mut graph_meshes: ResMut<GraphMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GraphMaterial>>,
@@ -1972,8 +2356,10 @@ fn spawn_graph(
     // one material per peg count, shared across that layer's chunks - many chunks
     // would otherwise each add an identical material asset
     let mut node_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
-    let mut edge_materials: std::collections::HashMap<(usize, u32), Handle<GraphMaterial>> =
-        std::collections::HashMap::new();
+    // Keyed by peg count alone, unlike the per-level version this replaced: the stratum
+    // count is global now, so every edge chunk in the scene wants the same brightness
+    // compensation and only the layer colour still varies.
+    let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
 
     // `mem::take` rather than borrowing: these meshes are merged megabytes-large
     // buffers, and moving them into `Assets<Mesh>` avoids cloning that data around
@@ -1989,18 +2375,30 @@ fn spawn_graph(
         ));
     }
 
-    for EdgeChunk { pegs, level, mesh } in std::mem::take(&mut graph_meshes.edges) {
+    for EdgeChunk {
+        pegs,
+        stratum,
+        mesh,
+    } in std::mem::take(&mut graph_meshes.edges)
+    {
         let material = edge_materials
-            .entry((pegs, level))
-            .or_insert_with(|| materials.add(edge_material(pegs, level)))
+            .entry(pegs)
+            .or_insert_with(|| materials.add(edge_material(pegs, settings.strata)))
             .clone();
         commands.spawn((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(material),
             EdgeMesh,
             GraphChunk,
+            Stratum(stratum),
+            RenderLayers::layer(EDGE_LAYER),
+            // starts hidden: `drive_accumulation` reveals exactly one stratum per frame
+            Visibility::Hidden,
         ));
     }
+
+    // the edge set just changed under the buffer, so whatever it holds is stale
+    accumulation.invalidate();
 
     commands.remove_resource::<GraphMeshes>();
 
@@ -2083,16 +2481,20 @@ fn prune_unreachable_edges(
                 world.despawn(old_entity);
             }
 
-            let mut edge_materials: std::collections::HashMap<(usize, u32), Handle<GraphMaterial>> =
-                std::collections::HashMap::new();
-            for EdgeChunk { pegs, level, mesh } in edge_meshes {
+            let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
+            for EdgeChunk {
+                pegs,
+                stratum,
+                mesh,
+            } in edge_meshes
+            {
                 let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
                 let material = edge_materials
-                    .entry((pegs, level))
+                    .entry(pegs)
                     .or_insert_with(|| {
                         world
                             .resource_mut::<Assets<GraphMaterial>>()
-                            .add(edge_material(pegs, level))
+                            .add(edge_material(pegs, settings.strata))
                     })
                     .clone();
                 world.spawn((
@@ -2100,8 +2502,13 @@ fn prune_unreachable_edges(
                     MeshMaterial3d(material),
                     EdgeMesh,
                     GraphChunk,
+                    Stratum(stratum),
+                    RenderLayers::layer(EDGE_LAYER),
+                    Visibility::Hidden,
                 ));
             }
+            // the pruned set is a different picture from the one in the buffer
+            world.resource_mut::<Accumulation>().invalidate();
 
             world.entity_mut(entity).remove::<BackgroundTask>();
         });
@@ -2117,12 +2524,17 @@ fn layer_color(pegs: usize) -> Color {
     Color::hsl(360.0 * (1.0 - t), 0.75, 0.55)
 }
 
-/// Brightness scaled by `2^level` to compensate for the `1 / 2^level` of the chunk that
-/// [`decimation_level`] threw away. Additive blending is linear, so this leaves the
-/// expected accumulated brightness where it was and only adds grain - which is what makes
-/// decimation a knob rather than a compromise.
-fn edge_material(pegs: usize, level: u32) -> GraphMaterial {
-    GraphMaterial::additive(layer_color(pegs), EDGE_ALPHA * (1u32 << level) as f32)
+/// Brightness scaled by the stratum count, compensating for each frame drawing only
+/// `1 / strata` of the edges.
+///
+/// The same energy-preserving trick the per-chunk decimation used, but load-bearing for a
+/// different reason now. Drawing `1 / strata` of the edges at `strata` times the
+/// brightness makes a single frame an *unbiased estimate* of the whole edge image rather
+/// than a dimmer version of it - so the accumulation buffer, which sums `n` such
+/// estimates, is correctly exposed at every `n` once `composite.wgsl` divides by it.
+/// Nothing about the picture changes as it converges except its grain.
+fn edge_material(pegs: usize, strata: u32) -> GraphMaterial {
+    GraphMaterial::additive(layer_color(pegs), EDGE_ALPHA * strata.max(1) as f32)
 }
 
 /// Moves the marker sphere onto the node for the board the player is on.

@@ -8,9 +8,10 @@
 // by distance, and measurement killed it: cutting *every* edge fragment - so that the
 // blend write never happened at all - only took the worst viewpoint from ~5 to ~10 fps,
 // because a discarded fragment still costs its vertex shading, primitive setup, clipping
-// and rasterization. The edge pass is bound by primitive count, not fill, so the thinning
-// that survived is `decimate` in graph.rs, which drops edges before they are ever put in
-// a mesh.
+// and rasterization. So roughly half the edge pass is per-primitive work that nothing
+// written here can reach, and the only thing that helps is submitting fewer primitives per
+// frame. That is `Accumulation` in graph.rs, which draws one stratum of the edges per
+// frame and stops altogether once every stratum has landed - not anything in this shader.
 //
 // Only `@location(0)` is declared, so the meshes need no normals and no uvs - a vertex
 // buffer layout may hand over attributes the shader ignores, but every attribute the
