@@ -22,13 +22,19 @@
 //! 204_992 / 230_230, and the full graph is 1_679_072 nodes - see [`MAX_PEGS`].
 //!
 //! The edges are not drawn all at once. There are 8.58M of them, and about half the cost
-//! of drawing one is per-primitive work that no fragment-level thinning can reach, so they
-//! are split into [`BuildSettings::strata`] fair shares and one share is drawn per frame
-//! into a buffer that is only cleared when the view changes - see [`Accumulation`]. Moving
-//! the camera therefore costs a fraction of the edge set, standing still converges to all
-//! of it within a few frames, and once converged the edge pass stops running entirely.
-//! Nothing is permanently discarded, which is what the adaptive per-chunk decimation this
-//! replaced had to do.
+//! of drawing one is per-primitive work that no fragment-level thinning can reach, so each
+//! one is drawn on one frame in [`Cadence::period`] into a buffer that is only cleared when
+//! the view changes - see [`Accumulation`]. Moving the camera therefore costs a fraction of
+//! the edge set, standing still converges to all of it within a few frames, and once
+//! converged the edge pass stops running entirely. Nothing is permanently discarded, which
+//! is what the adaptive per-chunk decimation this replaced had to do.
+//!
+//! That period is picked per region from the local edge density rather than being the same
+//! everywhere: a sparse part of the graph is drawn in full on every frame, including the
+//! first, and only regions dense enough for a fraction of their edges to still read as the
+//! whole picture get spread over [`BuildSettings::strata`] frames. So the grain that
+//! remains while converging sits where it is invisible, and the per-frame budget is the
+//! same either way - see [`build_edge_meshes`].
 //!
 //! Toggled with the graph button or `G`. Starts in orbit mode: left-drag orbits,
 //! right-drag pans, the wheel zooms, and `WASD` + `space`/`shift` pans the pivot.
@@ -184,10 +190,27 @@ struct EdgeMesh;
 #[derive(Component)]
 struct GraphChunk;
 
-/// Which frame of the accumulation cycle an [`EdgeMesh`] chunk is drawn on - see
-/// [`stratum_of`] and [`drive_accumulation`].
-#[derive(Component)]
-struct Stratum(u32);
+/// When an [`EdgeMesh`] chunk is drawn: on every `period`-th frame of the accumulation
+/// cycle, starting at `phase` - see [`build_edge_meshes`] and [`drive_accumulation`].
+///
+/// `period == strata` means one appearance per cycle, which is what every chunk used to
+/// get. Chunks in sparsely populated parts of the graph get a shorter period - down to 1,
+/// i.e. drawn on every frame, first one included - and [`edge_material`] dims them to
+/// match, so the converged picture is the same either way and only the grain differs.
+#[derive(Component, Clone, Copy)]
+struct Cadence {
+    /// how many frames apart this chunk is drawn; always a divisor of `strata`
+    period: u32,
+    /// which frame within the period, in `0..period`
+    phase: u32,
+}
+
+impl Cadence {
+    /// Whether this chunk belongs in deposit number `deposited` of the cycle.
+    fn draws_on(self, deposited: u32) -> bool {
+        deposited % self.period.max(1) == self.phase
+    }
+}
 
 /// Render layer the edge chunks live on.
 ///
@@ -596,17 +619,21 @@ type GraphCameraFilter = (With<GraphCamera>, Without<AccumulationCamera>);
 /// helps is submitting fewer primitives per frame, and the only reason the old code could
 /// not is that every frame had to redraw the whole picture from scratch.
 ///
-/// Accumulating removes that constraint. [`build_edge_meshes`] splits the edges into
-/// `BuildSettings::strata` fair shares, [`edge_material`] brightens each share by the same
-/// factor so one frame is an unbiased estimate of the whole image, and this buffer sums
-/// `n` of those estimates while `composite.wgsl` divides by `n`. The exposure is therefore
-/// right on *every* frame of the cycle - only the grain changes - and motion, which is
-/// exactly when grain is least visible, is the only time it is ever coarse.
+/// Accumulating removes that constraint. [`build_edge_meshes`] gives every edge a
+/// [`Cadence`] - one frame in `period`, at a `phase` - [`edge_material`] brightens each
+/// group by its own period so one frame is an unbiased estimate of the whole image, and
+/// this buffer sums `n` of those estimates while `composite.wgsl` divides by `n`. The
+/// exposure is therefore right on *every* frame of the cycle - only the grain changes -
+/// and motion, which is exactly when grain is least visible, is the only time it is ever
+/// coarse. Where the period is 1, i.e. wherever the graph is sparse enough that thinning
+/// would show, there is no grain even then: those edges are in every deposit.
 ///
 /// The end of the cycle is the part worth noticing. Once `deposited` reaches `strata`
-/// every edge has been drawn exactly once, so the buffer is not a good approximation of
-/// the full 8.58M-edge image, it *is* that image - and the camera is switched off
-/// entirely until the view changes. A still viewpoint costs nothing, which is also what
+/// every edge has been drawn exactly `strata / period` times - the periods are divisors of
+/// `strata` precisely so that lands on a whole number for all of them on the same frame,
+/// see [`divisors`] - so the buffer is not a good approximation of the full 8.58M-edge
+/// image, it *is* that image, and the camera is switched off entirely until the view
+/// changes. A still viewpoint costs nothing, which is also what
 /// would make the reactive `WinitSettings::desktop_app` mode commented out in `window.rs`
 /// worth having back.
 #[derive(Resource)]
@@ -692,7 +719,8 @@ fn composite_shader() -> ShaderRef {
 }
 
 /// Runs the accumulation cycle: mirrors the active view, resets the buffer when it moves,
-/// reveals one stratum per frame and parks the camera once the picture is exact.
+/// reveals whatever chunks are on cadence each frame and parks the camera once the picture
+/// is exact.
 ///
 /// Mirroring rather than sharing a camera is what keeps the edges in their own buffer
 /// while the nodes go straight to the window. The two have to agree exactly or the edges
@@ -710,7 +738,7 @@ fn drive_accumulation(
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     graph_cameras: Query<(&Camera, &Transform), GraphCameraFilter>,
     accumulation_camera: Single<(&mut Camera, &mut Transform), With<AccumulationCamera>>,
-    mut chunks: Query<(&Stratum, &mut Visibility)>,
+    mut chunks: Query<(&Cadence, &mut Visibility)>,
     mut request_redraw: MessageWriter<RequestRedraw>,
 ) {
     let (mut camera, mut transform) = accumulation_camera.into_inner();
@@ -774,8 +802,8 @@ fn drive_accumulation(
     camera.is_active = true;
 
     let current = accumulation.deposited;
-    for (stratum, mut visibility) in &mut chunks {
-        let wanted = if stratum.0 == current {
+    for (cadence, mut visibility) in &mut chunks {
+        let wanted = if cadence.draws_on(current) {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -861,9 +889,10 @@ fn spawn_build_task(
 }
 
 /// Clears the scene and rebuilds it: `L` switches [`GraphLayout`], `[`/`]` halve/double
-/// the chunk size, `-`/`=` halve/double the stratum count.
+/// the chunk size, `-`/`=` halve/double the stratum count, `,`/`.` halve/double the
+/// per-region floor on edges per frame.
 ///
-/// Both are here so the two knobs this module has can be swept from one session without
+/// All of them are here so the knobs this module has can be swept from one session without
 /// rebuilding the binary or having to find the same viewpoint again - which is the only
 /// way to compare them honestly, since the readout is an eyeballed FPS number.
 fn rebuild_on_key(
@@ -880,7 +909,9 @@ fn rebuild_on_key(
     let coarser = input.just_pressed(KeyCode::BracketRight);
     let thinner = input.just_pressed(KeyCode::Minus);
     let denser = input.just_pressed(KeyCode::Equal);
-    if !(switch || finer || coarser || thinner || denser) {
+    let looser = input.just_pressed(KeyCode::Comma);
+    let stricter = input.just_pressed(KeyCode::Period);
+    if !(switch || finer || coarser || thinner || denser || looser || stricter) {
         return;
     }
     // `graph` being absent means either the first build or a previous rebuild is still in
@@ -904,6 +935,13 @@ fn rebuild_on_key(
     }
     if denser {
         settings.strata *= 2;
+    }
+    if looser {
+        // a lower floor is a finer density grid at the same cost, not a cheaper frame
+        settings.min_per_frame = (settings.min_per_frame * 0.5).max(1.0);
+    }
+    if stricter {
+        settings.min_per_frame *= 2.0;
     }
 
     for chunk in &chunks {
@@ -1118,9 +1156,9 @@ fn log_edge_lengths(graph: &ConstellationGraph) {
 /// This is a real trade in *both* directions, which is why it lives in [`BuildSettings`]
 /// rather than only in a constant: every chunk is a separate entity in a sorted render
 /// phase (see [`build_edge_meshes`]), so finer chunking buys culling and pays draw calls.
-/// At the full graph, 8.58M edges at this size come out as ~7.5k edge chunks - but only
-/// one stratum is drawn per frame, so that is ~940 draw calls a frame at the default 8,
-/// not 7.5k. The viewpoint that actually hurts is the one where culling rejects almost
+/// At the full graph, 8.58M edges at this size come out as ~6.7k edge chunks - but only the
+/// chunks on cadence are drawn on any one frame, measured at ~1.2k of them at the default
+/// 8 strata, not 6.7k. The viewpoint that actually hurts is the one where culling rejects almost
 /// nothing, so there the draw calls are pure loss. Sweep it with `[` and `]`, and against
 /// `strata` rather than on its own: stratifying already made the per-share grids coarser,
 /// so the two knobs push on the same thing from opposite ends.
@@ -1132,12 +1170,35 @@ const DEFAULT_CHUNK_SIZE: f32 = 8192.0;
 /// Default [`BuildSettings::strata`] - how many frames a converged edge image costs.
 ///
 /// This is the one knob that trades motion framerate against how long standing still
-/// takes to sharpen. Each frame draws one stratum, i.e. `1 / strata` of the 8.58M edges,
-/// so raising it makes movement cheaper and convergence slower in exact proportion. 8
-/// puts a converged image about 130ms after the camera stops at 60fps, which is below
-/// the point where the sharpening reads as a separate event from letting go of the
-/// mouse. Sweep it with `-` and `=`.
+/// takes to sharpen. It is the *longest* period an edge can be drawn at, so it caps how
+/// thin a frame can get: raising it makes movement cheaper and convergence slower, in
+/// exact proportion for the dense regions that actually get the full period (see
+/// [`build_edge_meshes`]). 8 puts a converged image about 130ms after the camera stops at
+/// 60fps, which is below the point where the sharpening reads as a separate event from
+/// letting go of the mouse. Sweep it with `-` and `=`.
 const DEFAULT_STRATA: u32 = 8;
+
+/// Default [`BuildSettings::min_per_frame`] - the per-region floor on edges per frame.
+///
+/// Sets the density below which a region stops being thinned at all, and with it the
+/// resolution of the density grid in [`build_edge_meshes`] - the two are the same number
+/// because the grid is sized so an average region is worth `min_per_frame * strata` edges.
+/// That is what makes this knob *not* a cost knob: halving it halves the floor and doubles
+/// the number of regions, so the per-frame budget comes out the same either way, and what
+/// changes is how locally density is measured. Lower means finer regions each guaranteed
+/// fewer edges, higher means coarser regions each guaranteed more. Measured, over a 64x
+/// sweep of this value on the full 8.58M-edge graph under `Hilbert`: 16.3% of the edge set
+/// per frame at 8, 16.5% at 64, 16.5% at 512 - flat to within a third of a percent, so the
+/// choice really is about locality and not about cost.
+///
+/// The cost of the whole scheme is that 16.5% against the 12.5% a uniform eighth would
+/// draw - a third more edges a frame, in exchange for every sparse region being complete
+/// from the first frame instead of an eighth of itself. 64 puts the average region at ~512
+/// edges at the default 8 strata, so anything sparser than that is drawn in full on every
+/// frame - which covers the apex layers and the rim of every layer, i.e. exactly where a
+/// one-eighth sample read as missing structure rather than as grain. Sweep it with `,` and
+/// `.` and watch the `edges per frame` line it logs.
+const DEFAULT_MIN_PER_FRAME: f32 = 64.0;
 
 /// Everything a graph (re)build is parameterized by - see [`rebuild_on_key`], which
 /// sweeps both at runtime so they can be A/B'd from one session at one viewpoint rather
@@ -1147,9 +1208,12 @@ struct BuildSettings {
     layout: GraphLayout,
     /// target primitives per chunk - see [`DEFAULT_CHUNK_SIZE`]
     chunk_size: f32,
-    /// how many equal shares the edge set is split into, one drawn per frame - see
-    /// [`DEFAULT_STRATA`] and [`Accumulation`]
+    /// longest period an edge is drawn at, i.e. how many frames a converged picture
+    /// takes - see [`DEFAULT_STRATA`] and [`Accumulation`]
     strata: u32,
+    /// fewest edges a region of the graph may contribute to a single frame, which is what
+    /// keeps sparse regions whole - see [`DEFAULT_MIN_PER_FRAME`] and [`build_edge_meshes`]
+    min_per_frame: f32,
 }
 
 impl Default for BuildSettings {
@@ -1158,6 +1222,7 @@ impl Default for BuildSettings {
             layout: GraphLayout::default(),
             chunk_size: DEFAULT_CHUNK_SIZE,
             strata: DEFAULT_STRATA,
+            min_per_frame: DEFAULT_MIN_PER_FRAME,
         }
     }
 }
@@ -1367,25 +1432,52 @@ fn build_meshes(graph: &ConstellationGraph, settings: BuildSettings) -> GraphMes
 /// (the full edge set) and [`prune_unreachable_edges`] (whatever subset of it is still
 /// reachable from the current board).
 ///
-/// The edge set is first split into `settings.strata` equal shares by [`stratum_of`], and
-/// only then chunked, each share getting its own [`ChunkGrid`] over its own midpoints. One
-/// share is drawn per frame into the never-cleared accumulation buffer (see
-/// [`Accumulation`]), so a stratum is not a subset that gets thrown away - which is what
-/// the adaptive per-chunk decimation this replaced did - but one instalment of an image
-/// that converges to *every* edge a second or so after the camera stops.
+/// Each edge is first given a [`Cadence`] - "drawn on every `period`-th frame of the
+/// accumulation cycle, starting at `phase`" - and only then chunked, each (period, phase)
+/// group getting its own [`ChunkGrid`] over its own midpoints. One frame draws every group
+/// whose period divides into it at the right phase (see [`drive_accumulation`]), so a
+/// cadence is not a subset that gets thrown away - which is what the adaptive per-chunk
+/// decimation this replaced did - but one instalment of an image that converges to *every*
+/// edge a second or so after the camera stops.
 ///
-/// Splitting before chunking rather than after is what keeps the entity count flat.
-/// Chunking targets a primitive count, not a volume, so a share holding `1 / strata` of
-/// the edges simply gets a correspondingly coarser grid: chunks stay the same size, there
-/// are `1 / strata` as many per share, and the total across all shares lands back where it
-/// was before stratification. Per *frame* only one share is visible, so the draw calls
-/// drop by the full factor. Chunking first and splitting each chunk instead would have
-/// multiplied the entity count by `strata` while leaving per-frame draw calls unchanged -
-/// the wrong end of both trades.
+/// The period is picked per *region*, not globally, which is the whole point: `1 / strata`
+/// of the edges is a fine estimate of the picture where thousands of edges land in the
+/// same handful of pixels and average out, and an obviously broken picture out at the
+/// apex, or the rim of a layer, where a region holds few enough edges that dropping
+/// seven eighths of them reads as missing structure rather than as grain. So the local
+/// edge density decides: a cell of the density grid built below contributes at least
+/// [`BuildSettings::min_per_frame`] edges to *every* frame, or all of them if it holds
+/// fewer than that, and only cells with more than that to spare get stratified - the
+/// denser the cell, the longer its period, up to `strata`. Sparse regions therefore appear
+/// complete in frame one and never change afterwards, and the per-frame edge budget is
+/// spent where thinning is invisible instead of spread evenly over a picture whose density
+/// is anything but.
 ///
-/// The price is weaker frustum culling: a grid built over `1 / strata` of the points is
-/// about `strata^(1/3)` coarser along each axis, so the default 8 makes chunks twice as
-/// wide. That is a good trade against 8x fewer primitives a frame, but it is the reason
+/// The cost of that is bounded by construction rather than by hoping: the density grid is
+/// sized (via [`ChunkGrid::new`]'s target) so an *average* cell holds
+/// `min_per_frame * strata` edges and therefore lands on the full `strata` period, so
+/// boosting the below-average cells is paid for out of the same per-frame budget the
+/// uniform version spent, only distributed by need. The `edges per frame` figure in the
+/// log below is the actual number; watch it against `min_per_frame` (`,`/`.`).
+///
+/// [`edge_material`] dims each group by its own period rather than by `strata`, so an edge
+/// drawn eight times as often is drawn an eighth as bright and the converged picture is
+/// identical to the uniform one - and a period-1 group, being drawn on every frame,
+/// composites to exactly its converged brightness on frame one and every frame after it,
+/// with no variance at all.
+///
+/// Grouping before chunking rather than after is what keeps the entity count flat.
+/// Chunking targets a primitive count, not a volume, so a group holding a fraction of the
+/// edges simply gets a correspondingly coarser grid: chunks stay the same size, there are
+/// proportionally fewer per group, and the total across all groups lands back where it was
+/// before. Per *frame* only the groups on cadence are visible, so the draw calls drop by
+/// the same factor the primitives do. Chunking first and splitting each chunk instead
+/// would have multiplied the entity count by `strata` while leaving per-frame draw calls
+/// unchanged - the wrong end of both trades.
+///
+/// The price is weaker frustum culling: a grid built over a fraction of the points is
+/// coarser along each axis, so the default 8 strata make chunks roughly twice as wide.
+/// That is a good trade against 8x fewer primitives a frame, but it is the reason
 /// `chunk_size` and `strata` want sweeping together rather than one at a time.
 ///
 /// Chunked by each edge's own midpoint, in a grid built from the *midpoints'* bounding
@@ -1396,12 +1488,12 @@ fn build_meshes(graph: &ConstellationGraph, settings: BuildSettings) -> GraphMes
 /// edges) were still "visible" from a single fixed viewpoint at the narrow neck just
 /// below the widest layer - the chunking was barely culling anything there.
 ///
-/// Three passes over each share rather than one: the grid needs the bounding box before it
-/// can place anything, and at this scale keeping every midpoint around to avoid
-/// recomputing it would cost more memory than the meshes themselves. Re-filtering per
-/// stratum rather than bucketing all `strata` shares at once is the same trade - it costs
-/// `strata` extra scans of an integer-pair list and saves holding a second copy of all
-/// 8.58M edges.
+/// Buckets the layer's edges into their groups once, rather than re-filtering the whole
+/// layer per group as the pre-density version did (three scans per stratum, so 24 scans of
+/// every layer at the default). That costs one extra copy of the widest single layer's
+/// edges - a few MB, against the 8.58M-edge whole - and buys back both the extra scans and
+/// the per-edge density lookup, which is a hash probe rather than the two multiplies a
+/// pure hash split cost.
 ///
 /// Note every chunk is a separate entity in [`Transparent3d`], which is a *sorted* phase
 /// that only batches adjacent items - so each one costs its own draw call, sort key and
@@ -1417,9 +1509,22 @@ fn build_edge_meshes(
 ) -> Vec<EdgeChunk> {
     let midpoint = |(from, to): (u32, u32)| (nodes[from as usize] + nodes[to as usize]) * 0.5;
     let strata = settings.strata.max(1);
+    let min_per_frame = settings.min_per_frame.max(1.0);
+    let periods = divisors(strata);
+    // where each period's block of phases starts in the per-group vectors below, so a
+    // (period, phase) pair indexes one flat vec; the last entry is the group count
+    let mut offsets = Vec::with_capacity(periods.len() + 1);
+    let mut groups_len = 0;
+    for &period in &periods {
+        offsets.push(groups_len);
+        groups_len += period as usize;
+    }
+    offsets.push(groups_len);
+
     let mut chunks = Vec::new();
     let mut busiest = 0usize;
-    let mut per_stratum = vec![0usize; strata as usize];
+    let mut per_period = vec![0usize; periods.len()];
+    let mut chunks_per_period = vec![0usize; periods.len()];
 
     for pegs in 1..=MAX_PEGS {
         let layer = layer_starts[pegs] as usize..layer_starts[pegs + 1] as usize;
@@ -1428,80 +1533,146 @@ fn build_edge_meshes(
             continue;
         }
 
-        for stratum in 0..strata {
-            let share = || {
-                slice
-                    .iter()
-                    .copied()
-                    .filter(move |&(from, to)| stratum_of(from, to, strata) == stratum)
-            };
-            let count = share().count();
-            if count == 0 {
-                continue;
-            }
-            per_stratum[stratum as usize] += count;
+        // how many edges share each region of this layer, at a resolution where the
+        // average region is worth exactly one full-length period
+        let (min, max) = aabb_of(slice.iter().copied().map(midpoint));
+        let density = ChunkGrid::new(min, max, slice.len(), min_per_frame * strata as f32);
+        let mut occupancy: std::collections::HashMap<IVec3, u32> = std::collections::HashMap::new();
+        for edge in slice.iter().copied() {
+            *occupancy
+                .entry(density.cell_of(midpoint(edge)))
+                .or_default() += 1;
+        }
 
-            let (min, max) = aabb_of(share().map(midpoint));
-            let grid = ChunkGrid::new(min, max, count, settings.chunk_size);
+        // one bucket per (period, phase), filled in a single pass over the layer
+        let mut groups: Vec<Vec<(u32, u32)>> = vec![Vec::new(); groups_len];
+        for edge in slice.iter().copied() {
+            let in_cell = occupancy[&density.cell_of(midpoint(edge))];
+            let level = period_for(in_cell, min_per_frame, &periods);
+            let phase = phase_of(edge.0, edge.1, periods[level]);
+            groups[offsets[level] + phase as usize].push(edge);
+        }
 
-            let mut buckets: std::collections::HashMap<IVec3, Vec<(u32, u32)>> =
-                std::collections::HashMap::new();
-            for edge in share() {
-                buckets
-                    .entry(grid.cell_of(midpoint(edge)))
-                    .or_default()
-                    .push(edge);
-            }
-
-            for bucket in buckets.into_values() {
-                busiest = busiest.max(bucket.len());
-                let mut positions = Vec::with_capacity(bucket.len() * 2);
-                for (from, to) in bucket {
-                    positions.push(nodes[from as usize].to_array());
-                    positions.push(nodes[to as usize].to_array());
+        for (level, &period) in periods.iter().enumerate() {
+            for phase in 0..period {
+                let group = std::mem::take(&mut groups[offsets[level] + phase as usize]);
+                if group.is_empty() {
+                    continue;
                 }
-                let mut mesh =
-                    Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                chunks.push(EdgeChunk {
-                    pegs,
-                    stratum,
-                    mesh,
-                });
+                per_period[level] += group.len();
+
+                let (min, max) = aabb_of(group.iter().copied().map(midpoint));
+                let grid = ChunkGrid::new(min, max, group.len(), settings.chunk_size);
+
+                let mut buckets: std::collections::HashMap<IVec3, Vec<(u32, u32)>> =
+                    std::collections::HashMap::new();
+                for edge in group {
+                    buckets
+                        .entry(grid.cell_of(midpoint(edge)))
+                        .or_default()
+                        .push(edge);
+                }
+
+                for bucket in buckets.into_values() {
+                    busiest = busiest.max(bucket.len());
+                    let mut positions = Vec::with_capacity(bucket.len() * 2);
+                    for (from, to) in bucket {
+                        positions.push(nodes[from as usize].to_array());
+                        positions.push(nodes[to as usize].to_array());
+                    }
+                    let mut mesh =
+                        Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                    chunks.push(EdgeChunk {
+                        pegs,
+                        cadence: Cadence { period, phase },
+                        mesh,
+                    });
+                    chunks_per_period[level] += 1;
+                }
             }
         }
     }
 
+    // what one frame actually costs: every group is drawn once every `period` frames, so
+    // its share of both totals is `1 / period` of it
+    let share = |totals: &[usize]| -> f64 {
+        totals
+            .iter()
+            .zip(&periods)
+            .map(|(&count, &period)| count as f64 / period as f64)
+            .sum()
+    };
     info!(
-        "edges: {} in {strata} strata -> {} chunks ({} drawn per frame), busiest chunk \
-         {busiest}, edges per stratum {per_stratum:?}",
+        "edges: {} in {strata} strata -> {} chunks, busiest chunk {busiest}, \
+         edges per period {}, per frame {:.0} edges ({:.1}% of the set, uniform would be \
+         {:.1}%) in {:.0} chunks",
         edges.len(),
         chunks.len(),
-        chunks.len() / strata as usize,
+        periods
+            .iter()
+            .zip(&per_period)
+            .map(|(period, count)| format!("{period}:{count}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        share(&per_period),
+        100.0 * share(&per_period) / edges.len().max(1) as f64,
+        100.0 / strata as f64,
+        share(&chunks_per_period),
     );
     chunks
 }
 
-/// One stratum of one spatial chunk of edges. `pegs` picks the colour, `stratum` picks
-/// which frame of the accumulation cycle it is drawn on - see [`build_edge_meshes`].
+/// One (period, phase) group of one spatial chunk of edges. `pegs` picks the colour,
+/// `cadence` picks which frames of the accumulation cycle it is drawn on - see
+/// [`build_edge_meshes`].
 struct EdgeChunk {
     pegs: usize,
-    stratum: u32,
+    cadence: Cadence,
     mesh: Mesh,
 }
 
-/// Which stratum an edge belongs to, i.e. which frame of the cycle draws it.
+/// Every divisor of `strata`, ascending - the periods an edge is allowed to be drawn at.
+///
+/// Divisors specifically, so that `strata / period` is a whole number of appearances per
+/// cycle for every group at once. A period that did not divide the cycle length would
+/// leave its group over- or under-exposed at the moment [`drive_accumulation`] declares
+/// the picture finished, which is the one frame that has to be exactly right - it is what
+/// the camera then holds, unchanged, for as long as the view does not move. Note `strata`
+/// is a power of two by default and stays one under `-`/`=`, so this is usually
+/// `[1, 2, 4, ..., strata]`; it is computed rather than assumed so an odd `strata` still
+/// converges exactly, just with fewer intermediate periods to choose from.
+fn divisors(strata: u32) -> Vec<u32> {
+    let strata = strata.max(1);
+    (1..=strata).filter(|&d| strata.is_multiple_of(d)).collect()
+}
+
+/// Which period a region holding `in_cell` edges gets, as an index into `periods`.
+///
+/// The longest period that still leaves `min_per_frame` edges in every frame, i.e. the
+/// largest available divisor no greater than `in_cell / min_per_frame`. Flooring that
+/// division rather than rounding it keeps the guarantee one-sided - a region never drops
+/// below the floor, it only overshoots it, and it overshoots by less than a factor of two.
+fn period_for(in_cell: u32, min_per_frame: f32, periods: &[u32]) -> usize {
+    let affordable = (in_cell as f32 / min_per_frame).floor();
+    periods
+        .iter()
+        .rposition(|&period| period as f32 <= affordable)
+        .unwrap_or(0)
+}
+
+/// Which frame within its period an edge is drawn on.
 ///
 /// Hashed rather than "every n-th": the edge list is sorted by endpoint index, which
 /// correlates strongly with position under either layout, so a stride would sample the
 /// graph on a lattice and alias into visible structure. Here that matters twice over,
-/// because each frame's share has to be a fair sample of the whole graph rather than a
-/// coherent slab of it - otherwise the picture would not just be grainy while converging,
-/// it would be *wrong*, showing one region at a time. Being a pure function of the
-/// endpoints also keeps the split stable across rebuilds, so changing some other setting
-/// does not reshuffle which edges land on which frame.
-fn stratum_of(from: u32, to: u32, strata: u32) -> u32 {
-    hash32(from ^ hash32(to)) % strata.max(1)
+/// because each frame's share of a dense region has to be a fair sample of that region
+/// rather than a coherent slab of it - otherwise the picture would not just be grainy
+/// while converging, it would be *wrong*, showing one part at a time. Being a pure
+/// function of the endpoints also keeps the split stable across rebuilds, so changing some
+/// other setting does not reshuffle which edges land on which frame.
+fn phase_of(from: u32, to: u32, period: u32) -> u32 {
+    hash32(from ^ hash32(to)) % period.max(1)
 }
 
 /// Chris Wellons' `lowbias32`.
@@ -2341,7 +2512,6 @@ fn fibonacci_sphere(rank: usize, count: usize) -> Vec3 {
 fn spawn_graph(
     mut commands: Commands,
     graph: Res<ConstellationGraph>,
-    settings: Res<BuildSettings>,
     mut accumulation: ResMut<Accumulation>,
     mut graph_meshes: ResMut<GraphMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -2356,10 +2526,11 @@ fn spawn_graph(
     // one material per peg count, shared across that layer's chunks - many chunks
     // would otherwise each add an identical material asset
     let mut node_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
-    // Keyed by peg count alone, unlike the per-level version this replaced: the stratum
-    // count is global now, so every edge chunk in the scene wants the same brightness
-    // compensation and only the layer colour still varies.
-    let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
+    // Keyed by peg count *and* period: the colour comes from the layer and the brightness
+    // compensation from how often the chunk is drawn, and `build_edge_meshes` hands out a
+    // period per region rather than one for the whole scene.
+    let mut edge_materials: std::collections::HashMap<(usize, u32), Handle<GraphMaterial>> =
+        std::collections::HashMap::default();
 
     // `mem::take` rather than borrowing: these meshes are merged megabytes-large
     // buffers, and moving them into `Assets<Mesh>` avoids cloning that data around
@@ -2377,22 +2548,22 @@ fn spawn_graph(
 
     for EdgeChunk {
         pegs,
-        stratum,
+        cadence,
         mesh,
     } in std::mem::take(&mut graph_meshes.edges)
     {
         let material = edge_materials
-            .entry(pegs)
-            .or_insert_with(|| materials.add(edge_material(pegs, settings.strata)))
+            .entry((pegs, cadence.period))
+            .or_insert_with(|| materials.add(edge_material(pegs, cadence.period)))
             .clone();
         commands.spawn((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(material),
             EdgeMesh,
             GraphChunk,
-            Stratum(stratum),
+            cadence,
             RenderLayers::layer(EDGE_LAYER),
-            // starts hidden: `drive_accumulation` reveals exactly one stratum per frame
+            // starts hidden: `drive_accumulation` reveals whatever is on cadence per frame
             Visibility::Hidden,
         ));
     }
@@ -2481,20 +2652,21 @@ fn prune_unreachable_edges(
                 world.despawn(old_entity);
             }
 
-            let mut edge_materials: HashMap<usize, Handle<GraphMaterial>> = HashMap::default();
+            let mut edge_materials: std::collections::HashMap<(usize, u32), Handle<GraphMaterial>> =
+                std::collections::HashMap::default();
             for EdgeChunk {
                 pegs,
-                stratum,
+                cadence,
                 mesh,
             } in edge_meshes
             {
                 let mesh_handle = world.resource_mut::<Assets<Mesh>>().add(mesh);
                 let material = edge_materials
-                    .entry(pegs)
+                    .entry((pegs, cadence.period))
                     .or_insert_with(|| {
                         world
                             .resource_mut::<Assets<GraphMaterial>>()
-                            .add(edge_material(pegs, settings.strata))
+                            .add(edge_material(pegs, cadence.period))
                     })
                     .clone();
                 world.spawn((
@@ -2502,7 +2674,7 @@ fn prune_unreachable_edges(
                     MeshMaterial3d(material),
                     EdgeMesh,
                     GraphChunk,
-                    Stratum(stratum),
+                    cadence,
                     RenderLayers::layer(EDGE_LAYER),
                     Visibility::Hidden,
                 ));
@@ -2524,17 +2696,23 @@ fn layer_color(pegs: usize) -> Color {
     Color::hsl(360.0 * (1.0 - t), 0.75, 0.55)
 }
 
-/// Brightness scaled by the stratum count, compensating for each frame drawing only
-/// `1 / strata` of the edges.
+/// Brightness scaled by the chunk's own [`Cadence::period`], compensating for it only
+/// being drawn on one frame in `period`.
 ///
 /// The same energy-preserving trick the per-chunk decimation used, but load-bearing for a
-/// different reason now. Drawing `1 / strata` of the edges at `strata` times the
-/// brightness makes a single frame an *unbiased estimate* of the whole edge image rather
-/// than a dimmer version of it - so the accumulation buffer, which sums `n` such
-/// estimates, is correctly exposed at every `n` once `composite.wgsl` divides by it.
+/// different reason now. Drawing one frame in `period` at `period` times the brightness
+/// makes that frame an *unbiased estimate* of this chunk's contribution to the whole edge
+/// image rather than a dimmer version of it - so the accumulation buffer, which sums `n`
+/// such estimates, is correctly exposed at every `n` once `composite.wgsl` divides by it.
 /// Nothing about the picture changes as it converges except its grain.
-fn edge_material(pegs: usize, strata: u32) -> GraphMaterial {
-    GraphMaterial::additive(layer_color(pegs), EDGE_ALPHA * strata.max(1) as f32)
+///
+/// Per chunk rather than global (it used to take `strata`) is what makes the density-aware
+/// periods in [`build_edge_meshes`] free: a chunk drawn on every frame is dimmed by the
+/// full factor its neighbours get spread over frames, so both converge to the same
+/// `EDGE_ALPHA` after `strata` deposits, and the period-1 chunks - being present in every
+/// deposit - sit at exactly that value the whole way there instead of fading in.
+fn edge_material(pegs: usize, period: u32) -> GraphMaterial {
+    GraphMaterial::additive(layer_color(pegs), EDGE_ALPHA * period.max(1) as f32)
 }
 
 /// Moves the marker sphere onto the node for the board the player is on.
@@ -2915,6 +3093,107 @@ mod tests {
             edges: vec![(2, 0), (3, 1), (4, 2), (4, 3)],
             layer_starts,
             widest_pegs: 31,
+        }
+    }
+
+    /// A dense clump and a sparse one in the same layer, far enough apart for the density
+    /// grid to tell them apart - which is what [`build_edge_meshes`]'s cadence is picked
+    /// from. Every edge runs from a node in the top layer to the single node below it, so
+    /// the midpoints sit at half the `from` node's `x` and the two clumps stay separated.
+    fn clumped_graph(dense: usize, sparse: usize) -> ConstellationGraph {
+        // node 0 is the whole bottom layer; the clumps are the layer above it
+        let mut nodes = vec![Vec3::new(0.0, -LAYER_HEIGHT, 0.0)];
+        // a hair of spread rather than one exact point, so the clump is a clump and not a
+        // degenerate zero-extent box
+        nodes.extend((0..dense).map(|i| Vec3::new(i as f32 * 1e-4, 0.0, 0.0)));
+        nodes.extend((0..sparse).map(|i| Vec3::new(100.0 + i as f32 * 1e-4, 0.0, 0.0)));
+
+        let mut layer_starts = vec![0u32; MAX_PEGS + 2];
+        for (pegs, start) in [(1usize, 0u32), (2, 1)] {
+            layer_starts[pegs] = start;
+        }
+        // every layer above the two real ones is empty, i.e. starts past the last node
+        for start in layer_starts.iter_mut().skip(3) {
+            *start = nodes.len() as u32;
+        }
+        ConstellationGraph {
+            edges: (1..nodes.len() as u32).map(|from| (from, 0)).collect(),
+            nodes,
+            index: HashMap::default(),
+            layer_starts,
+            widest_pegs: 2,
+        }
+    }
+
+    /// The point of the density-aware cadence: a region with few enough edges that
+    /// stratifying it would show is drawn on *every* frame instead, including the first,
+    /// while a dense one is still spread over the full cycle.
+    ///
+    /// Checked through [`build_edge_meshes`] rather than on [`period_for`] alone, because
+    /// the part that can silently break is the grid the occupancy is measured on - a
+    /// version that lumps the two clumps into one cell still returns perfectly valid
+    /// cadences, just not ones that have anything to do with where the edges are.
+    #[test]
+    fn sparse_regions_are_drawn_every_frame_and_dense_ones_stratified() {
+        let settings = BuildSettings::default();
+        let sparse = settings.min_per_frame as usize - 1;
+        // comfortably past `min_per_frame * strata`, so this clump earns the full period
+        let dense = settings.min_per_frame as usize * settings.strata as usize * 8;
+        let graph = clumped_graph(dense, sparse);
+
+        let chunks = build_edge_meshes(&graph.nodes, &graph.layer_starts, &graph.edges, settings);
+        let mut per_period: std::collections::HashMap<u32, usize> =
+            std::collections::HashMap::new();
+        for chunk in &chunks {
+            assert!(
+                settings.strata.is_multiple_of(chunk.cadence.period),
+                "period {} does not divide {} strata, so the cycle would end mid-exposure",
+                chunk.cadence.period,
+                settings.strata
+            );
+            assert!(chunk.cadence.phase < chunk.cadence.period);
+            *per_period.entry(chunk.cadence.period).or_default() += chunk.mesh.count_vertices() / 2;
+        }
+
+        assert_eq!(per_period.get(&1), Some(&sparse), "{per_period:?}");
+        assert_eq!(
+            per_period.get(&settings.strata),
+            Some(&dense),
+            "{per_period:?}"
+        );
+    }
+
+    /// Cadence redistributes the edge set across frames; it never drops or duplicates an
+    /// edge, which is the difference between this and the decimation it replaced.
+    #[test]
+    fn cadence_keeps_every_edge_exactly_once() {
+        let settings = BuildSettings::default();
+        let graph = clumped_graph(5_000, 40);
+        let chunks = build_edge_meshes(&graph.nodes, &graph.layer_starts, &graph.edges, settings);
+        let drawn: usize = chunks
+            .iter()
+            .map(|chunk| chunk.mesh.count_vertices() / 2)
+            .sum();
+        assert_eq!(drawn, graph.edges.len());
+    }
+
+    /// The floor [`BuildSettings::min_per_frame`] names: a region never contributes fewer
+    /// edges to a frame than that, and never fewer than all of them if it has fewer.
+    #[test]
+    fn every_region_keeps_its_share_of_every_frame() {
+        for strata in [1u32, 2, 3, 8, 16] {
+            let periods = divisors(strata);
+            for min_per_frame in [1.0f32, 7.0, 64.0, 1000.0] {
+                for in_cell in [0u32, 1, 5, 63, 64, 65, 511, 512, 4096, 1_000_000] {
+                    let period = periods[period_for(in_cell, min_per_frame, &periods)];
+                    assert!(strata.is_multiple_of(period));
+                    let per_frame = in_cell as f32 / period as f32;
+                    assert!(
+                        per_frame >= (in_cell as f32).min(min_per_frame),
+                        "{in_cell} edges at period {period} is {per_frame} a frame,                          under the {min_per_frame} floor"
+                    );
+                }
+            }
         }
     }
 

@@ -3,11 +3,11 @@
 //
 // The edges are drawn by their own camera into an offscreen Rgba16Float image that is
 // only cleared when the view changes, its blit adding into the buffer rather than
-// replacing it, so each frame's stratum lands on top of its predecessors. This
-// pass is what turns that running sum back into a picture: after `n` strata the buffer
-// holds `n` times the expected full-graph image (each stratum is 1/S of the edges drawn
-// at S times the brightness - see `edge_material`), so scaling by `1/n` is correct at
-// every n, and only the grain changes as n climbs.
+// replacing it, so each frame's deposit lands on top of its predecessors. This
+// pass is what turns that running sum back into a picture: after `n` deposits the buffer
+// holds `n` times the expected full-graph image (a chunk drawn one frame in P is drawn at
+// P times the brightness, whatever P is - see `edge_material`), so scaling by `1/n` is
+// correct at every n, and only the grain changes as n climbs.
 //
 // Drawn as a single quad whose vertices already sit at +/-1, so the vertex stage ignores
 // the view entirely and passes clip space straight through. `z = 1` is the *near* plane

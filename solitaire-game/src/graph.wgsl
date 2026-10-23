@@ -10,8 +10,8 @@
 // because a discarded fragment still costs its vertex shading, primitive setup, clipping
 // and rasterization. So roughly half the edge pass is per-primitive work that nothing
 // written here can reach, and the only thing that helps is submitting fewer primitives per
-// frame. That is `Accumulation` in graph.rs, which draws one stratum of the edges per
-// frame and stops altogether once every stratum has landed - not anything in this shader.
+// frame. That is `Accumulation` in graph.rs, which draws a density-weighted share of the
+// edges per frame and stops altogether once the whole set has landed - not anything here.
 //
 // Only `@location(0)` is declared, so the meshes need no normals and no uvs - a vertex
 // buffer layout may hand over attributes the shader ignores, but every attribute the
