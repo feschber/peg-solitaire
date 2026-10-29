@@ -1326,15 +1326,14 @@ impl Iterator for PegIter {
 /// indices so that deciding `b` against `g(b)` needs bits the scan has not reached.
 ///
 /// That makes it the only candidate for *counting* the orbit minima, which is the ~1/8 of each
-/// layer `keyset.rs` addresses but can never store (see `MAX_LAYER_KEYS`). It does **not** make
+/// layer `keyset.rs` addresses but can never store (see `KeySetPool::new`). It does **not** make
 /// it a candidate for *ranking* them, which is what shrinking the bitmap would need, for two
 /// reasons worth recording so the idea is not re-attempted:
 ///
 /// - The outside-in scan orders keys by bit 32, then 0, then 31, ... - not numerically. A rank
-///   built that way is not monotone in the key, and `DenseKeySet::drain_sorted_by_key` gets its
-///   sortedness *for free* from rank order being key order. The other side of the shrink
-///   phase's intersect is radix-sorted on the raw `u64`, so a permuted extraction order would
-///   silently mismatch it.
+///   built that way is not monotone in the key, and `keyset.rs`'s scans decode set bits back
+///   to keys by walking `high_cum` with a cursor precisely because rank order *is* key order;
+///   a permuted rank would need a search per key instead.
 /// - Reversal maps low bit `j` to high bit `32 - j`, coupling the two halves of the two-table
 ///   rank. The admissible low halves would depend on all 17 bits of the high half rather than
 ///   on its popcount and invariant state alone, so `low_rank[l]` becomes `low_rank[h][l]` -

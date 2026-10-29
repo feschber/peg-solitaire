@@ -37,12 +37,14 @@ impl Timer {
             .map(|(a, b)| a - b)
     }
 
-    pub(crate) fn category(&self, desc: String) -> Duration {
-        self.durations()
-            .zip(self.descriptions())
-            .filter(|(_, d)| *d == desc)
-            .map(|(r, _)| r)
-            .sum()
+    /// time since the timer was created, regardless of rounds
+    pub(crate) fn elapsed(&self) -> Duration {
+        Instant::now() - self.start
+    }
+
+    /// time since the last round ended (or since creation, before any round)
+    pub(crate) fn elapsed_since_round(&self) -> Duration {
+        Instant::now() - self.rounds.last().map(|&(i, _)| i).unwrap_or(self.start)
     }
 
     pub(crate) fn total(&self) -> Duration {

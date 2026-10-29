@@ -12,7 +12,6 @@ mod normalize_dedup;
 mod pagoda;
 mod par;
 mod solution;
-mod sort;
 mod timer;
 mod unique_solutions;
 
