@@ -177,7 +177,12 @@ impl RankTables {
         // class's group of `low_unrank`.
         let mut low_rank = vec![0u16; 1 << LOW_BITS];
         let mut low_count = [[0u32; 16]; LOW_BITS as usize + 1];
-        let class = |l: u32| (l.count_ones() as usize, Board::invariant_state(l as u64) as usize);
+        let class = |l: u32| {
+            (
+                l.count_ones() as usize,
+                Board::invariant_state(l as u64) as usize,
+            )
+        };
         for l in 0..(1u32 << LOW_BITS) {
             let (j, state) = class(l);
             low_rank[l as usize] = low_count[j][state] as u16;
@@ -202,7 +207,10 @@ impl RankTables {
         }
         let c = binomials();
         debug_assert!(
-            (0..=LOW_BITS as usize).all(|j| low_count[j].iter().map(|&n| u64::from(n)).sum::<u64>()
+            (0..=LOW_BITS as usize).all(|j| low_count[j]
+                .iter()
+                .map(|&n| u64::from(n))
+                .sum::<u64>()
                 == c[LOW_BITS as usize][j]),
             "the 16 states of each popcount must partition its C(16, j) values"
         );
@@ -260,7 +268,13 @@ impl RankTables {
 /// ascending indices can walk `high_cum` forward instead of searching it per key;
 /// pass 0 to start from the bottom. Returns the prefix it settled on, to be fed back
 /// as the next `hint`.
-fn unindex(high_cum: &[u32; HIGH_ENTRIES], tables: &RankTables, pegs: usize, index: u64, hint: usize) -> (u64, usize) {
+fn unindex(
+    high_cum: &[u32; HIGH_ENTRIES],
+    tables: &RankTables,
+    pegs: usize,
+    index: u64,
+    hint: usize,
+) -> (u64, usize) {
     // The answer's prefix is the *last* one whose cumulative count still fits under
     // `index`. Equal neighbouring counts are prefixes holding no keys of this layer
     // (their popcount cannot be completed to `pegs` by 16 low bits), and taking the
@@ -936,7 +950,11 @@ mod tests {
         let pool = KeySetPool::new(16);
         for pegs in 1..=16 {
             let view = pool.layer(pegs);
-            assert_eq!(view.capacity(), ways[KEY_BITS][pegs][target], "layer {pegs}");
+            assert_eq!(
+                view.capacity(),
+                ways[KEY_BITS][pegs][target],
+                "layer {pegs}"
+            );
             assert!(view.capacity() as usize <= view.words.len() * 64);
         }
         assert_eq!(pool.scratch().capacity(), pool.layer(16).capacity());
@@ -1070,7 +1088,11 @@ mod tests {
         let keys = layer_sample(16, 4000, BLOCK_BITS + 1);
         let blocks: std::collections::HashSet<u64> =
             keys.iter().map(|&k| view.index(k) >> 12).collect();
-        assert!(blocks.len() > 100, "want many distinct blocks, got {}", blocks.len());
+        assert!(
+            blocks.len() > 100,
+            "want many distinct blocks, got {}",
+            blocks.len()
+        );
         std::thread::scope(|s| {
             for t in 0..8 {
                 let keys = &keys;
@@ -1101,10 +1123,16 @@ mod tests {
             let block = (view.index(key) >> 6) as usize / BLOCK_WORDS;
             view.set(key);
             assert!(view.test(key), "word bit missing for {key:#x}");
-            assert!(view.block_is_marked(block), "summary bit missing for {key:#x}");
+            assert!(
+                view.block_is_marked(block),
+                "summary bit missing for {key:#x}"
+            );
             view.set(key);
             assert!(view.test(key), "word bit lost on repeat set of {key:#x}");
-            assert!(view.block_is_marked(block), "summary bit lost on repeat set of {key:#x}");
+            assert!(
+                view.block_is_marked(block),
+                "summary bit lost on repeat set of {key:#x}"
+            );
         }
     }
 
@@ -1140,7 +1168,10 @@ mod tests {
         let mut keys = Vec::new();
         for block in 0..BLOCKS_PER_TASK * 3 + 1 {
             keys.push(view.unrank((block * BLOCK_BITS) as u64, 0).0);
-            keys.push(view.unrank((block * BLOCK_BITS + BLOCK_BITS - 1) as u64, 0).0);
+            keys.push(
+                view.unrank((block * BLOCK_BITS + BLOCK_BITS - 1) as u64, 0)
+                    .0,
+            );
         }
         for &k in &keys {
             view.set(k);
@@ -1173,7 +1204,10 @@ mod tests {
             .map(|b| b.to_compressed_repr())
             .collect();
         assert_eq!(drained, keys, "drain must yield everything that was set");
-        assert!(pool.drain_scratch().is_empty(), "a second drain must find nothing");
+        assert!(
+            pool.drain_scratch().is_empty(),
+            "a second drain must find nothing"
+        );
         assert_eq!(pool.scratch().count(), 0);
         for k in keys {
             assert!(!pool.scratch().test(k), "key {k:#x} survived the drain");

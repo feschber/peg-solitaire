@@ -83,7 +83,10 @@ struct Ring<T: Copy, const N: usize> {
 impl<T: Copy, const N: usize> Ring<T, N> {
     fn new(fill: T) -> Self {
         const { assert!(N.is_power_of_two()) };
-        Self { slots: [fill; N], n: 0 }
+        Self {
+            slots: [fill; N],
+            n: 0,
+        }
     }
 
     /// Stores `item` and returns the item pushed `N` pushes earlier, if any.
@@ -338,16 +341,17 @@ fn shrink(src: &[Board], layer: LayerView<'_>) -> (Vec<Board>, usize) {
             let mut out = Vec::with_capacity(chunk.len());
             let mut probe_ring = Pending::new((0, Board::empty()));
             let mut take_ring = Pending::new((0, Board::empty()));
-            let hit = |probe: u64, candidate: Board, take_ring: &mut Pending, out: &mut Vec<Board>| {
-                if layer.test_at(probe) {
-                    layer.prefetch_for_write_at(probe);
-                    if let Some((bit, board)) = take_ring.push((probe, candidate))
-                        && layer.take_at(bit)
-                    {
-                        out.push(board);
+            let hit =
+                |probe: u64, candidate: Board, take_ring: &mut Pending, out: &mut Vec<Board>| {
+                    if layer.test_at(probe) {
+                        layer.prefetch_for_write_at(probe);
+                        if let Some((bit, board)) = take_ring.push((probe, candidate))
+                            && layer.take_at(bit)
+                        {
+                            out.push(board);
+                        }
                     }
-                }
-            };
+                };
             for board in chunk {
                 let syms = board.symmetries();
                 for dir in Dir::enumerate() {
@@ -636,7 +640,10 @@ mod tests {
         let raw = succ.len();
         succ.sort_unstable();
         succ.dedup();
-        assert!(succ.len() < raw, "no duplicates to test exactly-once emission on");
+        assert!(
+            succ.len() < raw,
+            "no duplicates to test exactly-once emission on"
+        );
         let want: Vec<Board> = succ.into_iter().filter(|b| layer8.contains(b)).collect();
         assert!(!want.is_empty() && want.len() < layer8.len());
 
