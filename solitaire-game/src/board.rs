@@ -1,4 +1,4 @@
-use std::ops::{Add, Mul, Sub};
+use std::{f32::consts::GOLDEN_RATIO, ops::{Add, Mul, Sub}};
 
 use bevy::{ecs::entity_disabling::Disabled, prelude::*};
 use bevy_vector_shapes::{prelude::ShapePainter, shapes::DiscPainter};
@@ -22,7 +22,6 @@ pub const HOLE_POS: f32 = 0.05;
 pub const MARKER_POS: f32 = 0.1;
 pub const PEG_POS: f32 = 0.2;
 pub const PEG_POS_RAISED: f32 = 1.0;
-pub const GOLDEN_RATIO: f32 = 1.618_034;
 pub const PEG_RADIUS: f32 = 1. / (2. * GOLDEN_RATIO);
 pub const HOLE_RADIUS: f32 = 0.9 * PEG_RADIUS;
 

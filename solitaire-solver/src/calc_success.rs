@@ -32,8 +32,8 @@ pub fn calculate_p_random_chance_success(
             let mut p_success = 0.0;
 
             for succ in successors {
-                p_success += if index.contains(&succ) {
-                    p_move * *chances.get(&succ).expect("already present")
+                p_success += if index.contains(succ) {
+                    p_move * *chances.get(succ).expect("already present")
                 } else {
                     p_move * 0.0
                 };
